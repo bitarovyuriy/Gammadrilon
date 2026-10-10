@@ -172,6 +172,10 @@
       по мёртвому `--ui-pid`, GUI не поднимает).
 - Артефакты: `dist/Gammadrilon/` (портабл), `dist/Gammadrilon-portable.zip`,
       `dist/Gammadrilon.exe` (релиз).
+- [x] **Релиз v3.0 опубликован**: `github.com/bitarovyuriy/Gammadrilon/releases/tag/v3.0`
+      (ассеты `Gammadrilon.exe` и `Gammadrilon-portable.zip`, по 37.8 МБ; помечен Latest).
+      Push и загрузка ассетов — через Xray-прокси `http://127.0.0.1:10808` (напрямую GitHub
+      недоступен). Аккаунт `bonzeros` — прежнее имя, GitHub редиректит на `bitarovyuriy`.
 
 ## Этап 4.3 (прочие утилиты) — сделан
 
