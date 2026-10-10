@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Gammadrilon — Вариант C «Режимы»</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #000000;
+    --surface: #0C0D0F;
+    --surface-2: #131519;
+    --line: #1E2126;
+    --line-2: #2B2F36;
+    --ink: #F0F1F3;
+    --ink-2: #A6ACB4;
+    --muted: #6E747C;
+    --eco: #58C08A;
+    --norm: #7FB3E8;
+    --boost: #E07B6A;
+    --custom: #C9A6E0;
+  }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI Variable Text", "Segoe UI", Inter, -apple-system, sans-serif;
+    background: #000; color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    display: grid; place-items: center; padding: 24px; font-size: 13.5px;
+  }
+  .win {
+    width: 1180px; height: 780px; background: var(--bg);
+    border: 1px solid var(--line-2); border-radius: 12px; overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 24px 80px rgba(0,0,0,.8);
+  }
+  .titlebar {
+    height: 44px; flex: none; display: flex; align-items: center; gap: 14px;
+    padding: 0 8px 0 18px; border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: .2px; }
+  .brand .dot { width: 15px; height: 15px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #F0F1F3, #6E747C 70%); }
+  .brand small { color: var(--muted); font-weight: 400; }
+  .tb-spacer { flex: 1; }
+  .tb-btn { width: 34px; height: 28px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; }
+  .tb-btn:hover { background: var(--surface-2); color: var(--ink); }
+  .wctl { display: flex; margin-left: 6px; }
+  .wctl span { width: 40px; height: 30px; display: grid; place-items: center; color: var(--muted); cursor: pointer; border-radius: 6px; }
+  .wctl span:hover { background: var(--surface-2); color: var(--ink); }
+  .wctl .close:hover { background: #E07B6A; color: #fff; }
+  .content { flex: 1; display: flex; flex-direction: column; padding: 30px 40px 0; min-height: 0; }
+  h1 { font-size: 26px; font-weight: 650; letter-spacing: -.3px; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 5px; }
+  /* режимы */
+  .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 26px; }
+  .mode {
+    position: relative; text-align: left;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 14px; padding: 18px 18px 16px; cursor: pointer;
+    transition: border-color .15s, background .15s, transform .15s;
+    overflow: hidden;
+  }
+  .mode::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--c); opacity: .55;
+  }
+  .mode:hover { border-color: var(--line-2); background: var(--surface-2); transform: translateY(-2px); }
+  .mode.on { border-color: var(--c); background: var(--surface-2); }
+  .mode.on::before { opacity: 1; }
+  .mode .m-name { font-size: 17px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  .mode .m-name .check {
+    width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--line-2);
+    margin-left: auto; display: grid; place-items: center; color: transparent; font-size: 11px;
+  }
+  .mode.on .m-name .check { background: var(--c); border-color: var(--c); color: #000; }
+  .mode .m-desc { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 9px; min-height: 54px; }
+  .mode .m-params { display: flex; gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .mode .m-params div { font-size: 11.5px; color: var(--muted); }
+  .mode .m-params b { display: block; color: var(--ink-2); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+  /* приборы */
+  .gauges { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 26px; }
+  .gauge { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .gauge .g-v { font-size: 30px; font-weight: 650; letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
+  .gauge .g-v small { font-size: 14px; color: var(--muted); font-weight: 400; margin-left: 3px; }
+  .gauge .g-l { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .gauge .g-bar { height: 3px; border-radius: 2px; background: var(--line-2); margin-top: 10px; overflow: hidden; }
+  .gauge .g-bar i { display: block; height: 100%; background: var(--norm); transition: width .5s; }
+  /* вторичное */
+  .secondary { margin: auto 0 0; border-top: 1px solid var(--line); }
+  .sec-row { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .sec-item {
+    display: flex; align-items: center; gap: 10px; padding: 13px 16px;
+    border-right: 1px solid var(--line); cursor: pointer; color: var(--ink-2); font-size: 12.5px;
+    transition: background .12s;
+  }
+  .sec-item:nth-child(3n) { border-right: 0; }
+  .sec-item:nth-child(n+4) { border-top: 1px solid var(--line); }
+  .sec-item:hover { background: var(--surface-2); color: var(--ink); }
+  .sec-item .s-ic { color: var(--muted); flex: none; }
+  .sec-item .s-val { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sec-item:hover .s-val { color: var(--ink-2); }
+  .toast {
+    position: absolute; left: 50%; bottom: 24px; transform: translate(-50%, 8px);
+    background: #101614; border: 1px solid #27402F; color: #BEE8CC;
+    border-radius: 10px; padding: 11px 16px; font-size: 12.5px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.6); opacity: 0; transition: all .25s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .win-wrap { position: relative; }
+</style>
+</head>
+<body>
+<div class="win-wrap">
+<div class="win">
+  <div class="titlebar">
+    <div class="brand"><span class="dot"></span>Gammadrilon <small>v3.0</small></div>
+    <div class="tb-spacer"></div>
+    <button class="tb-btn" title="Палитра команд (Ctrl+Alt+G)">⌘</button>
+    <button class="tb-btn" title="Журнал изменений">≡</button>
+    <button class="tb-btn" title="Тема">◐</button>
+    <div class="wctl"><span>—</span><span>▢</span><span class="close">✕</span></div>
+  </div>
+
+  <div class="content">
+    <h1>Выберите режим</h1>
+    <div class="sub">Одно решение меняет питание, частоты и нагрев. Откат — в один клик, история — в журнале.</div>
+
+    <div class="modes">
+      <button class="mode on" style="--c:var(--eco)" data-mode="ЭКО" data-freq="0.87" data-load="9">
+        <div class="m-name">ЭКО <span class="check">✓</span></div>
+        <div class="m-desc">Тише и холоднее. Частота ниже турбо-порога, вентиляторы почти не слышно.</div>
+        <div class="m-params">
+          <div><b>50%</b>макс</div><div><b>3.3 ГГц</b>потолок</div><div><b>~35 Вт</b>пакет</div>
+        </div>
+      </button>
+      <button class="mode" style="--c:var(--norm)" data-mode="ОБЫЧНЫЙ" data-freq="3.42" data-load="13">
+        <div class="m-name">Обычный <span class="check">✓</span></div>
+        <div class="m-desc">Штатное поведение Windows: турбо работает, ничего не ограничено.</div>
+        <div class="m-params">
+          <div><b>99%</b>макс</div><div><b>4.19 ГГц</b>потолок</div><div><b>~65 Вт</b>пакет</div>
+        </div>
+      </button>
+      <button class="mode" style="--c:var(--boost)" data-mode="БУСТ" data-freq="4.19" data-load="21">
+        <div class="m-name">Буст <span class="check">✓</span></div>
+        <div class="m-desc">Максимум для рендера и игр. Громче и горячее — это честный размен.</div>
+        <div class="m-params">
+          <div><b>100%</b>макс</div><div><b>4.45 ГГц</b>потолок</div><div><b>~88 Вт</b>пакет</div>
+        </div>
+      </button>
+      <button class="mode" style="--c:var(--custom)" data-mode="СВОЙ" data-freq="3.10" data-load="12">
+        <div class="m-name">Свой <span class="check">✓</span></div>
+        <div class="m-desc">Тонкая настройка: лимит, EPP и охлаждение — вручную.</div>
+        <div class="m-params">
+          <div><b>—</b>макс</div><div><b>—</b>потолок</div><div><b>—</b>пакет</div>
+        </div>
+      </button>
+    </div>
+
+    <div class="gauges">
+      <div class="gauge">
+        <div class="g-v" id="g-freq">0.87<small>ГГц</small></div>
+        <div class="g-l">частота CPU</div>
+        <div class="g-bar"><i id="g-freq-bar" style="width:22%"></i></div>
+      </div>
+      <div class="gauge">
+        <div class="g-v" id="g-load">9<small>%</small></div>
+        <div class="g-l">нагрузка CPU</div>
+        <div class="g-bar"><i id="g-load-bar" style="width:9%"></i></div>
+      </div>
+      <div class="gauge">
+        <div class="g-v">38<small>°C</small></div>
+        <div class="g-l">GPU · 300/366 Вт</div>
+        <div class="g-bar"><i style="width:60%; background:var(--eco)"></i></div>
+      </div>
+      <div class="gauge">
+        <div class="g-v">59<small>%</small></div>
+        <div class="g-l">память · 14.2 из 31.9 ГБ</div>
+        <div class="g-bar"><i style="width:59%; background:var(--boost)"></i></div>
+      </div>
+    </div>
+
+    <div class="secondary">
+      <div class="sec-row">
+        <div class="sec-item"><span class="s-ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="11" rx="2"/><circle cx="12" cy="12.5" r="3"/></svg></span>GPU — лимит и клоки<span class="s-val">300 Вт →</span></div>
+        <div class="sec-item"><span class="s-ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M4 12h16"/></svg></span>DNS — резолвер<span class="s-val">1.1.1.1 · 3.4 мс →</span></div>
+        <div class="sec-item"><span class="s-ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 5.5a4 4 0 0 0-5.6 5.1L4 15.5 8.5 20l4.9-4.9a4 4 0 0 0 5.1-5.6l-2.6 2.6-2.4-.6-.6-2.4z"/></svg></span>Память — очистка standby<span class="s-val">11.8 ГБ →</span></div>
+        <div class="sec-item"><span class="s-ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg></span>Гамма и яркость<span class="s-val">100% →</span></div>
+        <div class="sec-item"><span class="s-ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="18" cy="12" r="2"/></svg></span>Правила<span class="s-val">2 активных →</span></div>
+        <div class="sec-item"><span class="s-ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></span>Утилиты и таймер<span class="s-val">0.5 мс →</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast">Готово</div>
+</div>
+
+<script>
+  let tt;
+  function toast(text) {
+    const t = document.getElementById('toast');
+    t.textContent = text; t.classList.add('show');
+    clearTimeout(tt); tt = setTimeout(() => t.classList.remove('show'), 2300);
+  }
+  document.querySelectorAll('.mode').forEach(m => {
+    m.addEventListener('click', () => {
+      document.querySelectorAll('.mode').forEach(x => x.classList.remove('on'));
+      m.classList.add('on');
+      const mode = m.dataset.mode;
+      toast('Режим «' + mode + '» применён · откат в журнале');
+      const freq = parseFloat(m.dataset.freq), load = parseFloat(m.dataset.load);
+      animate(document.getElementById('g-freq'), freq, 'ГГц');
+      animate(document.getElementById('g-load'), load, '%');
+      document.getElementById('g-freq-bar').style.width = Math.min(100, freq / 4.45 * 100) + '%';
+      document.getElementById('g-load-bar').style.width = load + '%';
+    });
+  });
+  function animate(el, target, unit) {
+    const start = parseFloat(el.textContent) || 0;
+    const t0 = performance.now();
+    (function step(t) {
+      const k = Math.min(1, (t - t0) / 500);
+      const v = start + (target - start) * k;
+      el.innerHTML = (unit === 'ГГц' ? v.toFixed(2) : Math.round(v)) + '<small>' + unit + '</small>';
+      if (k < 1) requestAnimationFrame(step);
+    })(t0);
+  }
+  document.querySelectorAll('.sec-item').forEach(s => s.addEventListener('click', () => toast(s.textContent.trim().split('→')[0].trim() + ' — открывается раздел')));
+</script>
+</body>
+</html>

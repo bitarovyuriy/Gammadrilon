@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Gammadrilon — Вариант A «Пульт»</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0A0C0F;
+    --surface: #11151A;
+    --surface-2: #171C23;
+    --line: #1F262E;
+    --line-2: #2A333D;
+    --ink: #E8EDF2;
+    --ink-2: #AEB8C2;
+    --muted: #78838F;
+    --accent: #6FA8DC;
+    --accent-dim: #2A3F54;
+    --good: #6FCF97;
+    --warn: #E3B341;
+    --danger: #E5534B;
+  }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI Variable Text", "Segoe UI", Inter, -apple-system, sans-serif;
+    background: #06080A;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    font-size: 13.5px;
+  }
+  .win {
+    width: 1180px; height: 780px;
+    background: var(--bg);
+    border: 1px solid var(--line-2);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 24px 80px rgba(0,0,0,.6);
+  }
+  /* titlebar */
+  .titlebar {
+    height: 42px; flex: none;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 8px 0 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: .2px; }
+  .brand .dot {
+    width: 16px; height: 16px; border-radius: 5px;
+    background: linear-gradient(135deg, #6FA8DC, #4A7BA8);
+  }
+  .brand small { color: var(--muted); font-weight: 400; margin-left: 2px; }
+  .tb-spacer { flex: 1; }
+  .mode-chip {
+    display: flex; align-items: center; gap: 8px;
+    height: 28px; padding: 0 10px 0 12px;
+    border: 1px solid var(--line-2); border-radius: 7px;
+    background: var(--surface-2);
+    font-size: 12.5px; color: var(--ink-2);
+    cursor: pointer;
+  }
+  .mode-chip b { color: var(--good); font-weight: 600; }
+  .mode-chip .caret { color: var(--muted); font-size: 10px; }
+  .tb-btn {
+    width: 34px; height: 28px; border-radius: 7px; border: 1px solid transparent;
+    background: transparent; color: var(--muted); cursor: pointer;
+    display: grid; place-items: center; font-size: 14px;
+  }
+  .tb-btn:hover { background: var(--surface-2); color: var(--ink); }
+  .wctl { display: flex; margin-left: 6px; }
+  .wctl span {
+    width: 40px; height: 30px; display: grid; place-items: center;
+    color: var(--muted); cursor: pointer; border-radius: 6px;
+  }
+  .wctl span:hover { background: var(--surface-2); color: var(--ink); }
+  .wctl .close:hover { background: var(--danger); color: #fff; }
+  /* body: sidebar + main */
+  .body { flex: 1; display: flex; min-height: 0; }
+  .side {
+    width: 212px; flex: none;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    padding: 12px 10px;
+  }
+  .side .grp {
+    font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--muted); padding: 12px 10px 6px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    height: 36px; padding: 0 10px; border-radius: 8px;
+    color: var(--ink-2); cursor: pointer; user-select: none;
+    border: 1px solid transparent;
+  }
+  .nav-item svg { flex: none; opacity: .75; }
+  .nav-item:hover { background: var(--surface-2); color: var(--ink); }
+  .nav-item.active {
+    background: var(--accent-dim);
+    border-color: #35506A;
+    color: #EAF2FA;
+  }
+  .nav-item.active svg { opacity: 1; }
+  .nav-item .badge {
+    margin-left: auto; font-size: 11px; color: var(--muted);
+    background: var(--surface-2); border: 1px solid var(--line-2);
+    border-radius: 6px; padding: 1px 6px;
+  }
+  .nav-item.active .badge { color: #CFE1F2; border-color: #3A5876; background: #22364A; }
+  .side .foot { margin-top: auto; padding: 10px; border-top: 1px solid var(--line); }
+  .side .foot .row { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .side .foot .led { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 8px rgba(111,207,151,.7); }
+  /* main */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .page { flex: 1; overflow: auto; padding: 22px 26px 18px; display: none; }
+  .page.show { display: block; }
+  .page-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+  .page-head h1 { font-size: 20px; font-weight: 600; letter-spacing: .1px; }
+  .page-head .sub { color: var(--muted); font-size: 12.5px; }
+  .page-head .right { margin-left: auto; display: flex; gap: 8px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 2px 0 18px; max-width: 760px; line-height: 1.5; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .card h2 {
+    font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2 .info {
+    width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--line-2);
+    color: var(--muted); font-size: 10px; display: grid; place-items: center;
+    cursor: help; font-style: normal; text-transform: none; letter-spacing: 0;
+  }
+  .card h2 .state { margin-left: auto; text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--ink-2); font-weight: 400; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    height: 34px; padding: 0 16px; border-radius: 8px;
+    border: 1px solid var(--line-2); background: var(--surface-2);
+    color: var(--ink-2); cursor: pointer; font-size: 13px; font-weight: 500;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: border-color .12s, background .12s, color .12s;
+  }
+  .chip:hover { border-color: #3A4756; color: var(--ink); }
+  .chip.on { background: var(--accent-dim); border-color: #4C7396; color: #EAF2FA; }
+  .chip .k { font-size: 11px; color: var(--muted); }
+  .chip.on .k { color: #B8D2EA; }
+  .status-line { margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+  .status-line b { color: var(--ink-2); font-weight: 500; }
+  /* metrics */
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .metric {
+    background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 9px; padding: 12px 14px 11px;
+  }
+  .metric .v {
+    font-size: 26px; font-weight: 600; letter-spacing: -.2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric .v small { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 3px; }
+  .metric .l { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .metric.warm .v { color: var(--warn); }
+  .spark { margin-top: 12px; height: 44px; }
+  .spark svg { width: 100%; height: 100%; display: block; }
+  /* sliders */
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  .field .fl { display: flex; align-items: baseline; margin-bottom: 7px; }
+  .field .fl label { color: var(--ink-2); font-size: 12.5px; }
+  .field .fl .val {
+    margin-left: auto; font-variant-numeric: tabular-nums;
+    font-weight: 600; font-size: 13px;
+  }
+  .slider { position: relative; height: 22px; display: flex; align-items: center; }
+  .slider .track {
+    position: absolute; left: 0; right: 0; height: 4px; border-radius: 2px;
+    background: var(--line-2);
+  }
+  .slider .fill { position: absolute; left: 0; height: 4px; border-radius: 2px; background: var(--accent); }
+  .slider .thumb {
+    position: absolute; width: 16px; height: 16px; border-radius: 50%;
+    background: #EAF2FA; border: 1px solid #9DB8D2;
+    box-shadow: 0 1px 4px rgba(0,0,0,.5);
+  }
+  .slider .ends { position: absolute; left: 0; right: 0; top: 22px; display: flex; justify-content: space-between; color: var(--muted); font-size: 10.5px; }
+  .seg {
+    display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden;
+  }
+  .seg button {
+    height: 30px; padding: 0 14px; background: var(--surface-2); color: var(--ink-2);
+    border: 0; border-right: 1px solid var(--line-2); cursor: pointer; font-size: 12.5px;
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button.on { background: var(--accent-dim); color: #EAF2FA; }
+  .actions { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
+  .btn {
+    height: 34px; padding: 0 16px; border-radius: 8px; cursor: pointer;
+    font-size: 13px; font-weight: 500; border: 1px solid var(--line-2);
+    background: var(--surface-2); color: var(--ink-2);
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .btn:hover { color: var(--ink); border-color: #3A4756; }
+  .btn.primary { background: #35608A; border-color: #44739F; color: #F2F7FC; }
+  .btn.primary:hover { background: #3D6C99; }
+  .btn.danger { color: #D98A84; }
+  .btn.danger:hover { background: #2A1513; border-color: #5A2A24; color: #F0B0A8; }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .btn.ghost:hover { color: var(--ink); background: var(--surface-2); }
+  .actions .spacer { flex: 1; }
+  /* statusbar */
+  .statusbar {
+    height: 36px; flex: none;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+    display: flex; align-items: center; gap: 22px;
+    padding: 0 18px; font-size: 12px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .statusbar b { color: var(--ink-2); font-weight: 500; }
+  .statusbar .sep { width: 1px; height: 16px; background: var(--line-2); }
+  .statusbar .right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+  .statusbar .live { width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
+  .toast {
+    position: absolute; right: 18px; bottom: 50px;
+    background: #16241B; border: 1px solid #2C4A36; color: #BFE6CC;
+    border-radius: 9px; padding: 10px 14px; font-size: 12.5px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    opacity: 0; transform: translateY(6px); transition: all .25s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: none; }
+  .win-wrap { position: relative; }
+  /* grid util */
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 7px 18px; font-size: 12.5px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-variant-numeric: tabular-nums; color: var(--ink); text-align: right; }
+  .bar { height: 6px; border-radius: 3px; background: var(--line-2); overflow: hidden; margin-top: 10px; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  table.t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.t th {
+    text-align: left; color: var(--muted); font-weight: 500; font-size: 11px;
+    letter-spacing: .08em; text-transform: uppercase; padding: 6px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  table.t td { padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  table.t tr:hover td { background: var(--surface-2); }
+  table.t tr.sel td { background: var(--accent-dim); color: #EAF2FA; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line-2); color: var(--muted); }
+  .pill.ok { color: #BFE6CC; border-color: #2C4A36; background: #16241B; }
+  .pill.act { color: #CFE1F2; border-color: #3A5876; background: #22364A; }
+</style>
+</head>
+<body>
+<div class="win-wrap">
+<div class="win">
+  <!-- titlebar -->
+  <div class="titlebar">
+    <div class="brand"><span class="dot"></span>Gammadrilon <small>v3.0</small></div>
+    <div class="tb-spacer"></div>
+    <div class="mode-chip" title="Текущий режим системы"><span>Режим:</span> <b id="tb-mode">ЭКО</b> <span class="caret">▾</span></div>
+    <button class="tb-btn" title="Палитра команд (Ctrl+Alt+G)">⌘</button>
+    <button class="tb-btn" title="Журнал изменений">≡</button>
+    <button class="tb-btn" title="Тема">◐</button>
+    <div class="wctl"><span>—</span><span>▢</span><span class="close">✕</span></div>
+  </div>
+
+  <div class="body">
+    <!-- sidebar -->
+    <nav class="side">
+      <div class="grp">Питание</div>
+      <div class="nav-item active" data-page="cpu">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
+        Питание CPU
+      </div>
+      <div class="nav-item" data-page="gpu">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="11" rx="2"/><circle cx="12" cy="12.5" r="3"/></svg>
+        Питание GPU
+        <span class="badge">300 Вт</span>
+      </div>
+      <div class="grp">Система</div>
+      <div class="nav-item" data-page="gamma">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg>
+        Гамма
+      </div>
+      <div class="nav-item" data-page="rules">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="18" cy="12" r="2"/></svg>
+        Правила
+        <span class="badge">2</span>
+      </div>
+      <div class="nav-item" data-page="utils">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 5.5a4 4 0 0 0-5.6 5.1L4 15.5 8.5 20l4.9-4.9a4 4 0 0 0 5.1-5.6l-2.6 2.6-2.4-.6-.6-2.4z"/></svg>
+        Утилиты
+      </div>
+      <div class="nav-item" data-page="dns">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.2 2.5 13.8 0 16M12 4c-2.5 2.2-2.5 13.8 0 16"/></svg>
+        DNS
+      </div>
+      <div class="foot">
+        <div class="row"><span class="led"></span> Служба питания активна</div>
+      </div>
+    </nav>
+
+    <!-- main -->
+    <div class="main">
+      <!-- CPU -->
+      <section class="page show" id="page-cpu">
+        <div class="page-head">
+          <h1>Питание CPU</h1>
+          <span class="sub">Ryzen 5 5600 · схема «Высокая производительность»</span>
+          <div class="right"><button class="btn ghost">Вернуть как было</button></div>
+        </div>
+        <p class="hint">Профиль применяется к клону схемы питания — исходная не меняется, откат в один клик. Значения пишутся и в AC, и в DC.</p>
+
+        <div class="card">
+          <h2>Профиль <span class="state" id="cpu-state">применён: ЭКО · макс 50%</span></h2>
+          <div class="chips">
+            <button class="chip on" data-mode="ЭКО">ЭКО <span class="k">50% · 3.3 ГГц</span></button>
+            <button class="chip" data-mode="НОРМА">НОРМА <span class="k">99% · турбо</span></button>
+            <button class="chip" data-mode="БУСТ">БУСТ <span class="k">100% · макс</span></button>
+            <button class="chip" data-mode="СВОЙ">СВОЙ <span class="k">вручную</span></button>
+          </div>
+          <div class="status-line">Применено — <b>схема-клон Gammadrilon</b>. Откат: кнопка «Вернуть как было» или закрытие приложения.</div>
+        </div>
+
+        <div class="card">
+          <h2>Сейчас <span class="state">живые сенсоры</span></h2>
+          <div class="metrics">
+            <div class="metric"><div class="v" id="m-freq">0.87<small>ГГц</small></div><div class="l">частота</div></div>
+            <div class="metric"><div class="v" id="m-load">13<small>%</small></div><div class="l">нагрузка</div></div>
+            <div class="metric"><div class="v">50<small>%</small></div><div class="l">лимит производительности</div></div>
+            <div class="metric"><div class="v" style="color:var(--muted)">н/д</div><div class="l">температура</div></div>
+          </div>
+          <div class="spark">
+            <svg viewBox="0 0 600 44" preserveAspectRatio="none">
+              <path id="spark-path" d="" fill="none" stroke="#6FA8DC" stroke-width="1.6"/>
+              <path id="spark-fill" d="" fill="rgba(111,168,220,.12)" stroke="none"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="row2">
+          <div class="card" style="margin-bottom:0">
+            <h2>Точная настройка</h2>
+            <div class="field">
+              <div class="fl"><label>Макс. состояние</label><span class="val">50%</span></div>
+              <div class="slider"><div class="track"></div><div class="fill" style="width:50%"></div><div class="thumb" style="left:calc(50% - 8px)"></div></div>
+            </div>
+            <div class="field" style="margin-top:22px">
+              <div class="fl"><label>Приоритет энергосбережения (EPP)</label><span class="val">100</span></div>
+              <div class="slider"><div class="track"></div><div class="fill" style="width:100%"></div><div class="thumb" style="left:calc(100% - 16px)"></div></div>
+              <div class="ends"><span>0 · производительность</span><span>100 · экономия</span></div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:0">
+            <h2>Дополнительно</h2>
+            <div class="field" style="margin-bottom:14px">
+              <div class="fl"><label>Режим усиления</label></div>
+              <div class="seg"><button>Выкл</button><button class="on">Вкл</button><button>Агрессивный</button><button>Эффективный</button></div>
+            </div>
+            <div class="field">
+              <div class="fl"><label>Охлаждение</label></div>
+              <div class="seg"><button class="on">Активное</button><button>Пассивное</button></div>
+            </div>
+            <div class="actions"><button class="btn primary" id="apply-btn">Применить как «СВОЙ»</button></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- GPU -->
+      <section class="page" id="page-gpu">
+        <div class="page-head"><h1>Питание GPU</h1><span class="sub">RTX 2080 Ti · драйвер 617.14</span>
+          <div class="right"><button class="btn ghost">Вернуть как было</button></div>
+        </div>
+        <p class="hint">Лимит мощности меняется через nvidia-smi и требует прав администратора: первое применение покажет запрос UAC. Изменение подтверждается 12 секунд, иначе вернётся прежнее значение.</p>
+        <div class="card">
+          <h2>Профиль <span class="state">не применён</span></h2>
+          <div class="chips">
+            <button class="chip">Тихий <span class="k">150 Вт</span></button>
+            <button class="chip">Дефолт <span class="k">300 Вт</span></button>
+            <button class="chip">Игровой <span class="k">93% макс</span></button>
+            <button class="chip">Макс <span class="k">366 Вт</span></button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Сейчас <span class="state">nvidia-smi</span></h2>
+          <div class="metrics">
+            <div class="metric"><div class="v">38<small>°C</small></div><div class="l">температура</div></div>
+            <div class="metric"><div class="v">1350<small>МГц</small></div><div class="l">частота ядра</div></div>
+            <div class="metric"><div class="v">300<small>/366 Вт</small></div><div class="l">лимит мощности</div></div>
+            <div class="metric"><div class="v">5<small>%</small></div><div class="l">загрузка</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Лимит мощности <span class="state">номинал 300 Вт · диапазон 100–366 Вт</span></h2>
+          <div class="field">
+            <div class="fl"><label>Значение</label><span class="val">300 Вт</span></div>
+            <div class="slider"><div class="track"></div><div class="fill" style="width:60%"></div><div class="thumb" style="left:calc(60% - 8px)"></div></div>
+          </div>
+          <div class="actions"><button class="btn primary">Применить лимит</button><span class="spacer"></span><span class="pill">подтверждение 12 с</span></div>
+        </div>
+      </section>
+
+      <!-- Gamma -->
+      <section class="page" id="page-gamma">
+        <div class="page-head"><h1>Гамма</h1><span class="sub">яркость и контраст дисплея</span></div>
+        <p class="hint">Слайдер поверх градиентной полосы: тёплое → холодное. Ctrl+Alt+Z — аварийный сброс.</p>
+        <div class="card">
+          <h2>Яркость <span class="state">100%</span></h2>
+          <div class="slider" style="height:30px">
+            <div class="track" style="height:8px; background:linear-gradient(90deg,#B87A42,#5F87AC)"></div>
+            <div class="thumb" style="left:calc(25% - 8px); width:18px; height:18px"></div>
+          </div>
+          <div class="ends" style="position:static; margin-top:10px"><span>50</span><span>100</span><span>150</span><span>200</span><span>250</span></div>
+        </div>
+        <div class="card">
+          <h2>Пресеты</h2>
+          <div class="chips">
+            <button class="chip on">Обычный</button>
+            <button class="chip">Чтение</button>
+            <button class="chip">Кино</button>
+          </div>
+          <div class="actions">
+            <button class="btn">Сохранить как…</button>
+            <button class="btn">Сброс</button>
+            <button class="btn danger">Удалить</button>
+            <span class="spacer"></span>
+            <button class="btn">Кошачье зрение</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Rules -->
+      <section class="page" id="page-rules">
+        <div class="page-head"><h1>Правила</h1><span class="sub">триггер → условие → действие</span>
+          <div class="right"><button class="btn primary">Добавить…</button></div>
+        </div>
+        <p class="hint">Правило применяет профиль само и пишет об этом в журнал (источник — «правило»).</p>
+        <div class="card">
+          <table class="t">
+            <thead><tr><th>Триггер</th><th>Условие</th><th>Действие</th><th>Вкл</th></tr></thead>
+            <tbody>
+              <tr class="sel"><td>Запуск процесса</td><td>deadlock.exe</td><td>Профиль GPU: Игровой</td><td><span class="pill ok">да</span></td></tr>
+              <tr><td>Переход на батарею</td><td>—</td><td>Профиль CPU: ЭКО</td><td><span class="pill ok">да</span></td></tr>
+            </tbody>
+          </table>
+          <div class="actions">
+            <button class="btn">Изменить…</button>
+            <button class="btn danger">Удалить</button>
+            <span class="spacer"></span>
+            <button class="btn ghost">Журнал срабатываний</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Последние срабатывания</h2>
+          <div class="kv">
+            <span class="k">19:42 · запуск deadlock.exe</span><span class="v">лимит 343 Вт · откат при выходе</span>
+            <span class="k">17:10 · переход на батарею</span><span class="v">ЭКО · макс 50%</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Utils -->
+      <section class="page" id="page-utils">
+        <div class="page-head"><h1>Утилиты</h1><span class="sub">память, таймер, сеть</span></div>
+        <div class="row2">
+          <div class="card" style="margin-bottom:14px">
+            <h2>Очистка ОЗУ <span class="state">standby list и рабочие наборы</span></h2>
+            <div class="kv">
+              <span class="k">Всего</span><span class="v">31.92 ГБ</span>
+              <span class="k">Занято</span><span class="v">14.16 ГБ</span>
+              <span class="k">Standby</span><span class="v">11.75 ГБ</span>
+              <span class="k">Свободно</span><span class="v">6.02 ГБ</span>
+            </div>
+            <div class="bar"><i style="width:44%"></i></div>
+            <div class="actions"><button class="btn primary">Очистить standby</button><button class="btn">Сжать наборы…</button></div>
+            <p class="hint" style="margin:12px 0 0">Очищает кэш файлов, который Windows держит намеренно. Может убрать микрофризы; в остальном — просадка, кэш наполнится заново.</p>
+          </div>
+          <div class="card" style="margin-bottom:14px">
+            <h2>Точность таймера <span class="state">сейчас: 0.5 мс</span></h2>
+            <div class="kv">
+              <span class="k">Текущее значение</span><span class="v">0.5 мс</span>
+              <span class="k">Системное по умолчанию</span><span class="v">15.625 мс</span>
+            </div>
+            <div class="actions"><button class="btn">Запросить 0.5 мс</button><span class="pill act">действует, пока приложение запущено</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Сетевой чек <span class="state">измерение, не оптимизатор пинга</span></h2>
+          <div class="kv">
+            <span class="k">Повторные сегменты TCP</span><span class="v">0.42%</span>
+            <span class="k">Джиттер</span><span class="v">1.8 мс</span>
+            <span class="k">Bufferbloat</span><span class="v">+4 мс под нагрузкой</span>
+          </div>
+          <div class="actions"><button class="btn">Замерить заново</button></div>
+        </div>
+      </section>
+
+      <!-- DNS -->
+      <section class="page" id="page-dns">
+        <div class="page-head"><h1>DNS</h1><span class="sub">Ethernet · 1.1.1.1, 77.88.8.1 (от DHCP)</span>
+          <div class="right"><button class="btn ghost">Вернуть как было</button></div>
+        </div>
+        <p class="hint">Латентность меряется реальными DNS-запросами. Смена DNS может ухудшить резолв в вашей сети — сравнивайте до и после.</p>
+        <div class="card">
+          <table class="t">
+            <thead><tr><th>Резолвер</th><th>Сервер</th><th>Медиана</th><th>Разброс / потери</th></tr></thead>
+            <tbody>
+              <tr class="sel"><td>Cloudflare</td><td>1.1.1.1, 1.0.0.1</td><td>3.4 мс</td><td>±0.6 · 0%</td></tr>
+              <tr><td>Google</td><td>8.8.8.8, 8.8.4.4</td><td>3.4 мс</td><td>±0.9 · 0%</td></tr>
+              <tr><td>Яндекс</td><td>77.88.8.8, 77.88.8.1</td><td>5.4 мс</td><td>±1.2 · 0%</td></tr>
+              <tr><td>Quad9</td><td>9.9.9.9, 149.112.112.112</td><td>40.5 мс</td><td>±3.1 · 0%</td></tr>
+              <tr><td>AdGuard</td><td>94.140.14.14, 94.140.15.15</td><td>42.5 мс</td><td>±2.8 · 0%</td></tr>
+            </tbody>
+          </table>
+          <div class="actions">
+            <button class="btn">Замерить латентность</button>
+            <button class="btn primary">Применить выбранный</button>
+            <span class="spacer"></span>
+            <label style="color:var(--ink-2); font-size:12.5px; display:flex; gap:8px; align-items:center">
+              <input type="checkbox" checked> Шифровать по HTTPS (DoH)
+            </label>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- statusbar -->
+  <div class="statusbar">
+    <span><span class="live"></span></span>
+    <span>CPU <b id="sb-freq">0.87 ГГц</b> · <b id="sb-load">13%</b></span>
+    <span class="sep"></span>
+    <span>GPU <b>38 °C</b> · <b>300/366 Вт</b></span>
+    <span class="sep"></span>
+    <span>RAM <b>59%</b></span>
+    <span class="sep"></span>
+    <span>DNS <b>1.1.1.1</b> · 3.4 мс</span>
+    <div class="right"><span>Ctrl+Alt+G — палитра</span><span>Ctrl+Alt+Z — сброс</span></div>
+  </div>
+</div>
+<div class="toast" id="toast">Профиль «ЭКО» применён</div>
+</div>
+
+<script>
+  // навигация
+  document.querySelectorAll('.nav-item').forEach(n => {
+    n.addEventListener('click', () => {
+      document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
+      n.classList.add('active');
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('show'));
+      document.getElementById('page-' + n.dataset.page).classList.add('show');
+    });
+  });
+
+  // профили CPU
+  const cpuState = document.getElementById('cpu-state');
+  const tbMode = document.getElementById('tb-mode');
+  document.querySelectorAll('#page-cpu .chip').forEach(c => {
+    c.addEventListener('click', () => {
+      document.querySelectorAll('#page-cpu .chip').forEach(x => x.classList.remove('on'));
+      c.classList.add('on');
+      const mode = c.dataset.mode;
+      tbMode.textContent = mode;
+      cpuState.textContent = mode === 'СВОЙ' ? 'настроен вручную' : 'применён: ' + mode;
+      toast('Профиль «' + mode + '» применён');
+      // живая реакция частоты
+      const target = mode === 'ЭКО' ? 0.87 : mode === 'НОРМА' ? 3.42 : mode === 'БУСТ' ? 4.19 : 3.10;
+      animateFreq(target);
+    });
+  });
+
+  // метрики: небольшая живая анимация
+  function animateFreq(target) {
+    const el = document.getElementById('m-freq');
+    const sb = document.getElementById('sb-freq');
+    const start = parseFloat(el.textContent) || 3.42;
+    const t0 = performance.now();
+    function step(t) {
+      const k = Math.min(1, (t - t0) / 600);
+      const v = (start + (target - start) * k).toFixed(2);
+      el.innerHTML = v + '<small>ГГц</small>';
+      sb.textContent = v + ' ГГц';
+      if (k < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+  let load = 13;
+  setInterval(() => {
+    load = Math.max(6, Math.min(28, load + (Math.random() * 6 - 3)));
+    document.getElementById('m-load').innerHTML = Math.round(load) + '<small>%</small>';
+    document.getElementById('sb-load').textContent = Math.round(load) + '%';
+  }, 2000);
+
+  // спарклайн
+  (function () {
+    const pts = [];
+    let v = 12;
+    for (let i = 0; i < 60; i++) {
+      v = Math.max(6, Math.min(26, v + (Math.random() * 7 - 3.5)));
+      pts.push(v);
+    }
+    const w = 600, h = 44, max = 30;
+    const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${(i / (pts.length - 1) * w).toFixed(1)},${(h - p / max * h).toFixed(1)}`).join(' ');
+    document.getElementById('spark-path').setAttribute('d', d);
+    document.getElementById('spark-fill').setAttribute('d', d + ` L${w},${h} L0,${h} Z`);
+  })();
+
+  // тост
+  let toastTimer;
+  function toast(text) {
+    const t = document.getElementById('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2400);
+  }
+  document.getElementById('apply-btn').addEventListener('click', () => toast('Применено как «СВОЙ»: макс 50%, EPP 100'));
+  // переключатели сегментов
+  document.querySelectorAll('.seg').forEach(seg => {
+    seg.querySelectorAll('button').forEach(b => {
+      b.addEventListener('click', () => {
+        seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+        b.classList.add('on');
+      });
+    });
+  });
+  // выбор строки в таблицах
+  document.querySelectorAll('table.t').forEach(tb => {
+    tb.querySelectorAll('tbody tr').forEach(tr => {
+      tr.addEventListener('click', () => {
+        tb.querySelectorAll('tbody tr').forEach(x => x.classList.remove('sel'));
+        tr.classList.add('sel');
+      });
+    });
+  });
+</script>
+</body>
+</html>

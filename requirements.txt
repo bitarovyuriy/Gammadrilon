@@ -1,7 +1,3 @@
 PyQt5
-<<<<<<< HEAD
 keyboard
-=======
-keyboard
->>>>>>> 9fe92771d2852c4539b596a99e96fbdecd05b027
 

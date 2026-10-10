@@ -1,0 +1,400 @@
+# -*- coding: utf-8 -*-
+"""Вкладка «Утилиты» (ТЗ 6.1): очистка standby list и рабочих наборов.
+
+Честные подписи: не «ускорить ПК», а «очистить standby list и рабочие наборы».
+Таблица памяти Total / In Use / Modified / Standby / Free — до и после, с дельтой.
+Действия требуют прав администратора → выполняются elevated-хелпером.
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+# --- PyQt5 и не-ASCII путь к venv (exit 127 без traceback) ---
+try:
+    import sysconfig as _sysconfig
+
+    _site = _sysconfig.get_paths().get("purelib", "")
+    _qt_plugins = os.path.join(_site, "PyQt5", "Qt5", "plugins")
+    if _site and not _site.isascii() and os.path.isdir(_qt_plugins):
+        os.environ.setdefault("QT_PLUGIN_PATH", _qt_plugins)
+except Exception:  # noqa: BLE001
+    pass
+
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import gd_journal  # noqa: E402
+import gd_memory  # noqa: E402
+import gd_theme as th
+import gd_i18n as i18n  # noqa: E402
+from gd_power_ui import make_card  # noqa: E402
+
+ROWS = ("Total", "In Use", "Modified", "Standby", "Free")
+
+
+def human(v):
+    if v is None:
+        return i18n.t("н/д")
+    return i18n.t("{v0:.2f} ГБ", v0=v / 1024 ** 3)
+
+
+class ProcessPicker(QDialog):
+    """Выбор процессов для сжатия рабочих наборов."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(i18n.t("Сжать рабочие наборы"))
+        self.setStyleSheet(th.STYLESHEET)
+        self.resize(480, 520)
+
+        root = QVBoxLayout(self)
+        hint = QLabel(
+            i18n.t("Отметьте процессы. Их рабочие наборы будут сжаты: Windows выгрузит страницы, к которым давно не обращались. Для чужих процессов нужны права администратора.")
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.NoSelection)
+        for p in gd_memory.list_processes(40):
+            it = QListWidgetItem(i18n.t("{v0}  ·  pid {v1}  ·  {v2:.0f} МБ", v0=p['name'], v1=p['pid'], v2=p['rss'] / 1024 ** 2))
+            it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            it.setCheckState(Qt.Unchecked)
+            it.setData(Qt.UserRole, p["pid"])
+            self.list.addItem(it)
+        root.addWidget(self.list, 1)
+
+        row = QHBoxLayout()
+        btn_all = QPushButton(i18n.t("Отметить все"))
+        btn_all.setObjectName("Segment")
+        btn_all.clicked.connect(lambda: self._set_all(Qt.Checked))
+        btn_none = QPushButton(i18n.t("Снять все"))
+        btn_none.setObjectName("Segment")
+        btn_none.clicked.connect(lambda: self._set_all(Qt.Unchecked))
+        row.addWidget(btn_all)
+        row.addWidget(btn_none)
+        row.addStretch(1)
+        root.addLayout(row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText(i18n.t("Сжать выбранные"))
+        buttons.button(QDialogButtonBox.Cancel).setText(i18n.t("Отмена"))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def _set_all(self, state):
+        for i in range(self.list.count()):
+            self.list.item(i).setCheckState(state)
+
+    def selected_pids(self) -> list[int]:
+        out = []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.checkState() == Qt.Checked:
+                out.append(it.data(Qt.UserRole))
+        return out
+
+
+class UtilsWidget(QWidget):
+    def __init__(self, standalone: bool = False, host=None):
+        super().__init__()
+        self.setObjectName("PanelRoot")
+        self._standalone = standalone
+        self.host = host
+        self.setStyleSheet(th.STYLESHEET)
+
+        self.client = None
+        self._sensors = None
+        self._before = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(14)
+
+        head = QHBoxLayout()
+        title = QLabel(i18n.t("Утилиты"))
+        title.setObjectName("Title")
+        title.setVisible(self._standalone)
+        head.addWidget(title)
+        head.addStretch(1)
+        self.lbl_admin = QLabel("")
+        self.lbl_admin.setObjectName("Hint")
+        head.addWidget(self.lbl_admin)
+        root.addLayout(head)
+
+        # --- память ---
+        card, lay = make_card(i18n.t("ОЧИСТКА ОЗУ — STANDBY LIST И РАБОЧИЕ НАБОРЫ"))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(4)
+        self.value_labels = {}
+        self.delta_labels = {}
+        for i, key in enumerate(ROWS):
+            name = QLabel(key)
+            name.setObjectName("Hint")
+            val = QLabel("—")
+            val.setObjectName("Value")
+            delta = QLabel("")
+            delta.setObjectName("Hint")
+            grid.addWidget(name, i, 0)
+            grid.addWidget(val, i, 1)
+            grid.addWidget(delta, i, 2)
+            self.value_labels[key] = val
+            self.delta_labels[key] = delta
+        grid.setColumnStretch(3, 1)
+        lay.addLayout(grid)
+
+        brow = QHBoxLayout()
+        self.btn_purge = QPushButton(i18n.t("Очистить standby list"))
+        self.btn_purge.setObjectName("PrimaryButton")
+        self.btn_purge.clicked.connect(self._purge)
+        self.btn_ws = QPushButton(i18n.t("Сжать рабочие наборы…"))
+        self.btn_ws.setObjectName("Segment")
+        self.btn_ws.clicked.connect(self._pick_and_empty)
+        brow.addWidget(self.btn_purge)
+        brow.addWidget(self.btn_ws)
+        brow.addStretch(1)
+        lay.addLayout(brow)
+
+        # подпись обязательна и видима (ТЗ 6.1) — не только в тултипе
+        sign = QLabel(gd_memory.SIGNATURE)
+        sign.setObjectName("Hint")
+        sign.setWordWrap(True)
+        lay.addWidget(sign)
+        root.addWidget(card)
+
+        # --- автоочистка ---
+        card2, lay2 = make_card(i18n.t("АВТООЧИСТКА"))
+        arow = QHBoxLayout()
+        self.chk_auto = QCheckBox(i18n.t("Включить автоочистку"))
+        self.chk_auto.stateChanged.connect(self._save_auto)
+        arow.addWidget(self.chk_auto)
+        arow.addStretch(1)
+        lay2.addLayout(arow)
+
+        srow = QHBoxLayout()
+        srow.setSpacing(8)
+        srow.addWidget(QLabel(i18n.t("Standby больше")))
+        self.sp_standby = QSpinBox()
+        self.sp_standby.setRange(64, 32768)
+        self.sp_standby.setSuffix(i18n.t(" МБ"))
+        self.sp_standby.setValue(gd_memory.AUTO_DEFAULTS["standby_mb"])
+        self.sp_standby.valueChanged.connect(self._save_auto)
+        srow.addWidget(self.sp_standby)
+        srow.addWidget(QLabel(i18n.t("и свободно меньше")))
+        self.sp_free = QSpinBox()
+        self.sp_free.setRange(64, 32768)
+        self.sp_free.setSuffix(i18n.t(" МБ"))
+        self.sp_free.setValue(gd_memory.AUTO_DEFAULTS["free_mb"])
+        self.sp_free.valueChanged.connect(self._save_auto)
+        srow.addWidget(self.sp_free)
+        srow.addStretch(1)
+        lay2.addLayout(srow)
+        auto_note = QLabel(
+            i18n.t("Как в ISLC: если standby больше первого порога И свободной памяти меньше второго — очищать автоматически.")
+        )
+        auto_note.setObjectName("Hint")
+        auto_note.setWordWrap(True)
+        lay2.addWidget(auto_note)
+        self.lbl_auto = QLabel(i18n.t("Автоочистка выключена."))
+        self.lbl_auto.setObjectName("Hint")
+        lay2.addWidget(self.lbl_auto)
+        root.addWidget(card2)
+
+        # --- прочие утилиты (ТЗ 6.3) ---
+        try:
+            from gd_extra_ui import ExtraPanel
+
+            self.extra = ExtraPanel(host=host)
+            root.addWidget(self.extra)
+        except Exception as exc:  # noqa: BLE001
+            self.extra = None
+            err = QLabel(i18n.t("Панель прочих утилит не загрузилась: {v0}", v0=exc))
+            err.setObjectName("Hint")
+            err.setWordWrap(True)
+            root.addWidget(err)
+
+        root.addStretch(1)
+        self.status = QLabel("")
+        self.status.setObjectName("Hint")
+        self.status.setWordWrap(True)
+        root.addWidget(self.status)
+
+        self._load_auto()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        if standalone:
+            self.activate()
+
+    # -- жизненный цикл вкладки -------------------------------------------
+    def activate(self):
+        self._refresh()
+        self._timer.start(2000)
+        extra = getattr(self, "extra", None)
+        if extra is not None:
+            extra.refresh()
+
+    def deactivate(self):
+        self._timer.stop()
+
+    # -- данные ------------------------------------------------------------
+    def _ensure(self):
+        if self.client is None:
+            import gd_gpu
+
+            self.client = gd_gpu.GpuClient()
+        if self._sensors is None:
+            self._sensors = gd_memory.MemorySensors()
+        return self.client
+
+    def _refresh(self):
+        self._ensure()
+        snap = self._sensors.sample()
+        for key in ROWS:
+            self.value_labels[key].setText(human(snap.get(key)))
+        self._auto_check(snap)
+        self.lbl_admin.setText(i18n.t("нужны права администратора — действия идут через хелпер"))
+
+    def _tick(self):
+        self._refresh()
+
+    def _auto_check(self, snap):
+        if not self.chk_auto.isChecked():
+            self.lbl_auto.setText(i18n.t("Автоочистка выключена."))
+            return
+        standby_mb = (snap.get("Standby") or 0) / 1024 ** 2
+        free_mb = (snap.get("Free") or 0) / 1024 ** 2
+        need = standby_mb > self.sp_standby.value() and free_mb < self.sp_free.value()
+        self.lbl_auto.setText(
+            i18n.t("Standby {v0:.0f} МБ, свободно {v1:.0f} МБ — ", v0=standby_mb, v1=free_mb)
+            + (i18n.t("условие выполнено, очищаю.") if need else i18n.t("условие не выполнено."))
+        )
+        if need:
+            self._purge(auto=True)
+
+    # -- действия ----------------------------------------------------------
+    def _purge(self, auto: bool = False):
+        self._ensure()
+        before = self._sensors.sample()
+        resp = self.client.call({"cmd": "purge_standby"})
+        if not resp.get("ok"):
+            self._set_status(i18n.t("Очистка не выполнена: {v0}", v0=resp.get('error')), ok=False)
+            gd_journal.record("memory_purge", "standby list", None, None,
+                              why=i18n.t("очистка ОЗУ"), source=i18n.t("утилиты"), reversible=False)
+            return
+        data = resp.get("data") or {}
+        b = data.get("before") or before
+        a = data.get("after") or self._sensors.sample()
+        self._show_delta(b, a)
+        freed = ((a.get("Free") or 0) - (b.get("Free") or 0)) / 1024 ** 2
+        who = i18n.t("правило автоочистки") if auto else i18n.t("вручную")
+        self._set_status(
+            i18n.t("Standby list очищен ({v0}). Свободная память выросла на {v1:+.0f} МБ. Кэш будет наполняться заново — это нормально.", v0=who, v1=freed),
+            ok=True,
+        )
+        gd_journal.record("memory_purge", "standby list",
+                          i18n.t("свободно {v0}", v0=human(b.get('Free'))), i18n.t("свободно {v0}", v0=human(a.get('Free'))),
+                          why=i18n.t("очистка standby list"), source=i18n.t("правило") if auto else i18n.t("утилиты"),
+                          reversible=False)
+        if not auto:
+            import gd_toast
+            import gd_i18n as i18n
+
+            gd_toast.show_toast(i18n.t("toast.purge", mb=freed), "ok")
+
+    def _pick_and_empty(self):
+        dlg = ProcessPicker(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        pids = dlg.selected_pids()
+        if not pids:
+            self._set_status(i18n.t("Процессы не выбраны."), ok=False)
+            return
+        self._ensure()
+        before = self._sensors.sample()
+        resp = self.client.call({"cmd": "empty_working_sets", "pids": pids})
+        if not resp.get("ok"):
+            self._set_status(i18n.t("Сжатие не выполнено: {v0}", v0=resp.get('error')), ok=False)
+            return
+        data = resp.get("data") or {}
+        b = data.get("before") or before
+        a = data.get("after") or self._sensors.sample()
+        self._show_delta(b, a)
+        self._set_status(
+            i18n.t("Рабочие наборы сжаты: процессов {v0} из {v1}. Вернётся к обычному объёму по мере работы программ.", v0=data.get('count'), v1=len(pids)),
+            ok=True,
+        )
+        gd_journal.record("memory_working_sets", i18n.t("процессов: {v0}", v0=data.get('count')),
+                          human(b.get("In Use")), human(a.get("In Use")),
+                          why=i18n.t("сжатие рабочих наборов"), source=i18n.t("утилиты"), reversible=False)
+        import gd_toast
+        import gd_i18n as i18n
+
+        gd_toast.show_toast(i18n.t("toast.working_sets", count=data.get("count")), "ok")
+
+    def _show_delta(self, before, after):
+        for key in ROWS:
+            bv, av = before.get(key), after.get(key)
+            self.value_labels[key].setText(human(av))
+            if bv is None or av is None:
+                self.delta_labels[key].setText("")
+            else:
+                d = (av - bv) / 1024 ** 2
+                self.delta_labels[key].setText(i18n.t("{v0:+.0f} МБ", v0=d))
+
+    def _set_status(self, text, ok=True):
+        self.status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
+        self.status.setText(text)
+
+    # -- автоочистка: настройки ---------------------------------------------
+    def _auto_path(self):
+        import gd_rules
+
+        return gd_rules._base_dir() / "autoclean.json"
+
+    def _load_auto(self):
+        import json
+
+        try:
+            data = json.loads(self._auto_path().read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = dict(gd_memory.AUTO_DEFAULTS, enabled=False)
+        self.chk_auto.setChecked(bool(data.get("enabled")))
+        self.sp_standby.setValue(int(data.get("standby_mb", 1024)))
+        self.sp_free.setValue(int(data.get("free_mb", 1024)))
+
+    def _save_auto(self):
+        import json
+
+        data = {
+            "enabled": self.chk_auto.isChecked(),
+            "standby_mb": self.sp_standby.value(),
+            "free_mb": self.sp_free.value(),
+        }
+        try:
+            p = self._auto_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass

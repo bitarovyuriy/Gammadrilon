@@ -1,0 +1,220 @@
+# -*- coding: utf-8 -*-
+"""Палитра команд (ТЗ 5.2): Ctrl+Alt+G, нечёткий поиск, `>` — быстрый параметр.
+
+«Команда без параметра — вежливая просьба. Команда с параметром — приказ.»
+Ввод, начинающийся с `>`, трактуется как быстрый параметр: `>200` — лимит GPU 200 Вт,
+`>50` — предел частоты CPU 50 %.
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+# --- PyQt5 и не-ASCII путь к venv (exit 127 без traceback) ---
+try:
+    import sysconfig as _sysconfig
+
+    _site = _sysconfig.get_paths().get("purelib", "")
+    _qt_plugins = os.path.join(_site, "PyQt5", "Qt5", "plugins")
+    if _site and not _site.isascii() and os.path.isdir(_qt_plugins):
+        os.environ.setdefault("QT_PLUGIN_PATH", _qt_plugins)
+except Exception:  # noqa: BLE001
+    pass
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (
+    QDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QVBoxLayout,
+)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import gd_theme as th  # noqa: E402
+import gd_i18n as i18n  # noqa: E402
+
+
+def fuzzy(query: str, text: str) -> tuple[bool, int]:
+    """Нечёткое совпадение по подпоследовательности. (подходит, вес)."""
+    q, t = query.lower(), text.lower()
+    if not q:
+        return True, 0
+    i = 0
+    score = 0
+    run = 0
+    for ch in t:
+        if i < len(q) and ch == q[i]:
+            i += 1
+            run += 1
+            score += run
+        else:
+            run = 0
+    return i == len(q), score
+
+
+class CommandPalette(QDialog):
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self.mw = main_window
+        self.setWindowTitle(i18n.t("Палитра команд"))
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint | Qt.Popup)
+        self.resize(560, 380)
+        self.setStyleSheet(th.STYLESHEET)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        self.input = QLineEdit()
+        self.input.setObjectName("PaletteInput")
+        self.input.setPlaceholderText(i18n.t("Что сделать?  ·  >200 — быстрый параметр  ·  Esc — отмена"))
+        self.input.textChanged.connect(self._refilter)
+        self.input.returnPressed.connect(self._run_current)
+        root.addWidget(self.input)
+
+        self.list = QListWidget()
+        self.list.setObjectName("PaletteList")
+        self.list.itemActivated.connect(lambda _: self._run_current())
+        self.list.itemClicked.connect(lambda _: self._run_current())
+        root.addWidget(self.list, 1)
+
+        self.hint = QLabel(i18n.t("Enter — выполнить  ·  ↑↓ — выбор  ·  Esc — закрыть"))
+        self.hint.setObjectName("Hint")
+        root.addWidget(self.hint)
+
+        self._commands = self._collect()
+        self._refilter("")
+
+    # -- сборка команд -----------------------------------------------------
+    def _collect(self):
+        mw = self.mw
+        cmds = [
+            (i18n.t("pal.cpu_eco"), "cpu power eco энергосбережение тихий профиль",
+             lambda: mw.on_cpu_profile("eco")),
+            (i18n.t("pal.cpu_normal"), "cpu power normal обычный базовый профиль",
+             lambda: mw.on_cpu_profile("normal")),
+            (i18n.t("pal.cpu_boost"), "cpu power boost максимум производительность профиль",
+             lambda: mw.on_cpu_profile("boost")),
+            (i18n.t("pal.cpu_restore"), "cpu power restore откат сброс схема",
+             lambda: mw.on_cpu_profile("restore")),
+            (i18n.t("pal.gpu_quiet"), "gpu quiet тихий 150 лимит профиль",
+             lambda: mw.on_gpu_profile("quiet")),
+            (i18n.t("pal.gpu_default"), "gpu default дефолт номинал профиль",
+             lambda: mw.on_gpu_profile("default")),
+            (i18n.t("pal.gpu_game"), "gpu game игровой профиль",
+             lambda: mw.on_gpu_profile("game")),
+            (i18n.t("pal.gpu_max"), "gpu max максимум профиль",
+             lambda: mw.on_gpu_profile("max")),
+            (i18n.t("pal.gpu_restore"), "gpu restore откат лимит сброс",
+             lambda: mw.on_gpu_profile("restore")),
+            (i18n.t("pal.open_gamma"), "open tab gamma гамма цвет окно",
+             lambda: self._open_tab(0)),
+            (i18n.t("pal.open_cpu"), "open tab cpu питание процессор",
+             lambda: self._open_tab(1)),
+            (i18n.t("pal.open_gpu"), "open tab gpu питание видеокарта",
+             lambda: self._open_tab(2)),
+            (i18n.t("pal.open_rules"), "open tab rules правила",
+             lambda: self._open_tab(3)),
+            (i18n.t("pal.open_utils"), "open tab utils утилиты очистка память",
+             lambda: self._open_tab(4)),
+            (i18n.t("pal.open_dns"), "open tab dns резолвер латентность",
+             lambda: self._open_tab(5)),
+            (i18n.t("pal.theme"), "theme тема светлая тёмная оформление",
+             lambda: self.mw.toggle_theme()),
+            (i18n.t("pal.language"), "language язык english русский",
+             lambda: self.mw.toggle_language()),
+            (i18n.t("pal.onboarding"), "onboarding первый запуск знакомство",
+             lambda: self.mw.show_first_run()),
+            (i18n.t("pal.purge"), "memory standby ram память очистка озу кэш",
+             lambda: self.mw._utils_page._purge()),
+            (i18n.t("pal.journal"), "journal log журнал история что произошло",
+             lambda: mw.open_journal()),
+            (i18n.t("pal.reset_gamma"), "reset gamma сброс гамма",
+             lambda: mw.reset_all()),
+            (i18n.t("pal.quit"), "quit exit выход закрыть",
+             lambda: mw.quit_app()),
+        ]
+        return cmds
+
+    def _param_commands(self, value: int):
+        mw = self.mw
+        cmds = [
+            (i18n.t("pal.gpu_limit", value=value), f"gpu limit power watts {value}",
+             lambda: self._set_gpu_watts(value)),
+        ]
+        if value <= 100:
+            cmds.append(
+                (i18n.t("pal.cpu_limit", value=value), f"cpu limit percent {value}",
+                 lambda: self._set_cpu_percent(value))
+            )
+        return cmds
+
+    # -- параметр `>` ------------------------------------------------------
+    def _is_param(self, text: str):
+        t = text.strip()
+        if not t.startswith(">"):
+            return None
+        digits = t[1:].strip().split(" ")[0]
+        if not digits.isdigit():
+            return None
+        return int(digits)
+
+    def _set_gpu_watts(self, watts: int):
+        g = self.mw._gpu_page
+        lo = int(g.sl_pl.minimum())
+        hi = int(g.sl_pl.maximum())
+        value = max(lo, min(hi, watts))
+        g.sl_pl.setValue(value)
+        g._source = "палитра команд"
+        g._apply({"pl": value})
+
+    def _set_cpu_percent(self, pct: int):
+        p = self.mw._power_page
+        value = max(5, min(100, pct))
+        try:
+            p.sl_max.setValue(value)
+        except AttributeError:
+            pass
+        p.apply_custom(source="палитра команд")
+
+    def _open_tab(self, index: int):
+        self.mw.tabs.setCurrentIndex(index)
+        self.mw.show_window()
+
+    # -- фильтр ------------------------------------------------------------
+    def _refilter(self, text):
+        self.list.clear()
+        param = self._is_param(text)
+        if param is not None:
+            entries = self._param_commands(param)
+            self.hint.setText(i18n.t("Быстрый параметр: {v0} — Enter выполнить", v0=param))
+        else:
+            q = text.strip()
+            scored = []
+            for title, keywords, action in self._commands:
+                ok, score = fuzzy(q, title + " " + keywords)
+                if ok:
+                    scored.append((score, title, action))
+            scored.sort(key=lambda x: -x[0])
+            entries = [(t, "", a) for _, t, a in scored[:40]]
+            self.hint.setText("Enter — выполнить  ·  >число — быстрый параметр")
+        for title, _kw, action in entries:
+            it = QListWidgetItem(title)
+            it.setData(Qt.UserRole, action)
+            self.list.addItem(it)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _run_current(self):
+        it = self.list.currentItem()
+        if it is None:
+            return
+        action = it.data(Qt.UserRole)
+        self.accept()
+        if callable(action):
+            action()

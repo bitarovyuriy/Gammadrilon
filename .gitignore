@@ -16,6 +16,8 @@ out/
 
 # PyInstaller
 *.spec
+!Gammadrilon.spec
+!Gammadrilon-onefile.spec
 
 # Logs
 *.log

@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Gammadrilon — Вариант B «Обзор»</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0C0E11;
+    --card: #14171C;
+    --card-2: #1A1E24;
+    --line: #232A32;
+    --line-2: #2E3742;
+    --ink: #ECF0F4;
+    --ink-2: #A9B4BF;
+    --muted: #74808C;
+    --amber: #E0A458;
+    --amber-dim: #3A2C1A;
+    --amber-line: #6A4E2A;
+    --good: #7BD3A0;
+    --warn: #E3B341;
+    --danger: #E57368;
+  }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI Variable Text", "Segoe UI", Inter, -apple-system, sans-serif;
+    background: #07090B; color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    display: grid; place-items: center; padding: 24px; font-size: 13.5px;
+  }
+  .win {
+    width: 1180px; height: 780px; background: var(--bg);
+    border: 1px solid var(--line-2); border-radius: 12px; overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 24px 80px rgba(0,0,0,.6);
+  }
+  /* titlebar */
+  .titlebar {
+    height: 44px; flex: none; display: flex; align-items: center; gap: 14px;
+    padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); background: var(--bg);
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; }
+  .brand .dot { width: 16px; height: 16px; border-radius: 5px; background: linear-gradient(135deg, #E0A458, #B07A33); }
+  .brand small { color: var(--muted); font-weight: 400; }
+  .seg-nav { display: flex; gap: 4px; margin-left: 26px; }
+  .seg-nav button {
+    height: 30px; padding: 0 13px; border-radius: 15px; border: 1px solid transparent;
+    background: transparent; color: var(--muted); cursor: pointer; font-size: 12.5px;
+  }
+  .seg-nav button:hover { color: var(--ink-2); background: var(--card); }
+  .seg-nav button.on { background: var(--amber-dim); border-color: var(--amber-line); color: #F4D9B4; }
+  .tb-spacer { flex: 1; }
+  .tb-btn { width: 34px; height: 28px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; }
+  .tb-btn:hover { background: var(--card); color: var(--ink); }
+  .wctl { display: flex; margin-left: 6px; }
+  .wctl span { width: 40px; height: 30px; display: grid; place-items: center; color: var(--muted); cursor: pointer; border-radius: 6px; }
+  .wctl span:hover { background: var(--card); color: var(--ink); }
+  .wctl .close:hover { background: var(--danger); color: #fff; }
+  /* pages */
+  .page { flex: 1; overflow: auto; padding: 24px 28px; display: none; }
+  .page.show { display: block; }
+  .page-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px; }
+  .page-head h1 { font-size: 21px; font-weight: 600; }
+  .page-head .sub { color: var(--muted); font-size: 12.5px; }
+  .page-head .right { margin-left: auto; }
+  /* grid */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .gcard {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px 17px 15px; cursor: pointer; position: relative;
+    transition: border-color .15s, transform .15s, background .15s;
+    display: flex; flex-direction: column; min-height: 196px;
+  }
+  .gcard:hover { border-color: var(--line-2); background: var(--card-2); transform: translateY(-1px); }
+  .gcard .top { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+  .gcard .top .ic {
+    width: 28px; height: 28px; border-radius: 8px; background: var(--card-2);
+    border: 1px solid var(--line); display: grid; place-items: center; color: var(--amber);
+  }
+  .gcard .top .name { font-weight: 600; font-size: 13.5px; }
+  .gcard .top .st { margin-left: auto; font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .gcard .top .st i { width: 6px; height: 6px; border-radius: 50%; background: var(--good); display: inline-block; }
+  .gcard .big { font-size: 30px; font-weight: 600; letter-spacing: -.4px; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  .gcard .big small { font-size: 14px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+  .gcard .cap { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .gcard .spacer { flex: 1; }
+  .gcard .quick { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+  .gcard .qbtn {
+    height: 27px; padding: 0 11px; border-radius: 7px; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--line-2); background: var(--card-2); color: var(--ink-2);
+  }
+  .gcard .qbtn:hover { color: var(--ink); border-color: #3A4652; }
+  .gcard .qbtn.on { background: var(--amber-dim); border-color: var(--amber-line); color: #F4D9B4; }
+  .gcard .more { position: absolute; right: 14px; bottom: 12px; color: var(--muted); font-size: 12px; }
+  .gcard:hover .more { color: var(--amber); }
+  .spark { height: 34px; margin-top: 8px; }
+  .spark svg { width: 100%; height: 100%; display: block; }
+  .bar { height: 7px; border-radius: 4px; background: var(--line); overflow: hidden; display: flex; margin-top: 10px; }
+  .bar i { height: 100%; }
+  .bar .used { background: #4E6E8E; }
+  .bar .standby { background: #8E6E4E; }
+  .legend { display: flex; gap: 14px; color: var(--muted); font-size: 11.5px; margin-top: 9px; }
+  .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 6px; }
+  .gauge { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+  .gauge .num { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .gradient-strip { height: 10px; border-radius: 5px; background: linear-gradient(90deg, #B87A42, #5F87AC); margin-top: 12px; position: relative; }
+  .gradient-strip .pin { position: absolute; top: -4px; width: 4px; height: 18px; border-radius: 2px; background: #F2F2F0; box-shadow: 0 0 0 2px rgba(0,0,0,.4); }
+  .logline { color: var(--ink-2); font-size: 12.5px; margin-top: 8px; display: flex; justify-content: space-between; gap: 10px; }
+  .logline span:last-child { color: var(--muted); white-space: nowrap; }
+  /* detail pages */
+  .detail-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+  .back {
+    height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2);
+    background: var(--card); color: var(--ink-2); cursor: pointer; font-size: 12.5px;
+  }
+  .back:hover { color: var(--ink); border-color: #3A4652; }
+  .detail-head h1 { font-size: 20px; font-weight: 600; }
+  .detail-head .sub { color: var(--muted); font-size: 12.5px; }
+  .panel {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px 20px; margin-bottom: 14px;
+  }
+  .panel h2 { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; font-weight: 600; display: flex; }
+  .panel h2 .state { margin-left: auto; text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--ink-2); font-weight: 400; }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .metric { background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .metric .v { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .metric .v small { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 3px; }
+  .metric .l { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    height: 34px; padding: 0 16px; border-radius: 9px; border: 1px solid var(--line-2);
+    background: var(--card-2); color: var(--ink-2); cursor: pointer; font-size: 13px;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .chip:hover { color: var(--ink); border-color: #3A4652; }
+  .chip.on { background: var(--amber-dim); border-color: var(--amber-line); color: #F4D9B4; }
+  .chip .k { font-size: 11px; color: var(--muted); }
+  .chip.on .k { color: #D9B98A; }
+  .field { margin-top: 14px; }
+  .field .fl { display: flex; margin-bottom: 8px; align-items: baseline; }
+  .field .fl label { color: var(--ink-2); font-size: 12.5px; }
+  .field .fl .val { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .slider { position: relative; height: 20px; display: flex; align-items: center; }
+  .slider .track { position: absolute; left: 0; right: 0; height: 5px; border-radius: 3px; background: var(--line); }
+  .slider .fill { position: absolute; left: 0; height: 5px; border-radius: 3px; background: var(--amber); }
+  .slider .thumb { position: absolute; width: 17px; height: 17px; border-radius: 50%; background: #F6EFE4; border: 1px solid #C9A87C; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  .actions { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
+  .btn {
+    height: 34px; padding: 0 16px; border-radius: 9px; cursor: pointer; font-size: 13px;
+    border: 1px solid var(--line-2); background: var(--card-2); color: var(--ink-2);
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn:hover { color: var(--ink); border-color: #3A4652; }
+  .btn.primary { background: #7A5A2E; border-color: #9A7440; color: #FBEFDC; }
+  .btn.primary:hover { background: #8A6736; }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .btn.ghost:hover { color: var(--ink); background: var(--card-2); }
+  .actions .spacer { flex: 1; }
+  table.t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.t th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  table.t td { padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  table.t tr:hover td { background: var(--card-2); }
+  table.t tr.sel td { background: var(--amber-dim); color: #F4D9B4; }
+  .toast {
+    position: absolute; right: 20px; bottom: 20px; background: #1C2A20; border: 1px solid #33513C;
+    color: #C4E8CF; border-radius: 10px; padding: 11px 15px; font-size: 12.5px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5); opacity: 0; transform: translateY(6px);
+    transition: all .25s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: none; }
+  .win-wrap { position: relative; }
+</style>
+</head>
+<body>
+<div class="win-wrap">
+<div class="win">
+  <div class="titlebar">
+    <div class="brand"><span class="dot"></span>Gammadrilon <small>v3.0</small></div>
+    <div class="seg-nav">
+      <button class="on" data-page="overview">Обзор</button>
+      <button data-page="cpu">CPU</button>
+      <button data-page="gpu">GPU</button>
+      <button data-page="dns">DNS</button>
+    </div>
+    <div class="tb-spacer"></div>
+    <button class="tb-btn" title="Палитра команд">⌘</button>
+    <button class="tb-btn" title="Журнал">≡</button>
+    <button class="tb-btn" title="Тема">◐</button>
+    <div class="wctl"><span>—</span><span>▢</span><span class="close">✕</span></div>
+  </div>
+
+  <!-- ОБЗОР -->
+  <section class="page show" id="page-overview">
+    <div class="page-head"><h1>Обзор</h1><span class="sub">всё состояние на одном экране · обновляется вживую</span></div>
+    <div class="grid">
+
+      <div class="gcard" data-go="cpu">
+        <div class="top">
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg></span>
+          <span class="name">Питание CPU</span>
+          <span class="st"><i></i>ЭКО</span>
+        </div>
+        <div class="big">0.87<small>ГГц</small></div>
+        <div class="cap">макс 50% · нагрузка 13% · схема-клон</div>
+        <div class="spark"><svg viewBox="0 0 320 34" preserveAspectRatio="none"><path id="sp1" d="" fill="none" stroke="#E0A458" stroke-width="1.5"/></svg></div>
+        <div class="spacer"></div>
+        <div class="quick">
+          <button class="qbtn on" data-mode="ЭКО">ЭКО</button>
+          <button class="qbtn" data-mode="НОРМА">НОРМА</button>
+          <button class="qbtn" data-mode="БУСТ">БУСТ</button>
+        </div>
+        <span class="more">подробнее →</span>
+      </div>
+
+      <div class="gcard" data-go="gpu">
+        <div class="top">
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="11" rx="2"/><circle cx="12" cy="12.5" r="3"/></svg></span>
+          <span class="name">Питание GPU</span>
+          <span class="st"><i></i>300 Вт</span>
+        </div>
+        <div class="big">38<small>°C</small></div>
+        <div class="cap">1350 МГц · лимит 300/366 Вт · загрузка 5%</div>
+        <div class="gauge">
+          <span class="num">300</span>
+          <div class="bar" style="flex:1; margin:0"><i class="used" style="width:60%"></i></div>
+          <span class="num" style="color:var(--muted)">366</span>
+        </div>
+        <div class="spacer"></div>
+        <div class="quick">
+          <button class="qbtn" data-mode="Тихий">Тихий</button>
+          <button class="qbtn on" data-mode="Дефолт">Дефолт</button>
+          <button class="qbtn" data-mode="Игровой">Игровой</button>
+        </div>
+        <span class="more">подробнее →</span>
+      </div>
+
+      <div class="gcard" data-go="utils">
+        <div class="top">
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 5.5a4 4 0 0 0-5.6 5.1L4 15.5 8.5 20l4.9-4.9a4 4 0 0 0 5.1-5.6l-2.6 2.6-2.4-.6-.6-2.4z"/></svg></span>
+          <span class="name">Память</span>
+          <span class="st"><i></i>59%</span>
+        </div>
+        <div class="big">11.75<small>ГБ standby</small></div>
+        <div class="cap">занято 14.16 · свободно 6.02 · всего 31.92 ГБ</div>
+        <div class="bar"><i class="used" style="width:44%"></i><i class="standby" style="width:37%"></i></div>
+        <div class="legend"><span><i style="background:#4E6E8E"></i>занято</span><span><i style="background:#8E6E4E"></i>standby</span></div>
+        <div class="spacer"></div>
+        <div class="quick"><button class="qbtn" id="purge-btn">Очистить standby</button></div>
+        <span class="more">подробнее →</span>
+      </div>
+
+      <div class="gcard" data-go="dns">
+        <div class="top">
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.2 2.5 13.8 0 16M12 4c-2.5 2.2-2.5 13.8 0 16"/></svg></span>
+          <span class="name">DNS</span>
+          <span class="st"><i></i>Cloudflare</span>
+        </div>
+        <div class="big">3.4<small>мс</small></div>
+        <div class="cap">1.1.1.1, 77.88.8.1 · Ethernet</div>
+        <div class="logline"><span>Google</span><span>3.4 мс</span></div>
+        <div class="logline"><span>Яндекс</span><span>5.4 мс</span></div>
+        <div class="logline"><span>Quad9</span><span>40.5 мс</span></div>
+        <div class="spacer"></div>
+        <div class="quick"><button class="qbtn">Замерить</button></div>
+        <span class="more">подробнее →</span>
+      </div>
+
+      <div class="gcard" data-go="gamma">
+        <div class="top">
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg></span>
+          <span class="name">Гамма</span>
+          <span class="st"><i></i>100%</span>
+        </div>
+        <div class="big">100<small>%</small></div>
+        <div class="cap">пресет «Обычный» · тёплое ↔ холодное</div>
+        <div class="gradient-strip"><span class="pin" style="left:25%"></span></div>
+        <div class="spacer"></div>
+        <div class="quick"><button class="qbtn">Чтение</button><button class="qbtn">Кино</button><button class="qbtn">Сброс</button></div>
+        <span class="more">подробнее →</span>
+      </div>
+
+      <div class="gcard" data-go="rules">
+        <div class="top">
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="18" cy="12" r="2"/></svg></span>
+          <span class="name">Правила</span>
+          <span class="st"><i></i>2 активных</span>
+        </div>
+        <div class="big">2</div>
+        <div class="cap">срабатывают сами, пишут в журнал</div>
+        <div class="logline"><span>19:42 · deadlock.exe</span><span>GPU: Игровой</span></div>
+        <div class="logline"><span>17:10 · батарея</span><span>CPU: ЭКО</span></div>
+        <div class="spacer"></div>
+        <div class="quick"><button class="qbtn">Добавить…</button></div>
+        <span class="more">подробнее →</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- CPU detail -->
+  <section class="page" id="page-cpu">
+    <div class="detail-head">
+      <button class="back" data-page="overview">← Обзор</button>
+      <h1>Питание CPU</h1>
+      <span class="sub">Ryzen 5 5600 · схема «Высокая производительность»</span>
+      <div style="margin-left:auto"><button class="btn ghost">Вернуть как было</button></div>
+    </div>
+    <div class="panel">
+      <h2>Профиль <span class="state" id="cpu-state">применён: ЭКО</span></h2>
+      <div class="chips">
+        <button class="chip on" data-mode="ЭКО">ЭКО <span class="k">50% · 3.3 ГГц</span></button>
+        <button class="chip" data-mode="НОРМА">НОРМА <span class="k">99% · турбо</span></button>
+        <button class="chip" data-mode="БУСТ">БУСТ <span class="k">100% · макс</span></button>
+        <button class="chip" data-mode="СВОЙ">СВОЙ <span class="k">вручную</span></button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Сейчас <span class="state">живые сенсоры</span></h2>
+      <div class="metrics">
+        <div class="metric"><div class="v" id="cpu-freq">0.87<small>ГГц</small></div><div class="l">частота</div></div>
+        <div class="metric"><div class="v">13<small>%</small></div><div class="l">нагрузка</div></div>
+        <div class="metric"><div class="v">50<small>%</small></div><div class="l">лимит</div></div>
+        <div class="metric"><div class="v" style="color:var(--muted)">н/д</div><div class="l">температура</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Точная настройка</h2>
+      <div class="field">
+        <div class="fl"><label>Макс. состояние</label><span class="val">50%</span></div>
+        <div class="slider"><div class="track"></div><div class="fill" style="width:50%"></div><div class="thumb" style="left:calc(50% - 8px)"></div></div>
+      </div>
+      <div class="field">
+        <div class="fl"><label>Приоритет энергосбережения (EPP)</label><span class="val">100</span></div>
+        <div class="slider"><div class="track"></div><div class="fill" style="width:100%"></div><div class="thumb" style="left:calc(100% - 17px)"></div></div>
+      </div>
+      <div class="actions"><button class="btn primary" id="apply-btn">Применить как «СВОЙ»</button></div>
+    </div>
+  </section>
+
+  <!-- GPU detail -->
+  <section class="page" id="page-gpu">
+    <div class="detail-head">
+      <button class="back" data-page="overview">← Обзор</button>
+      <h1>Питание GPU</h1>
+      <span class="sub">RTX 2080 Ti · драйвер 617.14</span>
+      <div style="margin-left:auto"><button class="btn ghost">Вернуть как было</button></div>
+    </div>
+    <div class="panel">
+      <h2>Сейчас <span class="state">nvidia-smi</span></h2>
+      <div class="metrics">
+        <div class="metric"><div class="v">38<small>°C</small></div><div class="l">температура</div></div>
+        <div class="metric"><div class="v">1350<small>МГц</small></div><div class="l">частота ядра</div></div>
+        <div class="metric"><div class="v">300<small>/366 Вт</small></div><div class="l">лимит мощности</div></div>
+        <div class="metric"><div class="v">5<small>%</small></div><div class="l">загрузка</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Лимит мощности <span class="state">номинал 300 Вт · диапазон 100–366 Вт</span></h2>
+      <div class="field">
+        <div class="fl"><label>Значение</label><span class="val">300 Вт</span></div>
+        <div class="slider"><div class="track"></div><div class="fill" style="width:60%"></div><div class="thumb" style="left:calc(60% - 8px)"></div></div>
+      </div>
+      <div class="actions"><button class="btn primary">Применить лимит</button><span class="spacer"></span><span style="color:var(--muted); font-size:12px">подтверждение 12 с</span></div>
+    </div>
+  </section>
+
+  <!-- DNS detail -->
+  <section class="page" id="page-dns">
+    <div class="detail-head">
+      <button class="back" data-page="overview">← Обзор</button>
+      <h1>DNS</h1>
+      <span class="sub">Ethernet · от DHCP</span>
+      <div style="margin-left:auto"><button class="btn ghost">Вернуть как было</button></div>
+    </div>
+    <div class="panel">
+      <table class="t">
+        <thead><tr><th>Резолвер</th><th>Сервер</th><th>Медиана</th><th>Разброс / потери</th></tr></thead>
+        <tbody>
+          <tr class="sel"><td>Cloudflare</td><td>1.1.1.1, 1.0.0.1</td><td>3.4 мс</td><td>±0.6 · 0%</td></tr>
+          <tr><td>Google</td><td>8.8.8.8, 8.8.4.4</td><td>3.4 мс</td><td>±0.9 · 0%</td></tr>
+          <tr><td>Яндекс</td><td>77.88.8.8, 77.88.8.1</td><td>5.4 мс</td><td>±1.2 · 0%</td></tr>
+          <tr><td>Quad9</td><td>9.9.9.9, 149.112.112.112</td><td>40.5 мс</td><td>±3.1 · 0%</td></tr>
+        </tbody>
+      </table>
+      <div class="actions">
+        <button class="btn">Замерить латентность</button>
+        <button class="btn primary">Применить выбранный</button>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast">Готово</div>
+</div>
+
+<script>
+  // страницы
+  function go(name) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('show'));
+    document.getElementById('page-' + name).classList.add('show');
+    document.querySelectorAll('.seg-nav button').forEach(b => b.classList.toggle('on', b.dataset.page === name));
+  }
+  document.querySelectorAll('.seg-nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.page)));
+  document.querySelectorAll('.back').forEach(b => b.addEventListener('click', () => go(b.dataset.page)));
+  document.querySelectorAll('.gcard').forEach(c => {
+    c.addEventListener('click', e => {
+      if (e.target.closest('.qbtn')) return;
+      const target = c.dataset.go;
+      const known = ['cpu', 'gpu', 'dns'];
+      if (known.includes(target)) go(target);
+      else toast('Раздел «' + c.querySelector('.name').textContent + '» — в полной версии');
+    });
+  });
+
+  // тост
+  let tt;
+  function toast(text) {
+    const t = document.getElementById('toast');
+    t.textContent = text; t.classList.add('show');
+    clearTimeout(tt); tt = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  // режимы на карточках и в деталях
+  document.querySelectorAll('.qbtn[data-mode], .chip[data-mode]').forEach(b => {
+    b.addEventListener('click', () => {
+      const group = b.closest('.quick, .chips');
+      group.querySelectorAll('[data-mode]').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      const m = b.dataset.mode;
+      toast('Профиль «' + m + '» применён');
+      if (b.closest('#page-cpu') || b.closest('[data-go="cpu"]')) {
+        const target = m === 'ЭКО' ? 0.87 : m === 'НОРМА' ? 3.42 : 4.19;
+        const el = document.getElementById('cpu-freq');
+        if (el) el.innerHTML = target.toFixed(2) + '<small>ГГц</small>';
+        const big = document.querySelector('[data-go="cpu"] .big');
+        if (big) big.innerHTML = target.toFixed(2) + '<small>ГГц</small>';
+        const st = document.querySelector('[data-go="cpu"] .st');
+        if (st) st.innerHTML = '<i></i>' + m;
+        const cs = document.getElementById('cpu-state');
+        if (cs) cs.textContent = 'применён: ' + m;
+      }
+    });
+  });
+
+  // очистка standby
+  document.getElementById('purge-btn').addEventListener('click', () => {
+    toast('Standby list очищен · +2.1 ГБ свободно');
+    const big = document.querySelector('[data-go="utils"] .big');
+    big.innerHTML = '0.4<small>ГБ standby</small>';
+  });
+
+  // спарклайн CPU
+  (function () {
+    const pts = []; let v = 12;
+    for (let i = 0; i < 48; i++) { v = Math.max(6, Math.min(26, v + (Math.random() * 7 - 3.5))); pts.push(v); }
+    const w = 320, h = 34, max = 30;
+    const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${(i / (pts.length - 1) * w).toFixed(1)},${(h - p / max * h).toFixed(1)}`).join(' ');
+    document.getElementById('sp1').setAttribute('d', d);
+  })();
+
+  // выбор строк
+  document.querySelectorAll('table.t tbody tr').forEach(tr => {
+    tr.addEventListener('click', () => {
+      tr.closest('tbody').querySelectorAll('tr').forEach(x => x.classList.remove('sel'));
+      tr.classList.add('sel');
+    });
+  });
+</script>
+</body>
+</html>
