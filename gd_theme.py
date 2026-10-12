@@ -88,6 +88,11 @@ ON_ACCENT = DARK["ON_ACCENT"]
 UI_FONT = '"Segoe UI Variable Text", "Segoe UI", Arial'
 DIGIT_FONT = '"Bahnschrift", "Segoe UI", Arial'
 
+# --- токены геометрии (ТЗ 7: «один закон» — сетка, а не россыпь чисел) ---
+RADIUS = "8px"        # карточки, поля, кнопки, попапы, таблицы
+RADIUS_SMALL = "4px"  # слайдеры, ползунки, скроллбары
+GEOMETRY = {"RADIUS": RADIUS, "RADIUS_SMALL": RADIUS_SMALL}
+
 
 def active_name() -> str:
     return _active
@@ -105,6 +110,7 @@ def build_stylesheet() -> str:
         _p["PAPER"], _p["SURFACE"], _p["RULE"], _p["MUTED"], _p["INK2"], _p["INK"],
         _p["ACCENT"], _p["NAVY"], _p["NAVY_HOVER"], _p["NAVY_PRESSED"], _p["TRACK"],
         _p["PRESSED"], _p["ON_ACCENT"])
+    R8, R4 = RADIUS, RADIUS_SMALL
     return f"""
 * {{
     font-family: {UI_FONT};
@@ -146,6 +152,19 @@ QLabel#Hint {{
     font-size: 11px;
 }}
 
+/* «i» в кружке у заголовка карточки: подсказка без зависимости от глифа ⓘ */
+QLabel#CardInfo {{
+    color: {MUTED};
+    border: 1px solid {RULE};
+    border-radius: {R8};
+    min-width: 14px;
+    max-width: 14px;
+    min-height: 14px;
+    max-height: 14px;
+    font-family: {UI_FONT};
+    font-size: 10px;
+}}
+
 QLabel#Value {{
     color: {INK};
     font-family: {DIGIT_FONT};
@@ -155,7 +174,7 @@ QLabel#Value {{
 QFrame#Card {{
     background: {SURFACE};
     border: 1px solid {RULE};
-    border-radius: 12px;
+    border-radius: {R8};
 }}
 
 QPushButton {{
@@ -167,7 +186,7 @@ QPushButton {{
     font-size: 13px;
 }}
 
-QPushButton:hover {{
+QPushButton:hover:enabled {{
     background: {PRESSED};
     border-color: {ACCENT};
     color: {INK};
@@ -175,6 +194,14 @@ QPushButton:hover {{
 
 QPushButton:pressed {{
     background: {PRESSED};
+}}
+
+/* выключенная кнопка обязана выглядеть выключенной: иначе интерфейс обещает
+   действие, которого нет (ТЗ 5/7 — честность состояния, а не «серая красота») */
+QPushButton:disabled {{
+    background: {SURFACE};
+    border-color: {RULE};
+    color: {MUTED};
 }}
 
 QPushButton#Segment {{
@@ -187,7 +214,7 @@ QPushButton#Segment:checked {{
     color: {ON_ACCENT};
 }}
 
-QPushButton#Segment:hover:!checked {{
+QPushButton#Segment:hover:enabled:!checked {{
     border-color: {MUTED};
 }}
 
@@ -198,13 +225,19 @@ QPushButton#PrimaryButton {{
     font-weight: 600;
 }}
 
-QPushButton#PrimaryButton:hover {{
+QPushButton#PrimaryButton:hover:enabled {{
     background: {NAVY_HOVER};
     border-color: {NAVY_HOVER};
 }}
 
 QPushButton#PrimaryButton:pressed {{
     background: {NAVY_PRESSED};
+}}
+
+QPushButton#PrimaryButton:disabled {{
+    background: {TRACK};
+    border-color: {RULE};
+    color: {MUTED};
 }}
 
 QPushButton#GhostButton {{
@@ -265,11 +298,62 @@ QDoubleSpinBox:hover {{
     border-color: {MUTED};
 }}
 
+/* спиновые кнопки: без них системный стиль рисует светлые стрелки в тёмной теме */
+QSpinBox::up-button,
+QDoubleSpinBox::up-button,
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    width: 18px;
+    background: {SURFACE};
+    border: none;
+    border-left: 1px solid {RULE};
+}}
+
+QSpinBox::up-button,
+QDoubleSpinBox::up-button {{
+    subcontrol-position: top right;
+    border-top-right-radius: {R8};
+}}
+
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {{
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: {R8};
+}}
+
+QSpinBox::up-button:hover,
+QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover,
+QDoubleSpinBox::down-button:hover {{
+    background: {PRESSED};
+}}
+
+QSpinBox::up-arrow,
+QDoubleSpinBox::up-arrow {{
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid {MUTED};
+}}
+
+QSpinBox::down-arrow,
+QDoubleSpinBox::down-arrow {{
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {MUTED};
+}}
+
 QComboBox QAbstractItemView {{
     background: {SURFACE};
     color: {INK2};
     border: 1px solid {RULE};
-    border-radius: 9px;
+    border-radius: {R8};
     selection-background-color: {NAVY};
     selection-color: {INK};
 }}
@@ -287,6 +371,12 @@ QTextEdit {{
     selection-color: {INK};
 }}
 
+/* фон хедера: без него пустая часть строки заголовка остаётся системно-светлой */
+QHeaderView {{
+    background: {SURFACE};
+    border: none;
+}}
+
 QHeaderView::section {{
     background: {SURFACE};
     color: {MUTED};
@@ -298,6 +388,24 @@ QHeaderView::section {{
 QTableWidget::item {{
     padding: 5px 7px;
     border-bottom: 1px solid {RULE};
+}}
+
+/* отметки в списках (выбор процессов и т.п.) — своим стилем, иначе их не видно */
+QListWidget::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {MUTED};
+    border-radius: {R4};
+    background: {SURFACE};
+}}
+
+QListWidget::indicator:hover {{
+    border-color: {ACCENT};
+}}
+
+QListWidget::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
 }}
 
 QScrollArea {{
@@ -317,7 +425,7 @@ QScrollBar:vertical {{
 
 QScrollBar::handle:vertical {{
     min-height: 28px;
-    border-radius: 4px;
+    border-radius: {R4};
     background: {TRACK};
 }}
 
@@ -330,6 +438,31 @@ QScrollBar::sub-line:vertical,
 QScrollBar::add-page:vertical,
 QScrollBar::sub-page:vertical {{
     height: 0;
+    background: transparent;
+}}
+
+/* горизонтальная полоса: нужна таблицам и спискам при узком окне */
+QScrollBar:horizontal {{
+    height: 10px;
+    background: transparent;
+    margin: 2px 4px;
+}}
+
+QScrollBar::handle:horizontal {{
+    min-width: 28px;
+    border-radius: {R4};
+    background: {TRACK};
+}}
+
+QScrollBar::handle:horizontal:hover {{
+    background: {MUTED};
+}}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {{
+    width: 0;
     background: transparent;
 }}
 

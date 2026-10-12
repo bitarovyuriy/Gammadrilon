@@ -83,6 +83,8 @@ class TrayAssistant(QSystemTrayIcon):
 
         self._cpu_actions: dict[str, QAction] = {}
         self._gpu_actions: dict[str, QAction] = {}
+        self._tip: str | None = None       # кэш тултипа: explorer не дёргаем зря
+        self._icon_key = None              # кэш отрисовки иконки (цвет + мигание)
         self._build_menu()
 
         self._blink_timer = QTimer(self)
@@ -178,8 +180,18 @@ class TrayAssistant(QSystemTrayIcon):
         return QIcon(pm)
 
     def _apply_icon(self):
+        """Перерисовать иконку — только если она реально изменилась.
+
+        ``setIcon`` уходит в explorer (shell_NotifyIcon), поэтому дёргать его
+        каждую секунду при неизменном состоянии — чистая трата.
+        """
         color = PROFILE_COLOR.get(self._cpu) or PROFILE_COLOR.get(self._gpu) or NEUTRAL
-        self.setIcon(self._make_icon(color, invert=self._blink_left > 0))
+        blink = self._blink_left > 0
+        key = (color, blink, th.PAPER, th.SURFACE)   # тема тоже меняет вид точки
+        if key == self._icon_key:
+            return
+        self._icon_key = key
+        self.setIcon(self._make_icon(color, invert=blink))
 
     def _start_blink(self):
         self._blink_left = 3
@@ -210,8 +222,9 @@ class TrayAssistant(QSystemTrayIcon):
             self._start_blink()
         else:
             self._apply_icon()
-        if tooltip is not None:
-            self.setToolTip(tooltip)
+        if tooltip is not None and tooltip != self._tip:
+            self._tip = tooltip
+            self.setToolTip(tooltip)     # explorer трогаем только по изменению
 
     def _on_activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):

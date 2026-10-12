@@ -93,6 +93,8 @@ class CommandPalette(QDialog):
     # -- сборка команд -----------------------------------------------------
     def _collect(self):
         mw = self.mw
+        # i18n: skip-start — поисковые ключи палитры: не отображаются, содержат слова
+        # обоих языков (RU/EN), чтобы фильтр находил команды на любом языке ввода.
         cmds = [
             (i18n.t("pal.cpu_eco"), "cpu power eco энергосбережение тихий профиль",
              lambda: mw.on_cpu_profile("eco")),
@@ -124,6 +126,10 @@ class CommandPalette(QDialog):
              lambda: self._open_tab(4)),
             (i18n.t("pal.open_dns"), "open tab dns резолвер латентность",
              lambda: self._open_tab(5)),
+            (i18n.t("pal.open_zapret"), "open tab zapret dpi обход discord youtube winws",
+             lambda: self._open_tab(6)),
+            (i18n.t("pal.open_agent"), "open tab agent api агент локальный инструменты шлюз",
+             lambda: self._open_tab(7)),
             (i18n.t("pal.theme"), "theme тема светлая тёмная оформление",
              lambda: self.mw.toggle_theme()),
             (i18n.t("pal.language"), "language язык english русский",
@@ -139,6 +145,7 @@ class CommandPalette(QDialog):
             (i18n.t("pal.quit"), "quit exit выход закрыть",
              lambda: mw.quit_app()),
         ]
+        # i18n: skip-end
         return cmds
 
     def _param_commands(self, value: int):
@@ -170,7 +177,7 @@ class CommandPalette(QDialog):
         hi = int(g.sl_pl.maximum())
         value = max(lo, min(hi, watts))
         g.sl_pl.setValue(value)
-        g._source = "палитра команд"
+        g._source = i18n.t("палитра команд")
         g._apply({"pl": value})
 
     def _set_cpu_percent(self, pct: int):
@@ -180,7 +187,7 @@ class CommandPalette(QDialog):
             p.sl_max.setValue(value)
         except AttributeError:
             pass
-        p.apply_custom(source="палитра команд")
+        p.apply_custom(source=i18n.t("палитра команд"))
 
     def _open_tab(self, index: int):
         self.mw.tabs.setCurrentIndex(index)
@@ -202,7 +209,7 @@ class CommandPalette(QDialog):
                     scored.append((score, title, action))
             scored.sort(key=lambda x: -x[0])
             entries = [(t, "", a) for _, t, a in scored[:40]]
-            self.hint.setText("Enter — выполнить  ·  >число — быстрый параметр")
+            self.hint.setText(i18n.t("Enter — выполнить  ·  >число — быстрый параметр"))
         for title, _kw, action in entries:
             it = QListWidgetItem(title)
             it.setData(Qt.UserRole, action)

@@ -9,11 +9,14 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import time
 from collections import deque
 from multiprocessing.connection import Client
+
+import gd_proc
+
+import gd_bg
 
 # фикс PyQt5 для не-ASCII пути к окружению (см. комментарий в main.py)
 try:
@@ -42,6 +45,7 @@ from PyQt5.QtWidgets import (  # noqa: E402
 )
 
 import gd_theme as th
+import gd_agent  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -81,13 +85,10 @@ class PowerClient:
             cmd = [sys.executable, "--power-service", "--ui-pid", str(os.getpid()), "--pipe", self.pipe]
             cwd = None
         else:
-            cmd = [sys.executable, svc, "--ui-pid", str(os.getpid()), "--pipe", self.pipe]
+            # pythonw: консольный python.exe дал бы мелькающее окно
+            cmd = [gd_proc.python_exe(), svc, "--ui-pid", str(os.getpid()), "--pipe", self.pipe]
             cwd = HERE
-        self._proc = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            creationflags=0x08000000,  # CREATE_NO_WINDOW
-        )
+        self._proc = gd_proc.popen(cmd, cwd=cwd)
         for _ in range(40):
             time.sleep(0.2)
             try:
@@ -97,6 +98,28 @@ class PowerClient:
                 if self._proc.poll() is not None:
                     return False
         return False
+
+    def call_existing(self, obj: dict, timeout: float = 10.0) -> dict:
+        """Спросить уже работающего компаньона — процесс не поднимая.
+
+        Для пассивного чтения состояния: фоновый опрос не должен рождать
+        процесс до первого действия пользователя (см. :func:`read_status`).
+        Нет живой сессии — честный отказ, без запуска и без UAC.
+        """
+        if self._conn is None:
+            try:
+                self._conn = Client(address=self.pipe)
+            except OSError:
+                return {"ok": False, "error": i18n.t("компаньон не запущен")}
+        try:
+            self._conn.send(obj)
+            if not self._conn.poll(timeout):
+                self._conn = None
+                return {"ok": False, "error": i18n.t("таймаут ответа компаньона")}
+            return self._conn.recv()
+        except (OSError, EOFError):
+            self._conn = None
+            return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
 
     def call(self, obj: dict, timeout: float = 10.0) -> dict:
         if not self.ensure():
@@ -111,6 +134,18 @@ class PowerClient:
             self._conn = None
             return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
 
+    def alive(self) -> bool:
+        """Живой ли компаньон — без запуска и без обращений к пайпу.
+
+        Если процесс поднимали мы (:attr:`_proc`), истина — его состояние
+        (``poll()`` это O(1)); если подключились к чужому экземпляру — пока
+        держится соединение. Нужно честному индикатору в футе сайдбара.
+        """
+        proc = self._proc
+        if proc is not None:
+            return proc.poll() is None
+        return self._conn is not None
+
     def shutdown(self, restore: bool = True) -> None:
         if self._conn is not None:
             try:
@@ -118,6 +153,42 @@ class PowerClient:
             except Exception:  # noqa: BLE001
                 pass
         self._conn = None
+
+    def shutdown_async(self, restore: bool = True) -> None:
+        """Попросить компаньон завершиться с откатом, не дожидаясь ответа.
+
+        Если компаньона нет (профиль не применяли) — откатывать нечего, молча
+        выходим. Если есть: ждать ответа нельзя, а откат подстрахует watchdog
+        компаньона по смерти UI-процесса.
+        """
+        if self._conn is None:
+            return
+        try:
+            self._conn.send({"cmd": "shutdown", "restore": restore})
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            self._conn = None
+
+
+def read_status(client: PowerClient) -> dict:
+    """Состояние питания: у живого компаньона или локально (без запуска).
+
+    Порядок честный и дешёвый: сначала спрашиваем компаньона, если он уже
+    работает (``call_existing`` — без спавна), иначе читаем powercfg сами
+    (:func:`gd_power.state_snapshot`). Смысл: компаньон нужен только для записи
+    и отката при краше UI, а вкладка CPU открыта с самого старта — раньше её
+    опрос статуса поднимал процесс до первого действия пользователя.
+    """
+    resp = client.call_existing({"cmd": "status"})
+    if resp.get("ok"):
+        return resp
+    try:
+        import gd_power
+
+        return {"ok": True, "data": gd_power.state_snapshot()}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 # --------------------------------------------------------------------------
@@ -170,8 +241,9 @@ def make_card(title: str, tip: str = ""):
         row.addWidget(lbl)
         row.addStretch(1)
         if tip:
-            info = QLabel("ⓘ")
-            info.setObjectName("Hint")
+            info = QLabel("i")  # глиф «ⓘ» есть не во всех шрифтах — рисуем круг стилями
+            info.setObjectName("CardInfo")
+            info.setAlignment(Qt.AlignCenter)
             info.setToolTip(tip)
             info.setCursor(Qt.WhatsThisCursor)
             row.addWidget(info)
@@ -202,12 +274,19 @@ class PowerWindow(QWidget):
         self._freq_before = None
 
         self._started = False
+        self._apply_busy = False       # идёт apply/restore (фон) — блокирует кнопки
+        self._leftover_checked = False  # смотрели ли профиль от прошлой сессии
+        self._leftover_busy = False
         self._build()
 
         self._sensor_timer = QTimer(self)
         self._sensor_timer.timeout.connect(self._tick)
-        self._status_timer = QTimer(self)
-        self._status_timer.timeout.connect(self._refresh_status)
+        # статус — фоновой опрос чтением powercfg (read_status): компаньона он НЕ
+        # поднимает, поэтому GUI ничего не ждёт; повторный запрос не стартует,
+        # пока идёт предыдущий
+        self._status_periodic = gd_bg.periodic(
+            self, 5000, lambda: read_status(self.client), self._refresh_done
+        )
 
         if standalone:
             self.activate()
@@ -216,14 +295,22 @@ class PowerWindow(QWidget):
         """Вкладка стала активной (или окно открылось): компаньон + сенсоры."""
         if not self._started:
             self._started = True
-            self._refresh_status()
+            self.status_name.setText(i18n.t("Читаю состояние питания…"))
+            self._status_periodic.trigger()
         self._sensor_timer.start(1000)
-        self._status_timer.start(5000)
+        self._status_periodic.start()
 
     def deactivate(self):
         """Вкладка неактивна — сенсоры не тикают зря."""
         self._sensor_timer.stop()
-        self._status_timer.stop()
+        self._status_periodic.stop()
+
+    def _set_busy(self, busy: bool) -> None:
+        """Заблокировать управление, пока идёт операция (запуск компаньона + запись)."""
+        for btn in self.profile_btns.values():
+            btn.setEnabled(not busy)
+        self.btn_apply_custom.setEnabled(not busy)
+        self.btn_restore.setEnabled(not busy)
 
     # -- построение --------------------------------------------------------
     def _build(self):
@@ -308,7 +395,7 @@ class PowerWindow(QWidget):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(10)
 
-        grid.addWidget(self._hint(i18n.t("Макс. состояние ⓘ"), _TURBO_TIP), 0, 0)
+        grid.addWidget(self._hint(i18n.t("Макс. состояние"), _TURBO_TIP), 0, 0)
         self.sl_max = QSlider(Qt.Horizontal)
         self.sl_max.setRange(5, 100)
         self.sl_max.setToolTip(_TURBO_TIP)
@@ -385,6 +472,7 @@ class PowerWindow(QWidget):
 
     # -- действия ----------------------------------------------------------
     def _on_profile_click(self, pid: str):
+        self._source = "UI"
         if pid == "custom":
             self._custom_mode = True
             self.profile_desc.setText(
@@ -395,6 +483,7 @@ class PowerWindow(QWidget):
         self._call_apply({"cmd": "apply", "profile": pid})
 
     def _apply_custom(self):
+        self._source = "UI"
         custom = {
             "max_state": self.sl_max.value(),
             "boost_mode": self.cb_boost.currentIndex(),
@@ -404,8 +493,26 @@ class PowerWindow(QWidget):
         self._call_apply({"cmd": "apply", "profile": "custom", "custom": custom})
 
     def _call_apply(self, payload: dict):
+        """Применить профиль: компаньон поднимается здесь (это осознанный клик
+        пользователя), а запись идёт в фоне — окно не замирает."""
+        if self._apply_busy:
+            gd_agent.finish(getattr(self, "_ext_done", None), False,
+                            i18n.t("занято: операция уже выполняется"))
+            self._ext_done = None
+            return
+        self._apply_busy = True
         self._freq_before = self._last_mhz
-        resp = self.client.call(payload)
+        self._set_busy(True)
+        self._set_bottom_status(i18n.t("Применяю профиль CPU…"), ok=True)
+        gd_bg.submit(
+            lambda: self.client.call(payload),
+            lambda resp: self._apply_done(resp, payload),
+            parent=self,
+        )
+
+    def _apply_done(self, resp: dict, payload: dict):
+        self._apply_busy = False
+        self._set_busy(False)
         if resp.get("ok"):
             self._set_bottom_status(i18n.t("Профиль применён. Проверяю реакцию частоты…"), ok=True)
             self._refresh_status()
@@ -415,9 +522,19 @@ class PowerWindow(QWidget):
                 QTimer.singleShot(4500, self._freq_reaction_check)
         else:
             self._set_bottom_status(i18n.t("Ошибка: {v0}", v0=resp.get('error')), ok=False)
+        gd_agent.finish(getattr(self, "_ext_done", None), resp.get("ok"), resp.get("error"))
+        self._ext_done = None
 
     def _journal_apply(self, payload: dict):
-        """Записать изменение в журнал (ТЗ 5.5)."""
+        """Записать изменение в журнал (ТЗ 5.5): дозапрос статуса — в фоне."""
+        gd_bg.submit(
+            lambda: read_status(self.client),
+            lambda st: self._journal_write(payload, st),
+            parent=self,
+        )
+
+    def _journal_write(self, payload: dict, st):
+        """Собственно запись в журнал и тост — после фонового опроса статуса."""
         try:
             import gd_journal
 
@@ -427,8 +544,7 @@ class PowerWindow(QWidget):
             o = self._orig_values or {}
             if o.get("max_state", {}).get("ac") is not None:
                 before = i18n.t("макс {v0}%", v0=o['max_state']['ac'])
-            st = self.client.call({"cmd": "status"})
-            if st.get("ok"):
+            if isinstance(st, dict) and st.get("ok"):
                 v = (st["data"].get("values") or {}).get("max_state", {}).get("ac")
                 if v is not None:
                     after = i18n.t("макс {v0}%", v0=v)
@@ -438,7 +554,6 @@ class PowerWindow(QWidget):
                 source=getattr(self, "_source", "UI"),
             )
             import gd_toast
-            import gd_i18n as i18n
 
             tail = f" ({before} → {after})" if before and after else ""
             gd_toast.show_toast(i18n.t("toast.cpu_profile", name=name, tail=tail), "ok")
@@ -462,8 +577,22 @@ class PowerWindow(QWidget):
             )
 
     def _restore(self):
-        resp = self.client.call({"cmd": "restore"})
+        """Вернуть исходную схему — компаньон отвечает в фоне."""
+        if self._apply_busy:
+            gd_agent.finish(getattr(self, "_ext_done", None), False,
+                            i18n.t("занято: операция уже выполняется"))
+            self._ext_done = None
+            return
+        self._apply_busy = True
+        self._set_busy(True)
+        self._set_bottom_status(i18n.t("Возвращаю исходную схему…"), ok=True)
+        gd_bg.submit(lambda: self.client.call({"cmd": "restore"}), self._restore_done, parent=self)
+
+    def _restore_done(self, resp: dict):
+        self._apply_busy = False
+        self._set_busy(False)
         if resp.get("ok"):
+            self._active_profile = None
             self._set_bottom_status(i18n.t("Схема возвращена к исходной."), ok=True)
             self._refresh_status()
             try:
@@ -473,18 +602,28 @@ class PowerWindow(QWidget):
                                   why=i18n.t("возврат исходной схемы"),
                                   source=getattr(self, "_source", "UI"))
                 import gd_toast
-                import gd_i18n as i18n
 
                 gd_toast.show_toast(i18n.t("toast.cpu_restore"), "info")
             except Exception:  # noqa: BLE001
                 pass
         else:
             self._set_bottom_status(i18n.t("Ошибка отката: {v0}", v0=resp.get('error')), ok=False)
+        gd_agent.finish(getattr(self, "_ext_done", None), resp.get("ok"), resp.get("error"))
+        self._ext_done = None
 
     # -- внешнее управление (трей, палитра команд) -------------------------
-    def apply_profile(self, pid: str, source: str = i18n.t("трей")):
-        """Применить профиль извне — как действие, а не загрузку пресета в контролы."""
+    def apply_profile(self, pid: str, source: str = i18n.t("трей"), on_done=None):
+        """Применить профиль извне — как действие, а не загрузку пресета в контролы.
+
+        `on_done(result)` — необязательный хук внешних вызовов (локальный API,
+        ТЗ этап 8): один раз получает ``{"ok", "error"}`` по завершении операции,
+        в том числе при отказе «занято». Из вкладки вызывается без хука.
+        """
+        if self._apply_busy:
+            gd_agent.finish(on_done, False, i18n.t("занято: профиль уже применяется"))
+            return
         self._source = source
+        self._ext_done = on_done
         if pid == "restore":
             self._restore()
             return
@@ -499,6 +638,14 @@ class PowerWindow(QWidget):
     def current_profile(self):
         return getattr(self, "_profile", None)
 
+    def service_alive(self) -> bool:
+        """Работает ли компаньон питания прямо сейчас (для фута сайдбара).
+
+        Компаньон ленивый: до первого применения профиля его нет, и подпись
+        «Служба питания активна» в этом состоянии была бы неправдой.
+        """
+        return self.client.alive()
+
     def _set_bottom_status(self, text: str, ok: bool = True):
         color = th.MUTED if ok else th.WARN
         self.bottom_status.setStyleSheet(f"color: {color};")
@@ -506,14 +653,28 @@ class PowerWindow(QWidget):
 
     # -- обновление --------------------------------------------------------
     def _refresh_status(self):
-        resp = self.client.call({"cmd": "status"})
+        """Перечитать состояние питания в фоне (чтение powercfg, без компаньона)."""
+        self._status_periodic.trigger()
+
+    def _refresh_done(self, resp):
+        if not isinstance(resp, dict):
+            resp = {}
         if not resp.get("ok"):
-            self.status_name.setText(i18n.t("компаньон недоступен"))
+            self.status_name.setText(i18n.t("состояние питания недоступно"))
             return
         data = resp["data"]
         profile = data.get("profile")
         self._profile = profile
         self._orig_values = data.get("original_values")
+
+        # профиль от прошлой сессии, а компаньона (он сторожит откат) нет:
+        # откатываем сами — иначе чужой клон схемы живёт до следующего
+        # применения, а фут честно пишет «служба не запущена»
+        if profile and not self._leftover_checked:
+            self._leftover_checked = True
+            if not self.client.alive():
+                self._rollback_leftover()
+                return
 
         for pid, btn in self.profile_btns.items():
             btn.setChecked(pid == profile and not self._custom_mode)
@@ -552,6 +713,54 @@ class PowerWindow(QWidget):
         elif not profile:
             self.profile_desc.setText(i18n.t("Профиль не применён — активна исходная схема."))
 
+    # -- откат профиля прошлой сессии ---------------------------------------
+
+    def _rollback_leftover(self) -> None:
+        """Откатить профиль, оставшийся от прошлой сессии (компаньона нет).
+
+        Профиль пишется в клон активной схемы, а схема переживает перезапуск
+        приложения и перезагрузку системы: если UI упал вместе с компаньоном или
+        машина выключилась с применённым профилем, откатывать некому. powercfg
+        прав администратора не требует, поэтому откатываем сами — в фоне — и
+        говорим об этом честно (журнал + строка состояния).
+        """
+        if self._leftover_busy or self._apply_busy:
+            return
+        self._leftover_busy = True
+        self.status_name.setText(i18n.t("откатываю профиль прошлой сессии…"))
+        gd_bg.submit(self._do_rollback, self._rollback_done, parent=self)
+
+    @staticmethod
+    def _do_rollback() -> bool:
+        import gd_power
+
+        return gd_power.restore()
+
+    def _rollback_done(self, ok) -> None:
+        self._leftover_busy = False
+        if ok:
+            self._set_bottom_status(
+                i18n.t("Профиль прошлой сессии откатил — компаньона не было."), ok=True
+            )
+        else:
+            self._set_bottom_status(
+                i18n.t("Профиль прошлой сессии откатить не удалось."), ok=False
+            )
+        try:
+            import gd_journal
+
+            gd_journal.record(
+                "cpu_profile",
+                i18n.t("откат профиля прошлой сессии"),
+                i18n.t("профиль применён"),
+                i18n.t("исходная схема"),
+                why=i18n.t("профиль остался от прошлой сессии, а компаньон не работал"),
+                source=i18n.t("автооткат"),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        self._refresh_status()
+
     def _tick(self):
         s = self._sensors_sample()
         if s["mhz"]:
@@ -577,7 +786,7 @@ class PowerWindow(QWidget):
         # Во встроенном режиме компаньон живёт вместе с главным приложением,
         # откат выполняется при его выходе (quit_app) или watchdog'ом.
         if self._standalone:
-            self.client.shutdown(restore=True)
+            self.client.shutdown_async(restore=True)
         super().closeEvent(event)
 
 

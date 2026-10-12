@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import gd_i18n as i18n
+import gd_proc
 
 import json
 import os
@@ -20,7 +21,6 @@ import random
 import re
 import socket
 import struct
-import subprocess
 import time
 from pathlib import Path
 
@@ -117,7 +117,8 @@ def measure_resolvers(timeout: float = 2.0) -> dict:
 # -- текущая конфигурация ----------------------------------------------------
 def _run(args: list[str]) -> tuple[int, str]:
     try:
-        p = subprocess.run(args, capture_output=True, timeout=25)
+        # через gd_proc: без окна консоли (иначе netsh/powershell мелькают чёрным)
+        p = gd_proc.run(args, timeout=25)
         raw = (p.stdout or b"") + (p.stderr or b"")
         # netsh и часть утилит Windows отдают UTF-8; запасной путь — OEM-кодировка
         try:
@@ -129,31 +130,83 @@ def _run(args: list[str]) -> tuple[int, str]:
         return -1, str(exc)
 
 
-def active_interface() -> str | None:
-    # интерфейс, через который идёт маршрут по умолчанию (есть шлюз)
-    code, out = _run([
-        "powershell", "-NoProfile", "-Command",
-        "(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).InterfaceAlias",
-    ])
-    if code == 0 and out.strip():
-        # первая непустая строка, которая не является заголовком/предупреждением
-        for line in out.strip().splitlines():
-            line = line.strip()
-            if line and not line.startswith("[") and "InterfaceAlias" not in line:
-                return line
-    # запасной путь: netsh, пропуская псевдо-интерфейсы
+#: кэш активного интерфейса: сеть меняется редко, а каждый опрос — это работа
+_IFACE_TTL = 60.0
+_iface_cache: tuple[str | None, float] = (None, 0.0)
+
+
+def _iface_native() -> str | None:
+    """Интерфейс маршрута по умолчанию через Win32 (iphlpapi) — ~30 мкс.
+
+    ``GetBestRoute(0, 0)`` отдаёт строку маршрутной таблицы, по которой пойдёт
+    трафик «в интернет»; ``ConvertInterfaceIndexToLuid`` +
+    ``ConvertInterfaceLuidToAlias`` превращают индекс в имя (FriendlyName) —
+    ровно то, которое понимает ``netsh ... name=``.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        iphlpapi = ctypes.WinDLL("iphlpapi.dll")
+
+        class MIB_IPFORWARDROW(ctypes.Structure):
+            _fields_ = [(field, wintypes.DWORD) for field in (
+                "dwForwardDest", "dwForwardMask", "dwForwardPolicy", "dwForwardNextHop",
+                "dwForwardIfIndex", "dwForwardType", "dwForwardProto", "dwForwardAge",
+                "dwForwardNextHopAS", "dwForwardMetric1", "dwForwardMetric2",
+                "dwForwardMetric3", "dwForwardMetric4", "dwForwardMetric5")]
+
+        row = MIB_IPFORWARDROW()
+        if iphlpapi.GetBestRoute(0, 0, ctypes.byref(row)) != 0:
+            return None
+        luid = ctypes.c_ulonglong(0)
+        if iphlpapi.ConvertInterfaceIndexToLuid(
+                ctypes.c_ulong(row.dwForwardIfIndex), ctypes.byref(luid)) != 0:
+            return None
+        alias = ctypes.create_unicode_buffer(257)
+        if iphlpapi.ConvertInterfaceLuidToAlias(
+                ctypes.byref(luid), alias, ctypes.c_size_t(257)) != 0:
+            return None
+        return alias.value or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _iface_netsh() -> str | None:
+    """Запасной путь: первый подключённый интерфейс из `netsh`, без псевдо-имён."""
     code, out = _run(["netsh", "interface", "ipv4", "show", "interfaces"])
     if code != 0:
         return None
     for line in out.splitlines():
+        # i18n: skip (регулярка под вывод netsh на двух языках — не UI-строка)
         if re.search(r"\b(connected|подключ\w*)\b", line, re.IGNORECASE):
             parts = line.split()
             if len(parts) >= 5:
                 name = " ".join(parts[4:])
+                # i18n: skip (регулярка под вывод netsh на двух языках — не UI-строка)
                 if re.search(r"loopback|pseudo|tunnel|туннель", name, re.IGNORECASE):
                     continue
                 return name
     return None
+
+
+def active_interface(force: bool = False) -> str | None:
+    """Имя интерфейса с маршрутом по умолчанию (то, что ждёт ``netsh name=``).
+
+    Грабли: `Get-NetIPConfiguration` в PowerShell на этой системе стоит **~3 с CPU**
+    за запуск (CIM + автозагрузка модуля), а вызывался он в фоновом опросе раз в
+    30 с — это ~8 % ядра постоянно (замер `_tmp_idle.py`). Поэтому основной путь —
+    Win32 (~30 мкс), запасной — `netsh`, а результат кэшируется на :data:`_IFACE_TTL`.
+    """
+    global _iface_cache
+    name, ts = _iface_cache
+    if not force and name and (time.monotonic() - ts) < _IFACE_TTL:
+        return name
+
+    name = _iface_native() or _iface_netsh()
+    if name:
+        _iface_cache = (name, time.monotonic())
+    return name
 
 
 def current_state(iface: str | None = None) -> dict:
@@ -167,6 +220,7 @@ def current_state(iface: str | None = None) -> dict:
     grab = None
     if code == 0:
         for line in out.splitlines():
+            # i18n: skip-start — регулярки под вывод netsh RU/EN, не UI-строки
             if re.search(r"DNS-сервер\w*.*(?:через DHCP|through DHCP)", line):
                 grab = "dhcp"
                 tail = line.split(":", 1)[-1].strip()
@@ -185,17 +239,15 @@ def current_state(iface: str | None = None) -> dict:
                     (static_servers if grab == "static" else dhcp_servers).append(m.group(1))
                 elif line.strip() and not line.strip().startswith("("):
                     grab = None
+            # i18n: skip-end
     # статические записи важнее: если они есть — режим статический
     mode = "static" if static_servers else ("dhcp" if dhcp_servers else None)
     servers = static_servers if static_servers else dhcp_servers
     if not servers:
-        # надёжный запасной путь: PowerShell-оbject
-        code2, out2 = _run([
-            "powershell", "-NoProfile", "-Command",
-            f"(Get-DnsClientServerAddress -InterfaceAlias '{iface}' -AddressFamily IPv4).ServerAddresses -join ','",
-        ])
+        # запасной путь — тоже netsh (PowerShell стоит ~3 с CPU за запуск)
+        code2, out2 = _run(["netsh", "interface", "ipv4", "show", "dnsservers", f"name={iface}"])
         if code2 == 0:
-            servers = [s.strip() for s in out2.strip().split(",") if re.match(r"^\d+\.\d+\.\d+\.\d+$", s.strip())]
+            servers = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", out2)
     return {"iface": iface, "mode": mode or ("static" if servers else "dhcp"), "servers": servers}
 
 
@@ -215,6 +267,20 @@ def saved_state() -> dict | None:
         return json.loads(state_path().read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
+
+
+def remember_before_change() -> dict:
+    """Прочитать текущую конфигурацию и запомнить её как «как было» — до смены.
+
+    Запоминаем один раз на интерфейс: иначе вторая смена DNS затрёт исходное
+    состояние, и «Вернуть как было» вернёт не исходное, а предыдущее изменение.
+    Один код и для вкладки «DNS», и для действия правила («Сменить DNS»).
+    """
+    before = current_state()
+    saved = saved_state() or {}
+    if not saved.get("iface") or saved.get("iface") != before.get("iface"):
+        save_state()
+    return before
 
 
 # -- применение (только через elevated-хелпер) --------------------------------

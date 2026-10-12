@@ -92,7 +92,9 @@ class JournalDialog(QDialog):
         for e in items:
             it = QListWidgetItem(gd_journal.human(e))
             it.setToolTip(
-                i18n.t("причина: {v0}\nисточник: {v1}\nоткат: {v2}", v0=e.get('why') or '—', v1=e.get('source') or '—', v2='доступен' if e.get('reversible') else 'нет')
+                i18n.t("причина: {v0}\nисточник: {v1}\nоткат: {v2}", v0=e.get('why') or '—',
+                       v1=e.get('source') or '—',
+                       v2=i18n.t('доступен') if e.get('reversible') else i18n.t('нет'))
             )
             self.list.addItem(it)
         self.empty.setVisible(not items)

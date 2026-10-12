@@ -11,6 +11,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import gd_i18n as i18n
+
 MAX_LINES = 800        # хвост, который держим на диске
 
 
@@ -99,15 +101,16 @@ def human(entry: dict) -> str:
     except ValueError:
         t = "--:--"
     names = {
-        "cpu_profile": "Питание CPU",
-        "gpu_pl": "Лимит GPU",
-        "gpu_clocks": "Частоты GPU",
-        "restore": "Откат",
+        "cpu_profile": i18n.t("Питание CPU"),
+        "gpu_pl": i18n.t("Лимит GPU"),
+        "gpu_clocks": i18n.t("Частоты GPU"),
+        "zapret": i18n.t("Обход DPI"),
+        "restore": i18n.t("Откат"),
     }
     kind = names.get(entry.get("kind"), entry.get("kind", "?"))
     target = entry.get("target") or ""
     if entry.get("kind") == "restore":
-        body = f"{target}" if target else "исходное состояние возвращено"
+        body = f"{target}" if target else i18n.t("исходное состояние возвращено")
     else:
         before, after = entry.get("before"), entry.get("after")
         if before is None or after is None:

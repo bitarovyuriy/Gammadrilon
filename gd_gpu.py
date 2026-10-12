@@ -13,11 +13,11 @@
 """
 from __future__ import annotations
 
-import gd_i18n as i18n
-
 import os
-import subprocess
-import sys
+
+import gd_helper
+import gd_i18n as i18n
+import gd_proc
 
 SMI = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe")
 PIPE_NAME = r"\\.\pipe\GammadrilonGpu"
@@ -27,127 +27,22 @@ PIPE_NAME = r"\\.\pipe\GammadrilonGpu"
 # «Отказано в доступе» на уровне ACL. Поэтому хелпер слушает только loopback,
 # а целостность связи обеспечивает встроенный handshake (authkey) из
 # multiprocessing.connection.
-TCP_HOST = "127.0.0.1"
-TCP_PORT = 47318
+#
+# Клиент живёт в gd_helper (общий для GPU/памяти/DNS); здесь — реэкспорт для
+# совместимости с gd_gpu_service и UI-модулями.
+TCP_HOST = gd_helper.TCP_HOST
+TCP_PORT = gd_helper.TCP_PORT
+HERE = gd_helper.HERE
+SESSION_FILE = gd_helper.SESSION_FILE
+new_token = gd_helper.new_token
 
 
-def new_token() -> str:
-    """Случайный ключ сессии: UI передаёт его хелперу при запуске."""
-    import secrets
+class GpuClient(gd_helper.HelperClient):
+    """Клиент elevated-хелпера (обратная совместимость имени).
 
-    return secrets.token_hex(16)
-
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-SESSION_FILE = os.path.join(
-    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Gammadrilon", "gpu_session.json"
-)
-
-
-class GpuClient:
-    """Клиент elevated-хелпера: подключение по loopback, запуск через UAC."""
-
-    def __init__(self) -> None:
-        self._conn = None
-        self.port: int | None = None
-        self.token: str | None = None
-
-    # -- сессия ------------------------------------------------------------
-    def _load_session(self) -> dict | None:
-        try:
-            import json
-
-            with open(SESSION_FILE, encoding="utf-8") as fh:
-                return json.load(fh)
-        except (OSError, ValueError):
-            return None
-
-    def _save_session(self, port: int, token: str) -> None:
-        try:
-            import json
-
-            os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
-            with open(SESSION_FILE, "w", encoding="utf-8") as fh:
-                json.dump({"port": port, "token": token}, fh)
-        except OSError:
-            pass
-
-    # -- соединение --------------------------------------------------------
-    def _connect(self, port: int, token: str) -> bool:
-        from multiprocessing.connection import Client
-
-        try:
-            conn = Client((TCP_HOST, port), family="AF_INET", authkey=bytes.fromhex(token))
-        except OSError:
-            return False
-        self._conn = conn
-        self.port = port
-        self.token = token
-        return True
-
-    def ensure(self) -> bool:
-        if self._conn is not None:
-            return True
-        sess = self._load_session()
-        if sess and self._connect(int(sess["port"]), sess["token"]):
-            return True
-
-        port = TCP_PORT
-        token = new_token()
-        self._save_session(port, token)
-        self._launch(port, token)
-        import time
-
-        for _ in range(60):
-            time.sleep(0.25)
-            if self._connect(port, token):
-                return True
-        return False
-
-    def _launch(self, port: int, token: str) -> None:
-        """Запустить хелпер с правами администратора (однократный UAC)."""
-        svc = os.path.join(HERE, "gd_gpu_service.py")
-        if getattr(sys, "frozen", False):
-            # в собранном exe сервис — тот же исполняемый файл с флагом режима
-            args = (
-                f"-ArgumentList '--gpu-service','--port','{port}','--token','{token}',"
-                f"'--ui-pid','{os.getpid()}'"
-            )
-        else:
-            args = (
-                f"-ArgumentList '-u','{svc}','--port','{port}','--token','{token}',"
-                f"'--ui-pid','{os.getpid()}'"
-            )
-        cmd = (
-            f"Start-Process -FilePath '{sys.executable}' "
-            f"{args} -Verb RunAs -WindowStyle Hidden"
-        )
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-Command", cmd],
-            creationflags=0x08000000,
-        )
-
-    # -- протокол ----------------------------------------------------------
-    def call(self, obj: dict, timeout: float = 15.0) -> dict:
-        if not self.ensure():
-            return {"ok": False, "error": i18n.t("хелпер GPU не запустился (нужны права администратора)")}
-        try:
-            self._conn.send(obj)
-            if not self._conn.poll(timeout):
-                self._conn = None
-                return {"ok": False, "error": i18n.t("таймаут ответа хелпера")}
-            return self._conn.recv()
-        except (OSError, EOFError):
-            self._conn = None
-            return {"ok": False, "error": i18n.t("связь с хелпером потеряна")}
-
-    def shutdown(self, restore: bool = True) -> None:
-        if self._conn is not None:
-            try:
-                self.call({"cmd": "shutdown", "restore": restore})
-            except Exception:  # noqa: BLE001
-                pass
-        self._conn = None
+    Поведение полностью наследуется от gd_helper.HelperClient: подключение по
+    loopback, однократный UAC, устойчивый call() без исключений.
+    """
 
 # Профили GPU — ярлыки над слайдерами (ТЗ 4.4). Значения — цель по лимиту
 # мощности в ваттах; None = «взять у драйвера» (default/max).
@@ -175,14 +70,8 @@ def available() -> bool:
 
 def _smi(args: list[str], timeout: float = 8.0) -> str | None:
     try:
-        proc = subprocess.run(
-            [SMI, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            creationflags=0x08000000,  # CREATE_NO_WINDOW
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        proc = gd_proc.run([SMI, *args], text=True, timeout=timeout)
+    except (OSError, gd_proc.TimeoutExpired):
         return None
     if proc.returncode != 0:
         return None

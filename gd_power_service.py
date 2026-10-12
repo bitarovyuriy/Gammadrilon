@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 """Процесс-компаньон питания: pipe-сервер + watchdog отката.
 
-Запускается UI-приложением (subprocess.Popen). Через него идут все операции
-с профилями питания; при смерти UI (краш) он откатывает схему — откат
+Запускается UI-приложением (`gd_proc.popen` — без окна консоли). Через него идут все
+операции с профилями питания; при смерти UI (краш) он откатывает схему — откат
 «живёт после падения приложения».
 
 Протокол: multiprocessing.connection по named pipe (AF_PIPE),
 JSON-совместимые словари: {'cmd': ..., ...} -> {'ok': bool, 'data'|'error': ...}.
 
 Команды: ping | status | apply {profile, custom} | restore | shutdown {restore}
+
+`status` — чистое чтение powercfg, и то же самое умеет `gd_power.state_snapshot()`
+локально, без процесса. Поэтому UI читает состояние и без компаньона, а поднимает
+его только на запись (`apply`/`restore`) — ради отката, если UI умрёт.
 """
 
 from __future__ import annotations
@@ -23,7 +27,10 @@ import time
 from multiprocessing.connection import Listener
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gd_i18n as i18n  # noqa: E402
 import gd_power as gp  # noqa: E402
+
+i18n.init_for_process()      # компаньон — отдельный процесс: язык берём из presets.json
 
 PIPE_NAME = r"\\.\pipe\GammadrilonPower"
 WATCHDOG_INTERVAL = 2.0
@@ -61,26 +68,9 @@ def handle(cmd: dict) -> dict:
         return {"ok": True, "data": "pong"}
     if name == "status":
         try:
-            active = gp.get_active_scheme()
+            return {"ok": True, "data": gp.state_snapshot()}
         except OSError as e:
             return {"ok": False, "error": str(e)}
-        state = gp.load_state()
-        data = {"active_scheme": active, "profile": None, "clone_scheme": None,
-                "values": gp.read_values(active)}
-        try:
-            data["active_name"] = gp.scheme_name(active)
-        except OSError:
-            data["active_name"] = ""
-        if state:
-            data["profile"] = state.get("profile")
-            data["clone_scheme"] = state.get("clone_scheme")
-            data["original_scheme"] = state.get("original_scheme")
-            data["applied_at"] = state.get("applied_at")
-            try:
-                data["original_values"] = gp.read_values(state["original_scheme"])
-            except OSError:
-                data["original_values"] = None
-        return {"ok": True, "data": data}
     if name == "apply":
         with _OP_LOCK:
             try:
@@ -96,7 +86,7 @@ def handle(cmd: dict) -> dict:
                 return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     if name == "shutdown":
         return {"ok": True, "data": "bye"}
-    return {"ok": False, "error": f"неизвестная команда: {name}"}
+    return {"ok": False, "error": i18n.t("неизвестная команда: {v0}", v0=name)}
 
 
 # --------------------------------------------------------------------------
@@ -177,6 +167,7 @@ class PowerService:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Gammadrilon power companion")
+    # i18n: skip (справка CLI — видна только разработчику)
     p.add_argument("--ui-pid", type=int, default=0, help="PID UI-процесса для watchdog")
     p.add_argument("--pipe", default=PIPE_NAME)
     args = p.parse_args()

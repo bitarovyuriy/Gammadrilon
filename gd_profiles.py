@@ -11,6 +11,8 @@ import datetime as _dt
 import json
 from pathlib import Path
 
+import gd_i18n as i18n
+
 APP_TAG = "Gammadrilon"
 FORMAT_VERSION = 3
 
@@ -103,10 +105,10 @@ def export_all(path: str | Path) -> tuple[bool, str]:
     try:
         p = Path(path)
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return True, f"Экспортировано в {p.name}: правила — {len(payload['rules'])}, " \
-                     f"настройки — таймер/тихий час/DNS."
+        return True, i18n.t("Экспортировано в {v0}: правила — {v1}, настройки — таймер/тихий час/DNS.",
+                            v0=p.name, v1=len(payload['rules']))
     except OSError as exc:
-        return False, f"не удалось записать файл: {exc}"
+        return False, i18n.t("не удалось записать файл: {v0}", v0=exc)
 
 
 def _read_autoclean() -> dict:
@@ -133,25 +135,26 @@ def import_all(path: str | Path) -> tuple[bool, str]:
         raw = Path(path).read_text(encoding="utf-8")
         data = json.loads(raw)
     except Exception as exc:  # noqa: BLE001
-        return False, f"файл не читается как JSON: {exc}"
+        return False, i18n.t("файл не читается как JSON: {v0}", v0=exc)
     if not isinstance(data, dict) or data.get("app") != APP_TAG:
-        return False, "это не файл настроек Gammadrilon"
+        return False, i18n.t("это не файл настроек Gammadrilon")
 
     done = []
     rules = data.get("rules")
     if isinstance(rules, list) and all(isinstance(r, dict) for r in rules):
         gd_rules.save_rules(rules)
-        done.append(f"правила ({len(rules)})")
+        done.append(i18n.t("правила ({v0})", v0=len(rules)))
 
     quiet = data.get("quiet_hour")
     if isinstance(quiet, dict):
         save_quiet(quiet)
-        done.append("тихий час")
+        done.append(i18n.t("тихий час"))
 
     autoclean = data.get("autoclean")
     if isinstance(autoclean, dict) and autoclean and _write_autoclean(autoclean):
-        done.append("автоочистка ОЗУ")
+        done.append(i18n.t("автоочистка ОЗУ"))
 
     if not done:
-        return False, "в файле нет знакомых разделов"
-    return True, "импортировано: " + ", ".join(done) + ". Профили CPU/GPU встроенные — их не перезаписываю."
+        return False, i18n.t("в файле нет знакомых разделов")
+    return True, i18n.t("импортировано: {v0}. Профили CPU/GPU встроенные — их не перезаписываю.",
+                        v0=", ".join(done))

@@ -4,12 +4,13 @@ import math
 import os
 import sys
 import time
-import subprocess
 import winreg
 from ctypes import wintypes
 from pathlib import Path
 
 import keyboard
+
+import gd_proc
 
 
 # --- PyQt5 и не-ASCII путь ----------------------------------------------------
@@ -82,6 +83,7 @@ from PyQt5.QtWidgets import (
 
 
 APP_NAME = "Gammadrilon"
+APP_VERSION = "v3.1"
 CONFIG_FILE = "presets.json"
 ICON_FILE = "icon.ico"
 
@@ -89,6 +91,7 @@ ICON_FILE = "icon.ico"
 import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 import gd_icons  # noqa: E402
+import gd_agent  # noqa: E402
 
 SLIDER_GROOVE_HEIGHT = 6
 SLIDER_HANDLE_SIZE = 22
@@ -101,7 +104,69 @@ SIDE_ICONS = {
     "tab.rules": "rules",
     "tab.utils": "utils",
     "tab.dns": "dns",
+    "tab.zapret": "zapret",
+    "tab.agent": "api",
 }
+
+# --- устойчивость: лог падений и глобальные обработчики -----------------------
+_CRASH_KEEP = []   # держим файл-дескриптор живым: faulthandler пишет в него
+
+
+def _crash_log_path() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / APP_NAME
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "gammadrilon.log"
+
+
+def install_crash_handlers() -> None:
+    """Сделать краши видимыми: traceback в файл + (по возможности) диалог.
+
+    До этого исключение в фоновом потоке или падение нативного кода завершали
+    процесс молча: пользователь видел только «приложение закрылось». Теперь
+    faulthandler пишет стек всех потоков, а sys/threading.excepthook —
+    Python-исключения (и показывает их в QMessageBox, если GUI ещё жив).
+    """
+    import faulthandler
+    import threading
+    import traceback
+
+    log = None
+    try:
+        log = open(_crash_log_path(), "a", encoding="utf-8")
+        log.write(f"\n=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")  # i18n: skip (лог-файл)
+        log.flush()
+        faulthandler.enable(file=log, all_threads=True)
+        _CRASH_KEEP.append(log)
+    except Exception:  # noqa: BLE001
+        log = None
+
+    def _report(exc_type, exc, tb) -> None:
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        if log is not None:
+            try:
+                log.write(text)
+                log.flush()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if QApplication.instance() is not None:
+                QMessageBox.critical(
+                    None, APP_NAME, f"{i18n.t('Непредвиденная ошибка')}:\n{exc}"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    sys.excepthook = _report
+
+    def _thread_hook(args) -> None:
+        _report(args.exc_type, args.exc_value, args.exc_traceback)
+
+    try:
+        threading.excepthook = _thread_hook
+    except Exception:  # noqa: BLE001
+        pass
+
+
 
 UI_FONT = '"Segoe UI Variable Text", "Segoe UI", Arial'
 DIGIT_FONT = '"Bahnschrift", "Segoe UI", Arial'
@@ -269,6 +334,10 @@ def load_config() -> dict:
         save_config(data)
         return data
 
+    # файл нормализуется (недостающие ключи, клампы) — запись только если что-то
+    # действительно изменилось: иначе каждый старт переписывал бы presets.json
+    before = json.dumps(data, sort_keys=True, ensure_ascii=False)
+
     data.setdefault("settings", {})
     data.setdefault("presets", [])
 
@@ -312,33 +381,57 @@ def load_config() -> dict:
     current["gamma"] = clamp(float(current.get("gamma", 1.0)), 0.5, 2.5)
     current["temperature"] = int(clamp(int(current.get("temperature", 6500)), 3000, 10000))
 
-    save_config(data)
+    if json.dumps(data, sort_keys=True, ensure_ascii=False) != before:
+        save_config(data)
     return data
 
 def get_startup_shortcut_path() -> Path:
+    """Скрипт автозапуска. `.vbs`: WScript умеет запускать процесс без окна."""
     startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-    return startup_dir / f"{APP_NAME}.bat"
+    return startup_dir / f"{APP_NAME}.vbs"
+
+
+def _legacy_startup_bat() -> Path:
+    """Старый .bat-автозапуск (до тихого способа) — подчищаем при переключении."""
+    return get_startup_shortcut_path().with_suffix(".bat")
 
 
 def enable_startup():
-    bat_path = get_startup_shortcut_path()
-    target = sys.executable if getattr(sys, "frozen", False) else sys.executable
+    """Включить автозапуск без окна.
 
-    script_path = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
-
-    if getattr(sys, "frozen", False):
-        command = f'"""{target}"""'
-    else:
-        command = f'"""{target}""" "{script_path}"'
-
-    content = f'@echo off\nstart "" {command}\n'
-    bat_path.write_text(content, encoding="utf-8")
+    Раньше это был .bat: он стартовал через `cmd` и при входе в систему
+    мелькал чёрным окном. WScript.Shell.Run с флагом 0 (скрыто) не показывает
+    ничего. В dev-режиме берём pythonw.exe — у python.exe консольная подсистема.
+    """
+    frozen = getattr(sys, "frozen", False)
+    target = sys.executable if frozen else gd_proc.python_exe()
+    command = f'"{target}"'
+    if not frozen:
+        command += f' "{Path(__file__).resolve()}"'
+    # в VBS кавычка внутри строкового литерала удваивается
+    vbs_command = command.replace('"', '""')
+    content = (
+        # i18n: skip — комментарий внутри .vbs-файла автозапуска, пользователь его не видит
+        "' Gammadrilon — автозапуск без окна (файл создан приложением)\r\n"
+        "Set sh = CreateObject(\"WScript.Shell\")\r\n"
+        f'sh.Run "{vbs_command}", 0, False\r\n'
+    )
+    get_startup_shortcut_path().write_text(content, encoding="utf-16")
+    legacy = _legacy_startup_bat()
+    if legacy.exists():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
 
 
 def disable_startup():
-    bat_path = get_startup_shortcut_path()
-    if bat_path.exists():
-        bat_path.unlink()
+    for path in (get_startup_shortcut_path(), _legacy_startup_bat()):
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 class GammaController:
     def __init__(self):
@@ -745,6 +838,10 @@ class NavItem(QWidget):
         self.setObjectName("NavItem")
         self.setFixedHeight(36)
         self.setCursor(Qt.PointingHandCursor)
+        # пункт меню должен быть достижим с клавиатуры: раньше Tab его пропускал,
+        # и в раздел можно было попасть только мышью
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName(text)
         self.setProperty("active", False)
 
         lay = QHBoxLayout(self)
@@ -768,6 +865,21 @@ class NavItem(QWidget):
             self.badge.setObjectName("NavBadge")
             lay.addWidget(self.badge)
 
+    def set_badge(self, text: str) -> None:
+        """Обновить бейдж справа (пустая строка — бейдж скрыт)."""
+        text = text or ""
+        if not text:
+            if self.badge is not None:
+                self.badge.hide()
+            return
+        if self.badge is None:
+            self.badge = QLabel(text)
+            self.badge.setObjectName("NavBadge")
+            self.layout().addWidget(self.badge)
+        else:
+            self.badge.setText(text)
+        self.badge.show()
+
     def set_active(self, on: bool) -> None:
         self.setProperty("active", bool(on))
         if self.icon_name:
@@ -781,6 +893,25 @@ class NavItem(QWidget):
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.key)
         super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):  # noqa: N802
+        """Enter/Space на пункте — то же, что клик: иначе меню недостижимо с клавиатуры."""
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit(self.key)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class AgentBridge(QObject):
+    """Мост «поток API-сервера → GUI-поток» (ТЗ, этап 8).
+
+    Сервер живёт в своих потоках и не трогает ни Qt-виджеты, ни PDH-запросы:
+    каждый запрос превращается в сигнал (он thread-safe), GUI-поток выполняет
+    действие и будит ожидающий серверный поток через `threading.Event`.
+    """
+
+    request = pyqtSignal(object)
 
 
 class MainWindow(QMainWindow):
@@ -826,6 +957,23 @@ class MainWindow(QMainWindow):
         self.build_tray()
         self.start_rules()
         self.start_quiet_hour()
+        # локальный API для инструментов (ТЗ, этап 8): сервер и обработчики
+        self._agent_server = None
+        self._agent_confirm_open = False
+        self._agent_confirm_dialog = None
+        self._agent_bridge = AgentBridge()
+        self._agent_bridge.request.connect(self._agent_handle)
+        self._agent_handlers = {
+            "status": self._agent_status,
+            "sensors": self._agent_sensors,
+            "journal": self._agent_journal,
+            "rules": self._agent_rules,
+            "zapret": self._agent_zapret,
+            "cpu_profile": self._agent_cpu_profile,
+            "gpu_profile": self._agent_gpu_profile,
+            "gpu_limit": self._agent_gpu_limit,
+            "dns_set": self._agent_dns_set,
+        }
         try:
             self.apply_theme(self.config.get("settings", {}).get("theme", "dark"))
         except Exception:  # noqa: BLE001
@@ -839,6 +987,11 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             pass
         self.bind_hotkeys()
+        self._fix_tab_order()
+
+        # локальный API: поднимаем только если пользователь включал его сам
+        if bool(self.config.get("settings", {}).get("agent_api", False)):
+            QTimer.singleShot(1200, self._agent_autostart)
 
         current = self.config["settings"]["current"]
 
@@ -1346,6 +1499,16 @@ class MainWindow(QMainWindow):
         self._dns_page = DnsWidget(standalone=False)
         self._add_page(self._dns_page, "tab.dns")
 
+        from gd_zapret_ui import ZapretWidget
+
+        self._zapret_page = ZapretWidget(standalone=False, host=self)
+        self._add_page(self._zapret_page, "tab.zapret")
+
+        from gd_agent_ui import AgentWidget
+
+        self._agent_page = AgentWidget(standalone=False, host=self)
+        self._add_page(self._agent_page, "tab.agent")
+
         self._retranslate_tabs()
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self._on_tab_changed(self.tabs.currentIndex())
@@ -1391,7 +1554,8 @@ class MainWindow(QMainWindow):
         layout = (
             ("grp", "side.power"), ("page", "tab.cpu"), ("page", "tab.gpu"),
             ("grp", "side.system"), ("page", "tab.gamma"), ("page", "tab.rules"),
-            ("page", "tab.utils"), ("page", "tab.dns"),
+            ("page", "tab.utils"), ("page", "tab.dns"), ("page", "tab.zapret"),
+            ("page", "tab.agent"),
         )
         for kind, key in layout:
             if kind == "grp":
@@ -1406,6 +1570,8 @@ class MainWindow(QMainWindow):
             self._side_layout.addWidget(item)
             self._nav_items[key] = item
         self._side_layout.addStretch(1)
+        # бейдж GPU берётся из общего кэша: даём фоновому сборщику прогреться
+        QTimer.singleShot(1500, self._refresh_gpu_badge)
 
     def _key_for_widget(self, widget) -> str:
         """Ключ пункта сайдбара для виджета (обёртки) страницы."""
@@ -1426,11 +1592,10 @@ class MainWindow(QMainWindow):
         """Бейдж пункта: лимит мощности GPU, число правил."""
         try:
             if key == "tab.gpu":
-                import gd_gpu
+                import gd_metrics
 
-                state = gd_gpu.read_state() or {}
-                pl = state.get("pl")
-                return f"{pl:.0f} Вт" if pl else ""
+                pl = (gd_metrics.gpu() or {}).get("pl")
+                return i18n.t("{v0:.0f} Вт", v0=pl) if pl else ""
             if key == "tab.rules":
                 import gd_rules
 
@@ -1442,6 +1607,16 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             pass
         return ""
+
+    def _refresh_gpu_badge(self) -> None:
+        """Обновить бейдж GPU в сайдбаре из кэша метрик (без подпроцессов)."""
+        item = getattr(self, "_nav_items", {}).get("tab.gpu")
+        if item is None:
+            return
+        try:
+            item.set_badge(self._side_badge("tab.gpu"))
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- титлбар, фут сайдбара, безрамочное окно --------------------------------
     def _setup_frameless(self) -> None:
@@ -1552,7 +1727,7 @@ class MainWindow(QMainWindow):
         brand.setObjectName("Brand")
         lay.addWidget(brand)
 
-        ver = QLabel("v3.0")
+        ver = QLabel(APP_VERSION)
         ver.setObjectName("BrandVer")
         lay.addWidget(ver)
         lay.addStretch(1)
@@ -1600,21 +1775,69 @@ class MainWindow(QMainWindow):
         return bar
 
     def _build_side_foot(self):
-        """Низ сайдбара: индикатор службы питания."""
+        """Низ сайдбара: честный индикатор службы питания.
+
+        В макете A подпись была статичной — «Служба питания активна» и вечно
+        горящий LED, хотя компаньон питания ленивый: его нет до первого
+        применения профиля. Индикатор показывает реальное состояние (см.
+        :meth:`_sync_foot`), иначе подпись врёт пользователю.
+        """
         foot = QWidget()
         foot.setObjectName("SideFoot")
         lay = QHBoxLayout(foot)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(8)
-        led = QFrame()
-        led.setObjectName("FootLed")
-        led.setFixedSize(7, 7)
-        lay.addWidget(led)
-        self._foot_label = QLabel(i18n.t("Служба питания активна"))
+        self._foot_led = QFrame()
+        self._foot_led.setObjectName("FootLed")
+        self._foot_led.setFixedSize(7, 7)
+        lay.addWidget(self._foot_led)
+        self._foot_label = QLabel("")
         self._foot_label.setObjectName("FootText")
         lay.addWidget(self._foot_label)
         lay.addStretch(1)
+        self._foot_state = None
+        self._sync_foot()
         return foot
+
+    def _sync_foot(self) -> None:
+        """Обновить индикатор службы питания по живому состоянию компаньона.
+
+        Дешёвый вызов (без обращений к пайпу и без запуска компаньона), поэтому
+        дёргается из уже существующего тика статусбара.
+        """
+        label = getattr(self, "_foot_label", None)
+        led = getattr(self, "_foot_led", None)
+        if label is None or led is None:
+            return          # фут ещё не построен: build_ui зовёт _retranslate_tabs раньше
+        page = getattr(self, "_power_page", None)
+        try:
+            alive = bool(page is not None and page.service_alive())
+            profile = page.current_profile() if page is not None else None
+        except Exception:  # noqa: BLE001
+            return
+        if (alive, profile) == self._foot_state:
+            return
+        self._foot_state = (alive, profile)
+
+        if alive:
+            names = {"eco": i18n.t("ЭКО"), "normal": i18n.t("НОРМАЛ"), "boost": i18n.t("БУСТ")}
+            text = i18n.t("Служба питания активна")
+            tip = i18n.t("Компаньон питания работает: профили применяются через него.")
+            tip += (" " + i18n.t("Профиль: {v0}.", v0=names.get(profile, str(profile).upper()))
+                    if profile else " " + i18n.t("Активна исходная схема."))
+        else:
+            text = i18n.t("Служба питания не запущена")
+            tip = i18n.t("Компаньон поднимется, когда применишь профиль CPU.")
+
+        try:
+            label.setText(text)
+            label.setToolTip(tip)
+            led.setToolTip(tip)
+            led.setProperty("state", "on" if alive else "off")
+            led.style().unpolish(led)   # QSS перечитывает [state="..."] только так
+            led.style().polish(led)
+        except RuntimeError:            # виджет уже удалён: выход приложения
+            pass
 
     def _toggle_max(self) -> None:
         if self.isMaximized():
@@ -1680,6 +1903,49 @@ class MainWindow(QMainWindow):
         self._key_to_index[key] = self.tabs.count()
         self.tabs.addWidget(shell)
 
+    def _fix_tab_order(self) -> None:
+        """Порядок обхода Tab: сайдбар → содержимое страницы → кнопки титлбара.
+
+        Qt кладёт виджеты в цепочку фокуса по порядку создания, поэтому титлбар
+        (он создаётся первым) оказывался впереди меню: первый Tab уходил в «Режим»
+        и быстрые кнопки, а до разделов надо было пройти всю шапку. Здесь цепочка
+        переставляется в читаемый порядок; кнопки окна — в конце, они дублируют
+        системные (Alt+Space, мышь).
+        """
+        nav = list(getattr(self, "_nav_items", {}).values())
+        if not nav:
+            return
+        # вся цепочка целиком; `keep` не даёт PyQt пересоздать обёртки — иначе
+        # id() переиспользуется и обход обрывается на середине
+        ring, seen, keep = [], set(), []
+        w = self
+        for _ in range(4000):
+            w = w.nextInFocusChain()
+            if w is None or w is self or id(w) in seen:
+                break
+            seen.add(id(w))
+            keep.append(w)
+            ring.append(w)
+        # isVisibleTo(self), а не isVisible(): в __init__ окно ещё не показано, и все
+        # дети «невидимы». isVisibleTo учитывает только явное скрытие — скрытые
+        # страницы стека (isHidden) отсеиваются, а видимые виджеты остаются.
+        stops = [x for x in ring if x.focusPolicy() != Qt.NoFocus and x.isVisibleTo(self)]
+        page = [x for x in stops if self.tabs.isAncestorOf(x)]
+        tail = [x for x in stops if x.objectName() == "ModeChip"
+                or x.objectName().startswith("Win") or x.objectName() == "TitleBtn"]
+        if not page or not tail:
+            return
+        # setTabOrder(anchor, target) переносит target сразу за anchor. Идём по
+        # желаемой последовательности, каждый раз сдвигая якорь: так кольцо
+        # фокуса перестраивается целиком (пара (окно, первый пункт) у Qt не
+        # срабатывает — верхний уровень не переставляется).
+        anchor = stops[0]
+        for target in (*nav, *page, *tail):
+            if target is anchor:
+                continue
+            QWidget.setTabOrder(anchor, target)
+            anchor = target
+
     def _retranslate_page_heads(self) -> None:
         for key, (title, sub) in getattr(self, "_page_heads", {}).items():
             title.setText(i18n.t(f"{key}.title"))
@@ -1709,10 +1975,15 @@ class MainWindow(QMainWindow):
         try:
             import gd_power
 
-            guid = gd_power.get_active_scheme()
-            scheme = gd_power.scheme_name(guid) if guid else ""
-            if scheme:
-                parts.append(f"{i18n.t('схема')} «{scheme}»")
+            now = time.monotonic()
+            cache = getattr(self, "_scheme_cache", None)
+            if cache is None or now - cache[1] > 20:
+                guid = gd_power.get_active_scheme()
+                scheme = gd_power.scheme_name(guid) if guid else ""
+                cache = (scheme, now)
+                self._scheme_cache = cache
+            if cache[0]:
+                parts.append(f"{i18n.t('схема')} «{cache[0]}»")
         except Exception:  # noqa: BLE001
             pass
         return " · ".join(parts)
@@ -1729,6 +2000,10 @@ class MainWindow(QMainWindow):
         self._sb_gpu = QLabel("GPU —")
         self._sb_ram = QLabel("RAM —")
         self._sb_dns = QLabel("DNS —")
+        # DNS читается только по запросу — говорим об этом прямо в подсказке
+        self.bind_tooltip(self._sb_dns,
+                          "DNS читается только по запросу: откройте вкладку «DNS» или "
+                          "нажмите «Замерить». В скобках — возраст показанных данных.")
         items = [self._sb_cpu, self._sb_gpu, self._sb_ram, self._sb_dns]
         for i, w in enumerate(items):
             w.setObjectName("StatusItem")
@@ -1744,9 +2019,6 @@ class MainWindow(QMainWindow):
         self._sb_hints.setObjectName("StatusHint")
         lay.addWidget(self._sb_hints)
 
-        self._sb_sensors = None
-        self._sb_gpu_tick = 0
-        self._sb_dns_tick = 0
         self._sb_timer = QTimer(self)
         self._sb_timer.timeout.connect(self._refresh_statusbar)
         self._sb_timer.start(2000)
@@ -1754,50 +2026,44 @@ class MainWindow(QMainWindow):
         return bar
 
     def _refresh_statusbar(self) -> None:
-        """CPU/RAM — каждые 2 с; GPU — ~6 с; DNS — ~30 с (netsh дорогой)."""
-        try:
-            from gd_sensors import CpuSensors, ram_usage
+        """CPU/RAM/GPU/DNS — из общего фонового кэша, без подпроцессов в GUI."""
+        import gd_metrics
 
-            if self._sb_sensors is None:
-                self._sb_sensors = CpuSensors()
-            s = self._sb_sensors.sample()
-            mhz, load = s.get("mhz"), s.get("load_pct")
-            cpu = "CPU"
-            if mhz:
-                cpu += f" {mhz / 1000:.2f} ГГц"
-            if load is not None:
-                cpu += f" · {load:.0f}%"
-            self._sb_cpu.setText(cpu)
-            ram = ram_usage()
-            self._sb_ram.setText(f"RAM {ram:.0f}%" if ram is not None else "RAM —")
-        except Exception:  # noqa: BLE001
-            pass
+        snap = gd_metrics.snapshot()
 
-        self._sb_gpu_tick += 1
-        if self._sb_gpu_tick % 3 == 1:
-            try:
-                import gd_gpu
+        s = snap.get("cpu") or {}
+        mhz, load = s.get("mhz"), s.get("load_pct")
+        cpu = "CPU"
+        if mhz:
+            cpu += i18n.t(" {v0:.2f} ГГц", v0=mhz / 1000)
+        if load is not None:
+            cpu += f" · {load:.0f}%"
+        self._sb_cpu.setText(cpu)
 
-                st = gd_gpu.read_state()
-                if st:
-                    temp = st.get("temp")
-                    pl, pl_max = st.get("pl") or 0, st.get("pl_max") or 0
-                    self._sb_gpu.setText(
-                        f"GPU {temp:.0f} °C · {pl:.0f}/{pl_max:.0f} Вт"
-                        if temp is not None else "GPU —")
-            except Exception:  # noqa: BLE001
-                pass
+        ram_pct = snap.get("ram")
+        self._sb_ram.setText(f"RAM {ram_pct:.0f}%" if ram_pct is not None else "RAM —")
 
-        self._sb_dns_tick += 1
-        if self._sb_dns_tick % 15 == 1:
-            try:
-                import gd_dns
+        st = snap.get("gpu")
+        if st:
+            temp = st.get("temp")
+            pl, pl_max = st.get("pl") or 0, st.get("pl_max") or 0
+            self._sb_gpu.setText(
+                i18n.t("GPU {v0:.0f} °C · {v1:.0f}/{v2:.0f} Вт",
+                       v0=temp, v1=pl, v2=pl_max)
+                if temp is not None else "GPU —")
+            self._refresh_gpu_badge()
 
-                st = gd_dns.current_state()
-                servers = st.get("servers") or []
-                self._sb_dns.setText("DNS " + (servers[0] if servers else "—"))
-            except Exception:  # noqa: BLE001
-                pass
+        dst = snap.get("dns")
+        if dst:
+            servers = dst.get("servers") or []
+            text = "DNS " + (servers[0] if servers else "—")
+            age = gd_metrics.dns_age()
+            # DNS читается по запросу: возраст цифр — часть честного показа
+            if age and age >= 60:
+                text += i18n.t(" ({v0:.0f} мин)", v0=age / 60)
+            self._sb_dns.setText(text)
+
+        self._sync_foot()       # индикатор службы питания — на этом же тике
 
     def build_tray(self):
         from gd_tray import TrayAssistant
@@ -1818,8 +2084,6 @@ class MainWindow(QMainWindow):
 
         # живой тултип (ТЗ 5.1): раз в секунду, без всплывающих окон
         self._gpu_cache = None
-        self._tray_tick_n = 0
-        self._tray_sensors = None
         self._tray_timer = QTimer(self)
         self._tray_timer.setInterval(1000)
         self._tray_timer.timeout.connect(self._tray_tick)
@@ -1827,22 +2091,12 @@ class MainWindow(QMainWindow):
         self._tray_tick()
 
     def _tray_tick(self):
-        """Тултип и цвет иконки трея — по живым данным."""
-        from gd_sensors import CpuSensors, ram_usage
+        """Тултип и цвет иконки трея — по данным общего кэша метрик."""
+        import gd_metrics
         from gd_tray import build_tooltip
 
-        if self._tray_sensors is None:
-            self._tray_sensors = CpuSensors()
-        sensors = self._tray_sensors.sample()
-
-        self._tray_tick_n += 1
-        if self._tray_tick_n % 5 == 1:          # GPU-опрос реже: это subprocess
-            try:
-                import gd_gpu
-
-                self._gpu_cache = gd_gpu.read_state()
-            except Exception:  # noqa: BLE001
-                self._gpu_cache = None
+        snap = gd_metrics.snapshot()
+        self._gpu_cache = snap.get("gpu")
 
         try:
             cpu_profile = self._power_page.current_profile()
@@ -1853,19 +2107,47 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             gpu_profile = None
 
-        tip = build_tooltip(cpu_profile, sensors, self._gpu_cache, gpu_profile, ram_usage())
+        tip = build_tooltip(cpu_profile, snap.get("cpu"), self._gpu_cache,
+                            gpu_profile, snap.get("ram"))
         self.tray.refresh(cpu_profile, gpu_profile, tip)
 
     # -- движок правил (ТЗ 5.4) --------------------------------------------
     def start_rules(self):
+        import gd_bg
         import gd_rules
 
         self._rule_engine = gd_rules.RuleEngine()
         self._rule_engine.prime()
+        # окружение правил (список процессов, питание, загрузка) снимаем в фоне:
+        # psutil.process_iter в GUI-потоке каждые 3 с — это фризы
+        self._rule_env = gd_bg.periodic(self, 3000, self._collect_rule_env, self._apply_rule_env)
+        self._rule_env.trigger()
         self._rule_timer = QTimer(self)
         self._rule_timer.setInterval(3000)
         self._rule_timer.timeout.connect(self._rules_tick)
         self._rule_timer.start()
+
+    def _collect_rule_env(self):
+        """Фоновой снимок окружения для правил — только то, что правилам нужно.
+
+        Нет включённых правил на процессы/питание/загрузку (обычный случай после
+        установки) — снимать нечего, и `psutil.process_iter` не запускается вовсе.
+        Правилу «тихий час» (расписание + загрузка) список процессов не нужен:
+        `env_need` возвращает лишь те части окружения, которые кто-то читает.
+        """
+        import gd_rules
+
+        need = gd_rules.env_need()
+        return gd_rules.collect_env(need) if need else None
+
+    @staticmethod
+    def _apply_rule_env(env) -> None:
+        """Сохранить снятое окружение (приходит в GUI-поток)."""
+        if env is None:
+            return
+        import gd_rules
+
+        gd_rules.update_env(env)
 
     def _rules_tick(self):
         """Проверить правила и применить сработавшие."""
@@ -1876,13 +2158,40 @@ class MainWindow(QMainWindow):
         if not fired:
             return
         for rule, _why in fired:
+            # None — действие идёт в фоне (нужны права): в лог попадёт по факту
             result = self._run_rule_action(rule)
-            gd_rules.log_fire(rule, result)
-            page = getattr(self, "_rules_page", None)
-            if page is not None:
-                page._reload_log()
+            if result is not None:
+                self._log_rule_result(rule, result)
 
-    def _run_rule_action(self, rule: dict) -> str:
+    def _log_rule_result(self, rule: dict, result: str) -> None:
+        """Запись в лог правил и обновление окна «Правила», если оно есть."""
+        import gd_rules
+
+        gd_rules.log_fire(rule, result)
+        page = getattr(self, "_rules_page", None)
+        if page is not None:
+            page._reload_log()
+
+    def _rule_client(self):
+        """Клиент хелпера для фоновых действий правил (один на приложение).
+
+        Вкладки «Утилиты»/«DNS» могут быть ни разу не открыты, поэтому правило
+        не одалживает клиента у виджета, а держит свой — хелпер многоклиентный.
+        """
+        import gd_gpu
+
+        client = getattr(self, "_rule_helper_client", None)
+        if client is None:
+            client = gd_gpu.GpuClient()
+            self._rule_helper_client = client
+        return client
+
+    def _run_rule_action(self, rule: dict) -> str | None:
+        """Выполнить действие правила.
+
+        Возвращает строку для лога правил — или None, если действие фоновое
+        (нужны права администратора) и отчитается само, когда реально завершится.
+        """
         action = rule.get("action") or {}
         kind = action.get("kind")
         name = rule.get("name") or "правило"
@@ -1900,14 +2209,101 @@ class MainWindow(QMainWindow):
                 self._gpu_page.apply_profile("restore", source="правило")
                 return i18n.t("«{v0}»: лимит GPU возвращён", v0=name)
             if kind == "purge_standby":
-                utils = getattr(self, "_utils_page", None)
-                if utils is None:
-                    return i18n.t("«{v0}»: вкладка «Утилиты» недоступна", v0=name)
-                utils._purge(auto=True)
-                return i18n.t("«{v0}»: standby list очищен", v0=name)
+                self._rule_purge(rule)
+                return None
+            if kind == "set_dns":
+                self._rule_set_dns(rule)
+                return None
         except Exception as exc:  # noqa: BLE001
             return i18n.t("«{v0}»: ошибка — {v1}", v0=name, v1=exc)
         return i18n.t("«{v0}»: действие недоступно", v0=name)
+
+    def _rule_purge(self, rule: dict) -> None:
+        """Очистка standby list по правилу: в фоне и через уже запущенный хелпер.
+
+        Вкладка «Утилиты» для этого не нужна, а UAC правило не поднимает
+        (`call_existing`): окно запроса прав поверх чужой игры — сюрприз. Нет
+        сессии — честная причина отказа попадёт и в лог правил, и в статусбар.
+        """
+        import gd_bg
+        import gd_journal
+
+        name = rule.get("name") or "правило"
+        client = self._rule_client()
+
+        def done(resp):
+            resp = resp if isinstance(resp, dict) else {}
+            if not resp.get("ok"):
+                self._log_rule_result(rule, i18n.t("«{v0}»: очистка не выполнена — {v1}",
+                                                   v0=name, v1=resp.get("error") or "?"))
+                self.set_status(i18n.t("Правило «{v0}»: очистка ОЗУ не выполнена.", v0=name))
+                return
+            data = resp.get("data") or {}
+            freed = (((data.get("after") or {}).get("Free") or 0)
+                     - ((data.get("before") or {}).get("Free") or 0)) / 1024 ** 2
+            self._log_rule_result(
+                rule, i18n.t("«{v0}»: standby list очищен, свободно {v1:+.0f} МБ", v0=name, v1=freed)
+            )
+            gd_journal.record("memory_purge", "standby list", None, None,
+                              why=i18n.t("очистка ОЗУ по правилу"),
+                              source=i18n.t("правило"), reversible=False)
+            import gd_toast
+
+            gd_toast.show_toast(i18n.t("toast.purge", mb=freed), "ok")
+
+        self._rule_purge_worker = gd_bg.submit(
+            lambda: client.call_existing({"cmd": "purge_standby"}), done, parent=self
+        )
+
+    def _rule_set_dns(self, rule: dict) -> None:
+        """Смена DNS по правилу: провайдер выбирается в правиле, UAC из фона — нет.
+
+        DoH правило не включает: шифрование канала — отдельное осознанное решение,
+        а не побочный эффект сработавшего триггера.
+        """
+        import gd_bg
+        import gd_dns
+        import gd_journal
+        import gd_rules
+
+        name = rule.get("name") or "правило"
+        action = rule.get("action") or {}
+        key = action.get("dns")
+        servers = gd_rules.dns_servers(key)
+        label = dict(gd_rules.DNS_PROFILES).get(key, key or "?")
+        if not servers:
+            self._log_rule_result(
+                rule, i18n.t("«{v0}»: у резолвера нет адресов — пропущено", v0=name)
+            )
+            return
+        client = self._rule_client()
+
+        def work():
+            gd_dns.remember_before_change()      # «как было» — до смены
+            return client.call_existing({"cmd": "dns_apply", "mode": "static", "servers": servers})
+
+        def done(resp):
+            resp = resp if isinstance(resp, dict) else {}
+            if not resp.get("ok"):
+                self._log_rule_result(rule, i18n.t("«{v0}»: DNS не изменён — {v1}",
+                                                   v0=name, v1=resp.get("error") or "?"))
+                self.set_status(i18n.t("Правило «{v0}»: DNS не изменён.", v0=name))
+                return
+            self._log_rule_result(
+                rule, i18n.t("«{v0}»: DNS переключён на {v1} ({v2})",
+                             v0=name, v1=label, v2=", ".join(servers))
+            )
+            gd_journal.record("dns_apply", i18n.t("DNS"), None, ", ".join(servers),
+                              why=i18n.t("смена DNS по правилу"),
+                              source=i18n.t("правило"), reversible=True)
+            import gd_metrics
+
+            gd_metrics.request_dns()   # смена — это и есть запрос: статусбар покажет новые адреса
+            import gd_toast
+
+            gd_toast.show_toast(i18n.t("toast.dns_apply", name=label), "ok")
+
+        self._rule_dns_worker = gd_bg.submit(work, done, parent=self)
 
     # -- действия из трея --------------------------------------------------
     def on_cpu_profile(self, pid):
@@ -1922,6 +2318,247 @@ class MainWindow(QMainWindow):
             self._gpu_page.apply_profile(name, source="трей")
         except Exception as exc:  # noqa: BLE001
             self.set_status(i18n.t("Профиль GPU не применён: {v0}", v0=exc))
+
+    # -- локальный API для инструментов (ТЗ, этап 8) ------------------------
+    def _agent_autostart(self):
+        """Поднять API при старте приложения (только если включал пользователь)."""
+        ok, err = self.start_agent_api()
+        if not ok:
+            try:
+                self._agent_page._show_warn(err)
+            except Exception:  # noqa: BLE001
+                pass
+            self.set_status(i18n.t("Локальный API не запущен: {v0}", v0=err))
+
+    def start_agent_api(self) -> tuple[bool, str]:
+        """Включить локальный API: сервер, токен, аудит. → (ок, ошибка)."""
+        if self._agent_server is not None and self._agent_server.running():
+            return True, ""
+        server = gd_agent.AgentServer(runner=self._agent_runner, version=APP_VERSION)
+        ok, err = server.start()
+        if not ok:
+            return False, err
+        self._agent_server = server
+        self._agent_page.set_running(server.port, server.warn)
+        self.set_agent_autostart(True)
+        self.set_status(i18n.t("Локальный API включён: {v0}", v0=server.endpoint()))
+        return True, ""
+
+    def stop_agent_api(self, remember: bool = True) -> None:
+        """Выключить API: остановить сервер и убрать адрес из конфига."""
+        server, self._agent_server = self._agent_server, None
+        if server is not None:
+            server.stop()
+        try:
+            self._agent_page.set_stopped()
+        except Exception:  # noqa: BLE001
+            pass
+        if remember:
+            self.set_agent_autostart(False)
+            self.set_status(i18n.t("Локальный API выключен."))
+
+    def agent_state(self) -> dict:
+        server = self._agent_server
+        if server is None or not server.running():
+            return {"running": False, "port": 0, "warn": ""}
+        return {"running": True, "port": server.port, "warn": server.warn}
+
+    def agent_autostart(self) -> bool:
+        return bool(self.config.get("settings", {}).get("agent_api", False))
+
+    def set_agent_autostart(self, on: bool) -> None:
+        """Запомнить «поднимать API при старте» (в presets.json).
+
+        Файл пишем только при изменении: `start_agent_api` зовёт это при каждом
+        запуске API, в том числе по автостарту, — иначе каждый старт окна с уже
+        включённым автостартом переписывал бы настройки «в никуда».
+        """
+        settings = self.config.setdefault("settings", {})
+        if bool(settings.get("agent_api", False)) == bool(on):
+            return
+        settings["agent_api"] = bool(on)
+        try:
+            save_config(self.config)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _agent_runner(self, action: str, params: dict, mutate: bool) -> dict:
+        """Вызов из потока API-сервера: маршалим в GUI-поток и ждём итог.
+
+        Серверные потоки не трогают ни Qt-виджеты, ни PDH-запросы: действие
+        выполняется в GUI-потоке (там же, где кнопки вкладок), а этот поток
+        ждёт результат через event. Не дождались — честная ошибка, не выдумка.
+        """
+        import threading
+
+        req = {"action": action, "params": params, "mutate": mutate,
+               "event": threading.Event(), "result": None}
+        self._agent_bridge.request.emit(req)
+        if not req["event"].wait(gd_agent.action_timeout(action) + 5.0):
+            return {"ok": False, "error": i18n.t(
+                "таймаут: окно не ответило — приложение занято, скрыто в трее или запрос ждёт подтверждения")}
+        return req["result"] or {"ok": False, "error": i18n.t("пустой ответ приложения")}
+
+    def _agent_handle(self, req: dict) -> None:
+        """GUI-поток: подтверждение пользователя (для mutate) и выполнение."""
+        action = req.get("action") or ""
+        spec = gd_agent.find(action)
+        if spec is None:
+            self._agent_reply(req, {"ok": False, "error": i18n.t("неизвестное действие: {v0}", v0=action)})
+            return
+        if spec.kind != "mutate" or not req.get("mutate"):
+            self._agent_execute(req, spec)
+            return
+        if self._agent_confirm_open:
+            self._agent_reply(req, {"ok": False, "error": i18n.t(
+                "уже есть запрос на подтверждение — этот отклонён")})
+            return
+        from gd_agent_ui import AgentConfirmDialog
+
+        self._agent_confirm_open = True
+        self.show_window()          # запрос нужно увидеть: окно могло быть в трее
+        dlg = AgentConfirmDialog(spec, req.get("params") or {}, parent=self)
+        self._agent_confirm_dialog = dlg
+
+        def _decided(res):
+            self._agent_confirm_open = False
+            self._agent_confirm_dialog = None
+            if int(res) == QDialog.Accepted:
+                self._agent_execute(req, spec)
+            else:
+                self._agent_reply(req, {"ok": False, "error": i18n.t("пользователь отклонил запрос")})
+
+        dlg.finished.connect(_decided)
+        dlg.open()
+
+    def _agent_execute(self, req: dict, spec) -> None:
+        """Выполнить действие (после подтверждения) и вернуть итог в поток сервера."""
+        handler = self._agent_handlers.get(spec.name)
+        if handler is None:
+            self._agent_reply(req, {"ok": False, "error": i18n.t("действие не подключено: {v0}", v0=spec.name)})
+            return
+        try:
+            res = handler(req.get("params") or {}, req)
+        except Exception as exc:  # noqa: BLE001
+            self._agent_reply(req, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            return
+        if res is not None:      # None = асинхронное действие: ответит on_done-хук страницы
+            self._agent_reply(req, res)
+
+    @staticmethod
+    def _agent_reply(req: dict, result: dict) -> None:
+        """Записать итог и разбудить серверный поток (ровно один раз)."""
+        if req["event"].is_set():
+            return
+        req["result"] = result
+        req["event"].set()
+
+    # -- обработчики действий API -------------------------------------------
+    def _agent_status(self, params: dict, req) -> dict:
+        """Сводка: версия, профили, DNS, обход DPI. Только кэши и файлы — без тяжёлых сканов."""
+        import gd_metrics
+        import gd_power
+
+        data = {
+            "app": {"name": APP_NAME, "version": APP_VERSION, "api_protocol": gd_agent.PROTOCOL},
+            "cpu": {
+                "profile": self._power_page.current_profile(),
+                "scheme": gd_power.scheme_name(gd_power.get_active_scheme()),
+            },
+            "gpu": {"profile": self._gpu_page.current_profile()},
+            "dns": gd_metrics.dns(),
+            "zapret": self._agent_zapret_data(),
+        }
+        return {"ok": True, "data": data}
+
+    def _agent_zapret_data(self) -> dict:
+        """Состояние обхода DPI без полного сканирования (файл состояния + PID)."""
+        import gd_zapret
+
+        ours = gd_zapret.our_state()
+        alive = bool(ours) and gd_zapret.pid_alive(ours.get("pid"))
+        return {
+            "path": self._zapret_page.current_path(),
+            "ours": ours if alive else None,
+            "our_stale": bool(ours) and not alive,
+        }
+
+    def _agent_sensors(self, params: dict, req) -> dict:
+        import gd_metrics
+
+        cpu = gd_metrics.cpu()
+        return {"ok": True, "data": {
+            "cpu_mhz": cpu.get("mhz"),
+            "cpu_perf_pct": cpu.get("perf_pct"),
+            "cpu_load_pct": cpu.get("load_pct"),
+            "ram_pct": gd_metrics.ram(),
+            "temp_c": None,
+            "note": i18n.t("температура CPU на этой системе недоступна без доп. ПО"),
+        }}
+
+    def _agent_journal(self, params: dict, req) -> dict:
+        import gd_journal
+
+        return {"ok": True, "data": gd_journal.recent(int(params.get("n") or 50))}
+
+    def _agent_rules(self, params: dict, req) -> dict:
+        import gd_rules
+
+        out = []
+        for r in gd_rules.load_rules():
+            try:
+                trig, cond, act = gd_rules.describe(r)
+            except Exception:  # noqa: BLE001
+                trig = cond = act = ""
+            out.append({"on": bool(r.get("on")), "trigger": trig,
+                        "condition": cond, "action": act})
+        return {"ok": True, "data": out}
+
+    def _agent_zapret(self, params: dict, req) -> dict:
+        import gd_zapret
+
+        return {"ok": True, "data": gd_zapret.snapshot(self._zapret_page.current_path())}
+
+    # -- изменяющие действия (после подтверждения) --------------------------
+    def _agent_cpu_profile(self, params: dict, req):
+        self._power_page.apply_profile(
+            params["profile"], source=i18n.t("агент"),
+            on_done=lambda resp: self._agent_reply(req, {
+                "ok": bool(resp.get("ok")), "error": resp.get("error")}))
+        return None            # итог придёт асинхронно через on_done
+
+    def _agent_gpu_note(self, resp) -> str:
+        """Честная приписка к ответу GPU: изменение ещё надо подтвердить во вкладке."""
+        if not resp.get("ok"):
+            return ""
+        return i18n.t("подтвердите изменение во вкладке «Питание GPU» в течение 12 с, иначе вернётся прежний лимит")
+
+    def _agent_gpu_profile(self, params: dict, req):
+        def done(resp):
+            self._agent_reply(req, {"ok": bool(resp.get("ok")), "error": resp.get("error"),
+                                    "note": self._agent_gpu_note(resp)})
+
+        self._gpu_page.apply_profile(params["profile"], source=i18n.t("агент"), on_done=done)
+        return None
+
+    def _agent_gpu_limit(self, params: dict, req):
+        def done(resp):
+            self._agent_reply(req, {"ok": bool(resp.get("ok")), "error": resp.get("error"),
+                                    "note": self._agent_gpu_note(resp)})
+
+        self._gpu_page.apply_limit(int(params["watts"]), source=i18n.t("агент"), on_done=done)
+        return None
+
+    def _agent_dns_set(self, params: dict, req):
+        self._dns_page.set_provider(
+            params["provider"], source=i18n.t("агент"),
+            on_done=lambda resp: self._agent_reply(req, {
+                "ok": bool(resp.get("ok")), "error": resp.get("error")}))
+        return None
+
+
+
+
 
     def open_palette(self):
         from gd_palette import CommandPalette
@@ -1967,7 +2604,14 @@ class MainWindow(QMainWindow):
             (utils.activate() if page is getattr(self, "_utils_scroll", None) else utils.deactivate())
         dns = getattr(self, "_dns_page", None)
         if dns is not None and page is dns:
-            dns._refresh_now()
+            dns.activate()      # открытие вкладки и есть запрос на чтение DNS
+        zapret = getattr(self, "_zapret_page", None)
+        if zapret is not None:
+            (zapret.activate() if page is zapret else zapret.deactivate())
+        agent = getattr(self, "_agent_page", None)
+        if agent is not None:
+            (agent.activate() if page is agent else agent.deactivate())
+        self._sync_metrics_activity()
 
     def open_dns_tab(self):
         """Открыть вкладку «DNS» в главном окне."""
@@ -1975,13 +2619,20 @@ class MainWindow(QMainWindow):
         self.show_window()
 
     def apply_theme(self, name: str) -> str:
-        """Переключить тёмную/светлую тему (ТЗ 5)."""
+        """Переключить тёмную/светлую тему (ТЗ 5).
+
+        Файл настроек пишем только если тема действительно изменилась: при старте
+        окно применяет сохранённую тему, и перезапись presets.json «на всякий
+        случай» каждый запуск — лишняя запись на диск.
+        """
         global APP_STYLESHEET
         name = th.apply(name)
         APP_STYLESHEET = build_app_stylesheet()
         try:
-            self.config.setdefault("settings", {})["theme"] = name
-            save_config(self.config)
+            settings = self.config.setdefault("settings", {})
+            if settings.get("theme") != name:
+                settings["theme"] = name
+                save_config(self.config)
         except Exception:  # noqa: BLE001
             pass
         app = QApplication.instance()
@@ -1989,7 +2640,7 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(APP_STYLESHEET)
         for page in (getattr(self, "_power_page", None), getattr(self, "_gpu_page", None),
                      getattr(self, "_rules_page", None), getattr(self, "_utils_page", None),
-                     getattr(self, "_dns_page", None)):
+                     getattr(self, "_dns_page", None), getattr(self, "_agent_page", None)):
             if page is not None:
                 try:
                     page.setStyleSheet(th.STYLESHEET)
@@ -2047,6 +2698,7 @@ class MainWindow(QMainWindow):
             import gd_toast
 
             gd_toast.show_toast(
+                # i18n: skip — тост показывает сообщение на новом языке, а не перевод
                 ("Язык переключён. Внутренние экраны обновятся после перезапуска."
                  if name == "ru" else
                  "Language switched. Inner screens will refresh after restart."),
@@ -2062,6 +2714,8 @@ class MainWindow(QMainWindow):
         hints = getattr(self, "_sb_hints", None)
         if hints is not None:
             hints.setText(i18n.t("status.hints"))
+        self._foot_state = None          # подпись фута переводим заново
+        self._sync_foot()
 
     def toggle_language(self):
         return self.set_language("en" if i18n.current() == "ru" else "ru")
@@ -2085,20 +2739,17 @@ class MainWindow(QMainWindow):
         power = getattr(self, "_power_page", None)
         if power is not None and getattr(power, "client", None) is not None:
             try:
-                r = power.client.call({"cmd": "restore"})
-                if r.get("ok"):
-                    done.append("питание CPU")
-                    power._active_profile = None
+                # откат идёт в фоне (через компаньон), GUI не ждёт
+                power.apply_profile("restore", source=i18n.t("утилиты"))
+                done.append("питание CPU")
             except Exception:  # noqa: BLE001
                 pass
 
         gpu = getattr(self, "_gpu_page", None)
         if gpu is not None and getattr(gpu, "client", None) is not None:
             try:
-                r = gpu.client.call({"cmd": "restore"})
-                if r.get("ok"):
-                    done.append("лимит GPU")
-                    gpu._active_profile = None
+                gpu.apply_profile("restore", source=i18n.t("утилиты"))
+                done.append("лимит GPU")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -2107,6 +2758,20 @@ class MainWindow(QMainWindow):
             try:
                 dns._restore()
                 done.append("DNS")
+            except Exception:  # noqa: BLE001
+                pass
+
+        # обход DPI: остановить winws.exe, запущенный Gammadrilon (ТЗ 8, DoD)
+        zapret = getattr(self, "_zapret_page", None)
+        if zapret is not None:
+            try:
+                import gd_zapret
+
+                state = gd_zapret.our_state()
+                pid = (state or {}).get("pid")
+                if pid and gd_zapret.pid_alive(pid):
+                    zapret._off()
+                    done.append(i18n.t("обход DPI"))
             except Exception:  # noqa: BLE001
                 pass
 
@@ -2127,27 +2792,27 @@ class MainWindow(QMainWindow):
                 if utils.chk_auto.isChecked():
                     utils.chk_auto.setChecked(False)
                     utils._save_auto()
-                    done.append("автоочистка ОЗУ")
+                    done.append(i18n.t("автоочистка ОЗУ"))
             except Exception:  # noqa: BLE001
                 pass
 
         try:
             if (gd_extra.timer_ms() or 99) < 1.0:
                 gd_extra.set_timer_resolution(False)
-                done.append("точность таймера")
+                done.append(i18n.t("точность таймера"))
         except Exception:  # noqa: BLE001
             pass
 
         try:
             self.gamma_controller.reset()
-            done.append("гамма")
+            done.append(i18n.t("гамма"))
         except Exception:  # noqa: BLE001
             pass
 
         try:
-            gd_journal.record("reset", "все изменения Gammadrilon", None,
-                              ", ".join(done) or "нечего", why="сброс всех изменений",
-                              source="утилиты")
+            gd_journal.record("reset", i18n.t("все изменения Gammadrilon"), None,
+                              ", ".join(done) or i18n.t("нечего"), why=i18n.t("сброс всех изменений"),
+                              source=i18n.t("утилиты"))
         except Exception:  # noqa: BLE001
             pass
         gd_toast.suppress(False)
@@ -2193,7 +2858,7 @@ class MainWindow(QMainWindow):
         power = getattr(self, "_power_page", None)
         if power is not None:
             try:
-                power.apply_profile("eco", source="тихий час")
+                power.apply_profile("eco", source=i18n.t("тихий час"))
             except Exception:  # noqa: BLE001
                 pass
         q["applied"] = True
@@ -2206,8 +2871,8 @@ class MainWindow(QMainWindow):
             pass
         try:
             gd_journal.record("quiet_hour", f"{q.get('start')}–{q.get('end')}", None,
-                              "ЭКО CPU + минимум яркости", why="тихий час",
-                              source="утилиты")
+                              i18n.t("ЭКО CPU + минимум яркости"), why=i18n.t("тихий час"),
+                              source=i18n.t("утилиты"))
         except Exception:  # noqa: BLE001
             pass
 
@@ -2225,8 +2890,7 @@ class MainWindow(QMainWindow):
         power = getattr(self, "_power_page", None)
         if power is not None and getattr(power, "client", None) is not None:
             try:
-                power.client.call({"cmd": "restore"})
-                power._active_profile = None
+                power.apply_profile("restore", source=i18n.t("тихий час"))
             except Exception:  # noqa: BLE001
                 pass
         q["applied"] = False
@@ -2239,8 +2903,8 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             pass
         try:
-            gd_journal.record("quiet_hour", "выход из окна", "ЭКО + минимум яркости",
-                              None, why="тихий час завершён", source="утилиты")
+            gd_journal.record("quiet_hour", i18n.t("выход из окна"), i18n.t("ЭКО + минимум яркости"),
+                              None, why=i18n.t("тихий час завершён"), source=i18n.t("утилиты"))
         except Exception:  # noqa: BLE001
             pass
 
@@ -2733,6 +3397,38 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, i18n.t("Ошибка автозапуска"), str(e))
 
+    # -- видимость окна и темп фоновой телеметрии --------------------------
+
+    def _sync_metrics_activity(self) -> None:
+        """Сказать сборщику метрик, что сейчас видит пользователь.
+
+        Живые цифры стоят внешних процессов: `nvidia-smi` — ~40 мс CPU за запуск,
+        чтение DNS — ~90 мс. Поэтому открытая вкладка GPU учащает опрос, а окно,
+        ушедшее в трей, — замедляет (см. ``gd_metrics.set_activity``).
+        """
+        try:
+            import gd_metrics
+
+            visible = self.isVisible() and not self.isMinimized()
+            gd_metrics.set_activity(visible=visible,
+                                    gpu_focus=self._key_for_widget(self.tabs.currentWidget()) == "tab.gpu")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_metrics_activity()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._sync_metrics_activity()
+
+    def changeEvent(self, event):
+        """Сворачивание меняет не видимость, а состояние окна — ловим и его."""
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange:
+            self._sync_metrics_activity()
+
     def closeEvent(self, event):
         if self.is_quitting:
             event.accept()
@@ -2764,14 +3460,42 @@ class MainWindow(QMainWindow):
         # откат профиля питания (если вкладка «Питание CPU» использовалась)
         try:
             if getattr(self, "_power_page", None) is not None:
-                self._power_page.client.shutdown(restore=True)
+                self._power_page.client.shutdown_async(restore=True)
         except Exception:
             pass
 
         # остановка GPU-хелпера с откатом лимита мощности
         try:
             if getattr(self, "_gpu_page", None) is not None:
-                self._gpu_page.client.shutdown(restore=True)
+                self._gpu_page.client.shutdown_async(restore=True)
+        except Exception:
+            pass
+
+        # обход DPI: если хелпер поднимала только вкладка zapret — закрыть через её клиент
+        try:
+            zapret_page = getattr(self, "_zapret_page", None)
+            if zapret_page is not None and getattr(zapret_page, "client", None) is not None:
+                zapret_page.client.shutdown_async(restore=True)
+        except Exception:
+            pass
+
+        # локальный API: сервер не должен пережить приложение
+        try:
+            self.stop_agent_api(remember=False)
+        except Exception:
+            pass
+
+        # дождаться фоновых задач: иначе Qt удалит ещё работающий QThread
+        try:
+            import gd_bg
+
+            gd_bg.wait_all(2000)
+        except Exception:
+            pass
+        try:
+            import gd_metrics
+
+            gd_metrics.stop()
         except Exception:
             pass
 
@@ -2816,7 +3540,7 @@ QLabel#BrandVer {
 QPushButton#ModeChip {
     background: @PRESSED@;
     border: 1px solid @TRACK@;
-    border-radius: 13px;
+    border-radius: @RADIUS@;
     padding: 0 10px;
     color: @INK2@;
     font-size: 11.5px;
@@ -2890,6 +3614,11 @@ QWidget#NavItem:hover {
     background: @PRESSED@;
 }
 
+QWidget#NavItem:focus {
+    background: @PRESSED@;
+    border: 1px solid @ACCENT@;
+}
+
 QWidget#NavItem[active="true"] {
     background: @PRESSED@;
     border: 1px solid @RULE@;
@@ -2923,6 +3652,11 @@ QWidget#SideFoot {
 QFrame#FootLed {
     background: @ACCENT@;
     border-radius: 3px;
+}
+
+/* компаньон питания не поднят: LED не горит — состояние честное (см. _sync_foot) */
+QFrame#FootLed[state="off"] {
+    background: @MUTED@;
 }
 
 QLabel#FootText {
@@ -3071,6 +3805,19 @@ QLabel#Hint {
     font-size: 11px;
 }
 
+/* «i» в кружке у заголовка карточки: подсказка без зависимости от глифа ⓘ */
+QLabel#CardInfo {
+    color: @MUTED@;
+    border: 1px solid @RULE@;
+    border-radius: @RADIUS@;
+    min-width: 14px;
+    max-width: 14px;
+    min-height: 14px;
+    max-height: 14px;
+    font-family: "Segoe UI Variable Text", "Segoe UI", Arial;
+    font-size: 10px;
+}
+
 QLabel#Metric {
     font-family: "Bahnschrift", "Segoe UI", Arial;
     font-size: 14px;
@@ -3103,7 +3850,7 @@ QLabel#DialogTitle {
 QFrame#Card {
     background: @SURFACE@;
     border: 1px solid @RULE@;
-    border-radius: 12px;
+    border-radius: @RADIUS@;
 }
 
 /* --- таблицы (макет A) --- */
@@ -3132,6 +3879,12 @@ QTableWidget::item:selected {
     background: @PRESSED@;
     color: @INK@;
     border-left: 2px solid @ACCENT@;
+}
+
+/* фон хедера: иначе пустая часть строки заголовка остаётся системно-светлой */
+QHeaderView {
+    background: @SURFACE@;
+    border: none;
 }
 
 QHeaderView::section {
@@ -3193,7 +3946,7 @@ QSlider::handle:horizontal {
     width: 16px;
     height: 16px;
     margin: -8px 0;
-    border-radius: 11px;
+    border-radius: @RADIUS@;
     background: @ACCENT@;
     border: 3px solid @PAPER@;
 }
@@ -3321,7 +4074,7 @@ QComboBox QAbstractItemView {
     background: @SURFACE@;
     color: @INK@;
     border: 1px solid @RULE@;
-    border-radius: 9px;
+    border-radius: @RADIUS@;
     padding: 4px;
     outline: none;
     selection-background-color: @NAVY@;
@@ -3385,6 +4138,71 @@ QComboBox:disabled {
     background: @PRESSED@;
 }
 
+QSpinBox,
+QDoubleSpinBox {
+    background: @SURFACE@;
+    color: @INK@;
+    border: 1px solid @RULE@;
+    border-radius: @RADIUS@;
+    padding: 6px 8px;
+}
+
+QSpinBox:focus,
+QDoubleSpinBox:focus {
+    border-color: @ACCENT@;
+}
+
+/* спиновые кнопки: без них системный стиль рисует светлые стрелки в тёмной теме */
+QSpinBox::up-button,
+QDoubleSpinBox::up-button,
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 18px;
+    background: @SURFACE@;
+    border: none;
+    border-left: 1px solid @RULE@;
+}
+
+QSpinBox::up-button,
+QDoubleSpinBox::up-button {
+    subcontrol-position: top right;
+    border-top-right-radius: @RADIUS@;
+}
+
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: @RADIUS@;
+}
+
+QSpinBox::up-button:hover,
+QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover,
+QDoubleSpinBox::down-button:hover {
+    background: @PRESSED@;
+}
+
+QSpinBox::up-arrow,
+QDoubleSpinBox::up-arrow {
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid @MUTED@;
+}
+
+QSpinBox::down-arrow,
+QDoubleSpinBox::down-arrow {
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid @MUTED@;
+}
+
 QTableWidget,
 QListWidget {
     background: @DEEP@;
@@ -3421,9 +4239,27 @@ QListWidget {
     background: @DEEP@;
     color: @INK2@;
     border: 1px solid @RULE@;
-    border-radius: 9px;
+    border-radius: @RADIUS@;
     padding: 4px;
     outline: 0;
+}
+
+/* отметки в списках (выбор процессов и т.п.): своим стилем, иначе их не видно */
+QListWidget::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid @MUTED@;
+    border-radius: @RADIUS_SMALL@;
+    background: @SURFACE@;
+}
+
+QListWidget::indicator:hover {
+    border-color: @ACCENT@;
+}
+
+QListWidget::indicator:checked {
+    background: @ACCENT@;
+    border-color: @ACCENT@;
 }
 
 QListWidget::item {
@@ -3439,6 +4275,15 @@ QListWidget::item:selected {
 QListWidget#PaletteList::item {
     padding: 9px 10px;
     font-size: 13px;
+}
+
+/* подсказки (ⓘ и title-атрибуты): без правил они системно-светлые в тёмной теме */
+QToolTip {
+    background: @SURFACE@;
+    color: @INK2@;
+    border: 1px solid @RULE@;
+    padding: 6px 8px;
+    font-size: 12px;
 }
 
 QMenu {
@@ -3472,7 +4317,7 @@ QScrollBar:vertical {
 
 QScrollBar::handle:vertical {
     min-height: 28px;
-    border-radius: 4px;
+    border-radius: @RADIUS_SMALL@;
     background: @TRACK@;
 }
 
@@ -3485,6 +4330,31 @@ QScrollBar::sub-line:vertical,
 QScrollBar::add-page:vertical,
 QScrollBar::sub-page:vertical {
     height: 0;
+    background: transparent;
+}
+
+/* горизонтальная полоса: нужна таблицам, спискам и журналу при узком окне */
+QScrollBar:horizontal {
+    height: 10px;
+    background: @PAPER@;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal {
+    min-width: 28px;
+    border-radius: @RADIUS_SMALL@;
+    background: @TRACK@;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: @ACCENT@;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    width: 0;
     background: transparent;
 }
 
@@ -3537,9 +4407,11 @@ QTabBar::tab:focus {
 
 
 def build_app_stylesheet() -> str:
-    """QSS главного окна из активной палитры (плейсхолдеры @KEY@)."""
+    """QSS главного окна из активной палитры и токенов геометрии (плейсхолдеры @KEY@)."""
     qss = _APP_QSS
     for key, value in th.active().items():
+        qss = qss.replace(f"@{key}@", value)
+    for key, value in th.GEOMETRY.items():
         qss = qss.replace(f"@{key}@", value)
     return qss
 
@@ -3553,13 +4425,24 @@ def main():
     
     if is_another_instance_running():
         return
-    
+
+    install_crash_handlers()
+
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
     app.setStyleSheet(APP_STYLESHEET)
     app.setQuitOnLastWindowClosed(False)
+
+    # общий фоновой сборщик метрик: UI читает кэш и не дёргает nvidia-smi/netsh
+    try:
+        import gd_metrics
+
+        gd_metrics.start()
+        app.aboutToQuit.connect(gd_metrics.stop)
+    except Exception:  # noqa: BLE001
+        pass
 
     icon_path = resource_path(ICON_FILE)
 

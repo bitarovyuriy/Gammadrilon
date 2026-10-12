@@ -38,6 +38,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import gd_bg  # noqa: E402
+import gd_agent  # noqa: E402
 import gd_dns  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_theme as th
@@ -64,6 +66,9 @@ class DnsWidget(QWidget):
         self.client = None
         self._results: dict = {}
         self._worker = None
+        self._apply_worker = None     # фоновая смена/возврат DNS (UAC + netsh)
+        self._refresh_worker = None   # фоновое чтение текущего состояния DNS
+        self._doh_worker = None       # фоновая проверка поддержки DoH
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
@@ -110,7 +115,7 @@ class DnsWidget(QWidget):
         self.btn_measure.clicked.connect(self._measure)
         self.btn_apply = QPushButton(i18n.t("Применить выбранный"))
         self.btn_apply.setObjectName("Segment")
-        self.btn_apply.clicked.connect(self._apply)
+        self.btn_apply.clicked.connect(lambda: self._apply())
         self.btn_restore = QPushButton(i18n.t("Вернуть как было"))
         self.btn_restore.setObjectName("Segment")
         self.btn_restore.clicked.connect(self._restore)
@@ -132,8 +137,8 @@ class DnsWidget(QWidget):
         self.chk_doh.setToolTip(
             i18n.t("Доступно в Windows 11. Включается для адресов выбранного резолвера.")
         )
-        if not gd_dns.doh_supported():
-            self.chk_doh.setVisible(False)
+        # покажем после фоновой проверки поддержки — netsh в GUI-потоке недопустим
+        self.chk_doh.setVisible(False)
         lay.addWidget(self.chk_doh)
 
         sign = QLabel(gd_dns.SIGNATURE)
@@ -148,7 +153,12 @@ class DnsWidget(QWidget):
         self.status.setWordWrap(True)
         root.addWidget(self.status)
 
-        self._refresh_now()
+        # Ничего не читаем при сборке: периодического опроса DNS нет, а само открытие
+        # вкладки и есть запрос (см. activate()). Отдельное окно открывается сразу —
+        # для него запрос делаем здесь.
+        self._doh_checked = False
+        if self._standalone:
+            self.activate()
 
     # -- вспомогательное ----------------------------------------------------
     def _ensure(self):
@@ -170,13 +180,45 @@ class DnsWidget(QWidget):
             return None
         return gd_dns.RESOLVERS[row]["key"]
 
+    def activate(self):
+        """Открытие вкладки — это и есть запрос на чтение.
+
+        Периодического опроса DNS нет (см. ``gd_metrics``: читается только по
+        запросу), поэтому всё, что стоит внешних процессов, запускается отсюда:
+        текущая конфигурация (``netsh``) и разовая проверка поддержки DoH.
+        """
+        self._refresh_now()
+        if not self._doh_checked:
+            self._doh_checked = True
+            self._doh_worker = gd_bg.submit(gd_dns.doh_supported, self._doh_done, parent=self)
+
     def _refresh_now(self):
-        st = gd_dns.current_state()
+        """Показать текущее DNS-состояние: чтение (netsh) — в фоне, по запросу."""
+        self._saved = gd_dns.saved_state()
+        self._refresh_worker = gd_bg.submit(gd_dns.current_state, self._refresh_done, parent=self)
+
+    def _refresh_done(self, st):
+        if not isinstance(st, dict) or "servers" not in st:
+            return                    # фоновая ошибка — оставляем прошлую строку
+        import gd_metrics
+
+        # вкладка уже прочитала конфигурацию — отдаём её в общий кэш, чтобы
+        # статусбар не запускал netsh второй раз
+        gd_metrics.set_dns(st)
         src = i18n.t("от DHCP") if st.get("mode") == "dhcp" else i18n.t("заданы вручную")
         self.lbl_now.setText(
-            i18n.t("{v0}: {v1} ({v2})", v0=st.get('iface') or '—', v1=', '.join(st.get('servers') or []) or 'нет', v2=src)
+            i18n.t("{v0}: {v1} ({v2})", v0=st.get('iface') or '—',
+                   v1=', '.join(st.get('servers') or []) or i18n.t('нет'), v2=src)
         )
-        self._saved = gd_dns.saved_state()
+
+    def _doh_done(self, ok):
+        """Показать галочку DoH, если ОС поддерживает (проверка шла в фоне)."""
+        if not ok:
+            return
+        try:
+            self.chk_doh.setVisible(True)
+        except RuntimeError:          # виджет уже удалён
+            pass
 
     def _set_status(self, text, ok=True):
         self.status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
@@ -193,7 +235,7 @@ class DnsWidget(QWidget):
 
     # -- замер --------------------------------------------------------------
     def _measure(self):
-        if self._worker is not None and self._worker.isRunning():
+        if gd_bg.is_running(self._worker):
             return
         self.btn_measure.setEnabled(False)
         self._set_status(i18n.t("Замеряю — реальные DNS-запросы по каждому серверу…"))
@@ -224,61 +266,118 @@ class DnsWidget(QWidget):
             self._set_status(i18n.t("Ни один резолвер не ответил."), ok=False)
 
     # -- смена --------------------------------------------------------------
-    def _apply(self):
+    def set_provider(self, key: str, source: str = i18n.t("трей"), on_done=None):
+        """Смена DNS на резолвер из списка (трей, палитра, локальный API).
+
+        `on_done(result)` — хук внешних вызовов (ТЗ этап 8): один раз получает
+        ``{"ok", "error"}`` по завершении, включая отказы «занято» и «нет адресов».
+        """
+        row = self._row_of(key)
+        if row < 0 or key == "custom":
+            gd_agent.finish(on_done, False, i18n.t("неизвестный резолвер: {v0}", v0=key))
+            return
+        self.table.setCurrentCell(row, 0)
+        self._apply(source=source, on_done=on_done)
+
+    def _apply(self, source=None, on_done=None):
+        if gd_bg.is_running(self._apply_worker):
+            gd_agent.finish(on_done, False, i18n.t("занято: операция уже выполняется"))
+            return
+        self._source = source or i18n.t("утилиты")
+        self._ext_done = on_done
+
+        def _fail(msg: str) -> None:
+            gd_agent.finish(self._ext_done, False, msg)
+            self._ext_done = None
+
         key = self._selected_key()
         if key is None:
+            _fail(i18n.t("не выбран резолвер"))
             return
         r = next((x for x in gd_dns.RESOLVERS if x["key"] == key), None)
         if r is None:
+            _fail(i18n.t("неизвестный резолвер: {v0}", v0=key))
             return
         servers = list(r["servers"])
         if key == "custom":
             val = self.ed_custom.text().strip()
             if not val:
                 self._set_status(i18n.t("Укажите адрес для строки «Свой»."), ok=False)
+                _fail(i18n.t("Укажите адрес для строки «Свой»."))
                 return
             servers = [s.strip() for s in val.replace(";", ",").split(",") if s.strip()]
         if not servers:
             self._set_status(i18n.t("У резолвера нет адресов."), ok=False)
+            _fail(i18n.t("У резолвера нет адресов."))
             return
 
-        before = gd_dns.current_state()
-        if not self._saved or self._saved.get("iface") != before.get("iface"):
-            gd_dns.save_state()          # запомнить прежнюю конфигурацию ДО смены
-        resp = self._ensure().call({
-            "cmd": "dns_apply", "mode": "static",
-            "servers": servers, "iface": before.get("iface"),
-        })
+        client = self._ensure()
+        want_doh = self.chk_doh.isChecked()   # состояние виджета читаем в GUI-потоке
+        self.btn_apply.setEnabled(False)
+        self._set_status(i18n.t("Применяю DNS…"))
+
+        def work():
+            # чтение прежней конфигурации (netsh) — тоже в фоне; запоминаем её ДО смены
+            before = gd_dns.remember_before_change()
+            resp = client.call({"cmd": "dns_apply", "mode": "static",
+                                "servers": servers, "iface": before.get("iface")})
+            if not resp.get("ok"):
+                return {"ok": False, "error": resp.get("error"), "before": before}
+            doh_msg = ""
+            if want_doh:
+                d = client.call({"cmd": "doh", "servers": servers,
+                                 "template": r.get("doh"), "enable": True})
+                doh_msg = f" DoH: {d.get('data') or d.get('error')}"
+            return {"ok": True, "doh": doh_msg, "before": before}
+
+        self._apply_worker = gd_bg.submit(
+            work, lambda resp: self._apply_done(resp, r, servers), parent=self
+        )
+
+    def _apply_done(self, resp, r, servers):
+        self.btn_apply.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("DNS не изменён: {v0}", v0=resp.get('error')), ok=False)
+            gd_agent.finish(getattr(self, "_ext_done", None), False, resp.get("error"))
+            self._ext_done = None
             return
-        doh_msg = ""
-        if self.chk_doh.isChecked():
-            d = self._ensure().call({"cmd": "doh", "servers": servers,
-                                     "template": r.get("doh"), "enable": True})
-            doh_msg = f" DoH: {d.get('data') or d.get('error')}"
+        before = resp.get("before") or {}
+        doh_msg = resp.get("doh", "")
         self._refresh_now()
         self._set_status(
             i18n.t("DNS переключён на «{v0}» ({v1}) — было {v2}.{v3} Сравните латентность замером.", v0=r['label'], v1=', '.join(servers), v2=', '.join(before.get('servers') or ['DHCP']), v3=doh_msg), ok=True)
         gd_journal.record("dns", r["label"], ", ".join(before.get("servers") or ["DHCP"]),
-                          ", ".join(servers), why=i18n.t("смена DNS-серверов"), source=i18n.t("утилиты"))
+                          ", ".join(servers), why=i18n.t("смена DNS-серверов"),
+                          source=getattr(self, "_source", i18n.t("утилиты")))
         import gd_toast
-        import gd_i18n as i18n
 
         gd_toast.show_toast(i18n.t("toast.dns_apply", name=r["label"]), "ok")
+        gd_agent.finish(getattr(self, "_ext_done", None), True)
+        self._ext_done = None
 
     def _restore(self):
-        st = self._saved or gd_dns.saved_state() or gd_dns.current_state()
-        gd_dns.save_state()
-        resp = self._ensure().call({
-            "cmd": "dns_apply",
-            "mode": st.get("mode") or "dhcp",
-            "servers": st.get("servers") or [],
-            "iface": st.get("iface"),
-        })
+        if gd_bg.is_running(self._apply_worker):
+            return
+        client = self._ensure()
+        saved = self._saved or gd_dns.saved_state()
+        self.btn_restore.setEnabled(False)
+        self._set_status(i18n.t("Возвращаю прежнюю конфигурацию DNS…"))
+
+        def work():
+            st = saved or gd_dns.current_state()
+            gd_dns.save_state()
+            resp = client.call({"cmd": "dns_apply", "mode": st.get("mode") or "dhcp",
+                                "servers": st.get("servers") or [], "iface": st.get("iface")})
+            return {"ok": resp.get("ok"), "error": resp.get("error"), "st": st}
+
+        self._apply_worker = gd_bg.submit(work, self._restore_done, parent=self)
+
+    def _restore_done(self, resp):
+        self.btn_restore.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("Откат не удался: {v0}", v0=resp.get('error')), ok=False)
             return
+        st = resp.get("st") or {}
         self._refresh_now()
         self._set_status(
             i18n.t("Конфигурация DNS возвращена ({v0}).", v0='DHCP' if st.get('mode') == 'dhcp' else ', '.join(st.get('servers') or [])),
@@ -286,6 +385,5 @@ class DnsWidget(QWidget):
         gd_journal.record("dns", i18n.t("возврат"), None, None,
                           why=i18n.t("возврат прежней конфигурации DNS"), source=i18n.t("утилиты"))
         import gd_toast
-        import gd_i18n as i18n
 
         gd_toast.show_toast(i18n.t("toast.dns_restore"), "info")

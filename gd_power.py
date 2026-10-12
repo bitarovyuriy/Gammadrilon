@@ -2,9 +2,9 @@
 """Ядро управления профилями питания CPU через powrprof (Windows).
 
 Уровни доступа:
-  * чтение — без прав (активная схема, значения настроек);
-  * запись/клонирование/активация — выполняется elevated-хелпером
-    (gd_power_service.py), ядро лишь предоставляет операции.
+  * чтение — без прав (активная схема, значения настроек), см. :func:`state_snapshot`;
+  * запись/клонирование/активация — прав тоже не требует, но делается компаньоном
+    (gd_power_service.py): он живёт дольше UI и откатывает схему, если UI умрёт.
 
 Подтверждено на живой системе (Win11 26200, Ryzen 5 5600, 2026-10-09):
   * все GUID'ы найдены в PowerEnumerate подгруппы SUB_PROCESSOR (95 настроек);
@@ -25,6 +25,8 @@ import time
 import uuid
 from ctypes import POINTER, byref, wintypes
 from typing import Optional
+
+import gd_i18n as i18n
 
 # --------------------------------------------------------------------------
 # GUID'ы (подтверждены на живой системе, см. шапку файла)
@@ -123,7 +125,7 @@ def get_active_scheme() -> str:
     pg = POINTER(GUID)()
     r = _p.PowerGetActiveScheme(None, byref(pg))
     if r != 0:
-        raise OSError(f"PowerGetActiveScheme: код {r}")
+        raise OSError(i18n.t("PowerGetActiveScheme: код {v0}", v0=r))
     try:
         return guid_to_str(pg.contents)
     finally:
@@ -169,7 +171,7 @@ def duplicate_scheme(src_guid: str) -> str:
     out = POINTER(GUID)()
     r = _p.PowerDuplicateScheme(None, byref(src), byref(out))
     if r != 0:
-        raise OSError(f"PowerDuplicateScheme: код {r}")
+        raise OSError(i18n.t("PowerDuplicateScheme: код {v0}", v0=r))
     try:
         return guid_to_str(out.contents)
     finally:
@@ -202,7 +204,7 @@ def scheme_name(scheme_guid: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# Состояние (файл для отката; пишет elevated-хелпер)
+# Состояние (файл для отката; пишет тот, кто применяет профиль — компаньон)
 # --------------------------------------------------------------------------
 
 STATE_DIR = os.path.join(os.environ.get("PROGRAMDATA", r"C:\ProgramData"), "Gammadrilon")
@@ -233,7 +235,50 @@ def clear_state() -> None:
 
 
 # --------------------------------------------------------------------------
-# Высокоуровневые операции (для elevated-хелпера)
+# Чтение состояния (одинаково для UI и компаньона)
+# --------------------------------------------------------------------------
+
+
+def state_snapshot() -> dict:
+    """Снимок состояния питания: активная схема, профиль из state, значения.
+
+    Отвечает на тот же вопрос, что команда ``status`` компаньона, но выполняется
+    в самом вызывающем процессе: powercfg читается через WinAPI обычным
+    пользователем (``PowerGetActiveScheme``/``PowerReadACValueIndex``), без прав
+    администратора и без внешних процессов. Поэтому вкладке CPU не нужно
+    поднимать компаньона, чтобы просто показать текущее состояние — он нужен
+    только для записи (``apply_profile``/``restore`` под присмотром watchdog'а).
+
+    Raises:
+        OSError: powercfg не отдал активную схему.
+    """
+    active = get_active_scheme()
+    state = load_state() or {}
+    data: dict = {
+        "active_scheme": active,
+        "profile": None,
+        "clone_scheme": None,
+        "values": read_values(active),
+    }
+    try:
+        data["active_name"] = scheme_name(active)
+    except OSError:
+        data["active_name"] = ""
+    if state:
+        data["profile"] = state.get("profile")
+        data["clone_scheme"] = state.get("clone_scheme")
+        data["original_scheme"] = state.get("original_scheme")
+        data["applied_at"] = state.get("applied_at")
+        orig = state.get("original_scheme")
+        try:
+            data["original_values"] = read_values(orig) if orig else None
+        except OSError:
+            data["original_values"] = None
+    return data
+
+
+# --------------------------------------------------------------------------
+# Высокоуровневые операции (для компаньона)
 # --------------------------------------------------------------------------
 
 
@@ -244,7 +289,7 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
     При любой ошибке клон удаляется, активная схема не меняется.
     """
     if profile_id not in PROFILES and profile_id != "custom":
-        raise ValueError(f"неизвестный профиль: {profile_id}")
+        raise ValueError(i18n.t("неизвестный профиль: {v0}", v0=profile_id))
     values = dict(custom if profile_id == "custom" else PROFILES[profile_id])
 
     original = get_active_scheme()
@@ -252,9 +297,9 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
     try:
         res = write_values(clone, values)
         if res["failed"]:
-            raise OSError(f"не удалось записать настройки: {res['failed']}")
+            raise OSError(i18n.t("не удалось записать настройки: {v0}", v0=res['failed']))
         if not set_active_scheme(clone):
-            raise OSError("PowerSetActiveScheme не сработал")
+            raise OSError(i18n.t("PowerSetActiveScheme не сработал"))
     except Exception:
         delete_scheme(clone)
         raise
@@ -313,4 +358,5 @@ if __name__ == "__main__":
     elif cmd == "restore":
         print("restored:", restore())
     else:
+        # i18n: skip (CLI-подсказка для разработчика, не UI)
         print("команды: read | clone-test | apply <eco|normal|boost> | restore")

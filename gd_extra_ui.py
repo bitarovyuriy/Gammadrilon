@@ -34,6 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import gd_bg  # noqa: E402
 import gd_extra  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_profiles  # noqa: E402
@@ -217,7 +218,6 @@ class ExtraPanel(QWidget):
                           None, i18n.t("{v0} мс", v0=ms), why=i18n.t("точность системного таймера"),
                           source=i18n.t("утилиты"))
         import gd_toast
-        import gd_i18n as i18n
 
         gd_toast.show_toast(i18n.t("toast.timer_on" if on else "toast.timer_off"), "ok")
 
@@ -295,7 +295,12 @@ class ExtraPanel(QWidget):
                                               "JSON (*.json)")
         if not path:
             return
-        ok, msg = gd_profiles.export_all(path)
+        # сбор снимка читает DNS/GPU/правила — уводим в фон, чтобы окно не замирало
+        self._set_status(self.lbl_prof, i18n.t("Экспортирую настройки…"))
+        gd_bg.submit(lambda: gd_profiles.export_all(path), self._export_done, parent=self)
+
+    def _export_done(self, res):
+        ok, msg = res if isinstance(res, tuple) else (False, str(res))
         self._set_status(self.lbl_prof, msg, ok=ok)
 
     def _import(self):

@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -32,6 +31,10 @@ from multiprocessing.connection import Listener
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import gd_gpu  # noqa: E402
+import gd_i18n as i18n  # noqa: E402
+import gd_proc  # noqa: E402
+
+i18n.init_for_process()      # компаньон — отдельный процесс: язык берём из presets.json
 
 _OP_LOCK = threading.Lock()
 _original: dict | None = None
@@ -43,7 +46,10 @@ _LOG_FILE: str | None = None
 
 def _log(msg: str) -> None:
     line = f"[gpu-service] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except Exception:  # noqa: BLE001
+        pass          # в windowed-сборке stdout может отсутствовать
     if _LOG_FILE:
         try:
             with open(_LOG_FILE, "a", encoding="utf-8") as fh:
@@ -54,12 +60,8 @@ def _log(msg: str) -> None:
 
 def _run_smi(args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
     try:
-        proc = subprocess.run(
-            [gd_gpu.SMI, *args],
-            capture_output=True, text=True, timeout=timeout,
-            creationflags=0x08000000,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        proc = gd_proc.run([gd_gpu.SMI, *args], text=True, timeout=timeout)
+    except (OSError, gd_proc.TimeoutExpired) as exc:
         return False, str(exc)
     text = ((proc.stdout or "") + (proc.stderr or "")).strip()
     low = text.lower()
@@ -67,7 +69,7 @@ def _run_smi(args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
         "insufficient permissions", "not supported", "terminating early",
         "does not have permission", "failed to set",
     )):
-        return False, text or f"код {proc.returncode}"
+        return False, text or i18n.t("код {v0}", v0=proc.returncode)
     return True, text
 
 
@@ -78,48 +80,50 @@ def _apply(pl: float | None, lock_clocks: list | None) -> tuple[bool, str]:
     global _original, _applied
     state = gd_gpu.read_state()
     if state is None:
-        return False, "nvidia-smi недоступен"
+        return False, i18n.t("nvidia-smi недоступен")
     before = {"pl": state.get("pl"), "clocks_locked": False}
 
     what = []
     if pl is not None:
         ok, out = _run_smi(["-pl", str(int(pl))])
         if not ok:
-            return False, f"лимит мощности: {out}"
-        what.append(f"PL {int(pl)} Вт")
+            return False, i18n.t("лимит мощности: {v0}", v0=out)
+        what.append(i18n.t("PL {v0} Вт", v0=int(pl)))
     if lock_clocks:
         lo, hi = int(lock_clocks[0]), int(lock_clocks[1])
         ok, out = _run_smi(["-lgc", f"{lo},{hi}"])
         if not ok:
-            return False, f"частоты: {out}"
-        what.append(f"клоки {lo}–{hi} МГц")
+            return False, i18n.t("частоты: {v0}", v0=out)
+        what.append(i18n.t("клоки {v0}–{v1} МГц", v0=lo, v1=hi))
 
     # исходное состояние запоминаем только когда изменение действительно прошло
     if _original is None:
         _original = before
     _applied = {"pl": pl, "lock_clocks": lock_clocks}
-    return True, "применено: " + ", ".join(what) if what else "нечего применять"
+    if what:
+        return True, i18n.t("применено: {v0}", v0=", ".join(what))
+    return True, i18n.t("нечего применять")
 
 
 def _restore() -> tuple[bool, str]:
     """Вернуть исходный лимит мощности и снять блокировку частот."""
     global _original, _applied
     if _original is None:
-        return True, "нечего откатывать"
+        return True, i18n.t("нечего откатывать")
     errors = []
     ok, out = _run_smi(["-rgc"])          # снять блокировку частот
     if not ok and "permission" not in out.lower():
-        errors.append(f"сброс частот: {out}")
+        errors.append(i18n.t("сброс частот: {v0}", v0=out))
     orig_pl = _original.get("pl")
     if orig_pl is not None:
         ok, out = _run_smi(["-pl", str(int(orig_pl))])
         if not ok:
-            errors.append(f"лимит мощности: {out}")
+            errors.append(i18n.t("лимит мощности: {v0}", v0=out))
     _original = None
     _applied = None
     if errors:
         return False, "; ".join(errors)
-    return True, "исходные значения возвращены"
+    return True, i18n.t("исходные значения возвращены")
 
 
 def _status() -> dict:
@@ -130,10 +134,83 @@ def _status() -> dict:
     }
 
 
+# -- zapret: обход DPI (ТЗ 8) ------------------------------------------------
+# Всё привилегированное: батники-стратегии и winws.exe грузят kernel-драйвер
+# WinDivert, обычному пользователю это недоступно. Хелпер запоминает PID
+# запущенного им winws, чтобы вернуть состояние при выходе (ТЗ 8, DoD).
+
+_zapret_pid: int | None = None
+
+
+def _zapret_start(path: str, argv: list, log: str, note: str):
+    global _zapret_pid
+    import gd_zapret
+
+    ok, res = gd_zapret.start_winws(path, argv, log, note)
+    if ok:
+        _zapret_pid = int(res["pid"])
+    return ok, res
+
+
+def _zapret_stop(pid: int):
+    global _zapret_pid
+    import gd_zapret
+
+    ok, msg = gd_zapret.stop_winws(pid)
+    if ok and pid == _zapret_pid:
+        _zapret_pid = None
+    return ok, msg
+
+
+def _zapret_shutdown() -> None:
+    """При выходе хелпера — обход возвращается к состоянию «до включения».
+
+    Вторая линия — job-объект kill-on-close в gd_zapret: он гасит winws даже
+    при убийстве хелпера, когда до этой функции дело не доходит.
+    """
+    if _zapret_pid:
+        _zapret_stop(_zapret_pid)
+
+
+def _zapret_adopt(pid: int):
+    """Прочитать argv чужого winws.exe (elevated: у пользователя нет прав на PEB).
+
+    Убивать чужой процесс молча запрещено (ТЗ 8.4): это только чтение, чтобы
+    UI мог предложить «взять под управление» или «оставить как есть».
+    """
+    import psutil
+
+    try:
+        proc = psutil.Process(int(pid))
+        name = proc.name()
+        if (name or "").lower() != "winws.exe":
+            return False, i18n.t("PID {v0} — это {v1}, а не winws.exe", v0=pid, v1=name or '?')
+        argv = proc.cmdline()
+    except (psutil.Error, ValueError) as exc:
+        return False, i18n.t("не удалось прочитать командную строку: {v0}", v0=exc)
+    if argv and argv[0].lower().endswith("winws.exe"):
+        argv = argv[1:]
+    return True, {"argv": argv}
+
+
 # -- обработка команды ------------------------------------------------------
 
 
 def handle(obj: dict) -> dict:
+    """Обработать команду, гарантированно возвращая dict.
+
+    Раньше исключение внутри операции (например, `ctypes` в purge_standby)
+    убивало поток serve_client без ответа — UI ловил таймаут. Теперь любая
+    ошибка превращается в честный ответ {"ok": False, ...}.
+    """
+    try:
+        return _handle(obj)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"ошибка команды {obj.get('cmd')!r}: {type(exc).__name__}: {exc}")  # i18n: skip (лог)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _handle(obj: dict) -> dict:
     cmd = obj.get("cmd")
     if cmd == "ping":
         return {"ok": True, "data": "pong"}
@@ -149,6 +226,7 @@ def handle(obj: dict) -> dict:
         return {"ok": ok, "data": _status(), "error": None if ok else msg}
     if cmd == "shutdown":
         with _OP_LOCK:
+            _zapret_shutdown()               # обход DPI — к состоянию «до включения»
             if obj.get("restore", True):
                 _restore()
         return {"ok": True, "data": "bye"}
@@ -199,7 +277,28 @@ def handle(obj: dict) -> dict:
 
             ok, msg = gd_dns.flush_native()
         return {"ok": ok, "data": msg, "error": None if ok else msg}
-    return {"ok": False, "error": f"неизвестная команда: {cmd}"}
+    # -- zapret (ТЗ 8): освоение и управление winws.exe ----------------------
+    if cmd == "zapret_recon":
+        with _OP_LOCK:
+            import gd_zapret
+
+            ok, res = gd_zapret.recon(obj.get("path") or "", obj.get("strategy") or "")
+        return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
+    if cmd == "zapret_start":
+        with _OP_LOCK:
+            ok, res = _zapret_start(
+                obj.get("path") or "", obj.get("argv") or [],
+                obj.get("log") or "", obj.get("note") or "")
+        return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
+    if cmd == "zapret_stop":
+        with _OP_LOCK:
+            ok, msg = _zapret_stop(int(obj.get("pid") or 0))
+        return {"ok": ok, "data": msg, "error": None if ok else msg}
+    if cmd == "zapret_adopt":
+        with _OP_LOCK:
+            ok, res = _zapret_adopt(int(obj.get("pid") or 0))
+        return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
+    return {"ok": False, "error": i18n.t("неизвестная команда: {v0}", v0=cmd)}
 
 
 # -- сервер -----------------------------------------------------------------
@@ -215,10 +314,12 @@ def serve_client(conn) -> None:
             except EOFError:
                 break
             if not isinstance(obj, dict):
-                conn.send({"ok": False, "error": "ожидался объект"})
+                conn.send({"ok": False, "error": i18n.t("ожидался объект")})
                 continue
-            resp = handle(obj)
-            conn.send(resp)
+            try:
+                conn.send(handle(obj))
+            except (OSError, EOFError):
+                break
             if obj.get("cmd") == "shutdown":
                 os._exit(0)              # откат уже сделан внутри handle()
     except (OSError, EOFError):
@@ -234,8 +335,9 @@ def watchdog(ui_pid: int) -> None:
         return
     while True:
         if k32.WaitForSingleObject(handle_, 2000) == 0:   # процесс завершился
-            _log(f"окно (pid {ui_pid}) завершилось — откат")
+            _log(f"окно (pid {ui_pid}) завершилось — откат")  # i18n: skip (лог компаньона)
             with _OP_LOCK:
+                _zapret_shutdown()           # обход DPI — к состоянию «до включения»
                 _restore()
             os._exit(0)
 
@@ -256,6 +358,7 @@ def main() -> int:
 
     authkey = bytes.fromhex(args.token) if args.token else None
     listener = Listener(address=(args.host, args.port), family="AF_INET", authkey=authkey)
+    # i18n: skip-start — строки журнала компаньона (лог-файл, разработчику)
     _log(f"слушаю {args.host}:{args.port} (ui-pid {args.ui_pid}, токен {'да' if authkey else 'нет'})")
 
     while True:                          # выход — через os._exit (shutdown/watchdog)
@@ -264,7 +367,7 @@ def main() -> int:
         except OSError:
             time.sleep(0.2)
             continue
-        _log("клиент подключился")
+        _log("клиент подключился")  # i18n: skip-end
         threading.Thread(target=serve_client, args=(conn,), daemon=True).start()
 
 

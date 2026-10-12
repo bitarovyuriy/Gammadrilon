@@ -91,10 +91,11 @@ def enable_privilege(name: str) -> tuple[bool, str]:
     if not advapi32.OpenProcessToken(
         k32.GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ctypes.byref(h)
     ):
-        return False, f"не удалось открыть токен процесса (код {ctypes.get_last_error()})"
+        return False, i18n.t("не удалось открыть токен процесса (код {v0})",
+                             v0=ctypes.get_last_error())
     luid = LUID()
     if not advapi32.LookupPrivilegeValueW(None, name, ctypes.byref(luid)):
-        return False, f"привилегия {name} не найдена в системе"
+        return False, i18n.t("привилегия {v0} не найдена в системе", v0=name)
     tp = TOKEN_PRIVILEGES()
     tp.PrivilegeCount = 1
     tp.Privileges[0].Luid = luid
@@ -103,7 +104,7 @@ def enable_privilege(name: str) -> tuple[bool, str]:
     ok = advapi32.AdjustTokenPrivileges(h, False, ctypes.byref(tp), 0, None, None)
     err = ctypes.get_last_error()
     if not ok:
-        return False, f"AdjustTokenPrivileges не сработал (код {err})"
+        return False, i18n.t("AdjustTokenPrivileges не сработал (код {v0})", v0=err)
     if err == ERROR_NOT_ALL_ASSIGNED:
         return False, i18n.t("привилегии нет в токене — нужен запуск от администратора")
     return True, i18n.t("включена")
@@ -119,7 +120,7 @@ def purge_standby_native() -> tuple[bool, str]:
     )
     if ret == STATUS_SUCCESS:
         return True, i18n.t("standby list очищен")
-    return False, NTSTATUS_TEXT.get(ret, f"код 0x{ret & 0xFFFFFFFF:08X}")
+    return False, NTSTATUS_TEXT.get(ret, i18n.t("код 0x{v0:08X}", v0=ret & 0xFFFFFFFF))
 
 
 def empty_working_sets_native(pids: list[int]) -> tuple[bool, str, int]:
@@ -139,10 +140,11 @@ def empty_working_sets_native(pids: list[int]) -> tuple[bool, str, int]:
         finally:
             k32.CloseHandle(h)
     if done == 0:
-        return False, f"ни один процесс не удалось сжать (отказов: {failed})", 0
-    msg = f"сжато процессов: {done}"
+        return False, i18n.t("ни один процесс не удалось сжать (отказов: {v0})", v0=failed), 0
+    msg = i18n.t("сжато процессов: {v0}", v0=done)
     if failed:
-        msg += f", отказов: {failed} (чужие процессы требуют прав администратора)"
+        msg += i18n.t(", отказов: {v0} (чужие процессы требуют прав администратора)",
+                      v0=failed)
     return True, msg, done
 
 

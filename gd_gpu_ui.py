@@ -37,7 +37,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import gd_bg  # noqa: E402
 import gd_gpu  # noqa: E402
+import gd_agent  # noqa: E402
 import gd_theme as th
 import gd_i18n as i18n  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
@@ -68,6 +70,8 @@ class GpuWidget(QWidget):
         self._pending = None          # применённое, но не подтверждённое значение
         self._confirm_left = 0
         self._active_profile = None   # имя применённого профиля (для трея/палитры)
+        self._apply_worker = None     # фоновое применение лимита (UAC + nvidia-smi)
+        self._restore_worker = None   # фоновый откат
 
         self._build()
 
@@ -107,27 +111,23 @@ class GpuWidget(QWidget):
         head.addWidget(self.lbl_gpu)
         root.addLayout(head)
 
-        if not gd_gpu.available():
-            warn = QLabel(
-                i18n.t("NVIDIA GPU или nvidia-smi не найдены. Управление недоступно: для этой карты/системы публичного способа менять лимит мощности нет.")
-            )
-            warn.setObjectName("Hint")
-            warn.setWordWrap(True)
-            root.addWidget(warn)
-            root.addStretch(1)
-            self._disabled = True
-            return
-        self._disabled = False
+        # Доступность GPU и конфликт с вендорским софтом определяются в фоне:
+        # nvidia-smi (timeout 6 с) и psutil.process_iter в GUI-потоке давали паузу.
+        import gd_metrics
 
-        # --- конфликт с вендорским софтом (ТЗ 4.5) ---
-        self.conflict = self._detect_conflict()
-        if self.conflict:
-            note = QLabel(
-                i18n.t("Обнаружен {v0}: он тоже управляет лимитом мощности и частотами. Ярлыками пользоваться не стоит — меняйте лимит вручную и следите, чтобы значения не «перебивались».", v0=self.conflict)
-            )
-            note.setObjectName("Hint")
-            note.setWordWrap(True)
-            root.addWidget(note)
+        self._pending_gpu_probe = gd_metrics.gpu() is None and not gd_metrics.gpu_unavailable()
+        self.conflict = None
+        self._gpu_warn = QLabel("")
+        self._gpu_warn.setObjectName("Hint")
+        self._gpu_warn.setWordWrap(True)
+        self._gpu_warn.setVisible(False)
+        root.addWidget(self._gpu_warn)
+        self._conflict_note = QLabel("")
+        self._conflict_note.setObjectName("Hint")
+        self._conflict_note.setWordWrap(True)
+        self._conflict_note.setVisible(False)
+        root.addWidget(self._conflict_note)
+        self._conflict_worker = gd_bg.submit(self._detect_conflict, self._conflict_done, parent=self)
 
         # --- профиль ---
         card, lay = make_card(
@@ -142,7 +142,7 @@ class GpuWidget(QWidget):
             b = QPushButton(gd_gpu.GPU_PROFILES[pid]["label"])
             b.setObjectName("Segment")
             b.setCheckable(True)
-            b.clicked.connect(lambda _=False, p=pid: self._on_profile(p))
+            b.clicked.connect(lambda _=False, p=pid: self._ui_profile(p))
             self.profile_group.addButton(b)
             self.profile_btns[pid] = b
             row.addWidget(b)
@@ -218,7 +218,7 @@ class GpuWidget(QWidget):
 
         self.btn_restore = QPushButton(i18n.t("Вернуть как было"))
         self.btn_restore.setObjectName("Segment")
-        self.btn_restore.clicked.connect(self._on_restore)
+        self.btn_restore.clicked.connect(self._ui_restore)
         root.addWidget(self.btn_restore)
 
         root.addStretch(1)
@@ -239,13 +239,46 @@ class GpuWidget(QWidget):
             return "MSI Afterburner"
         return None
 
+    def _conflict_done(self, name) -> None:
+        """Показать предупреждение о вендорском софте (проверка шла в фоне)."""
+        if not name:
+            return
+        self.conflict = name
+        try:
+            self._conflict_note.setText(i18n.t(
+                "Обнаружен {v0}: он тоже управляет лимитом мощности и частотами. Ярлыками пользоваться не стоит — меняйте лимит вручную и следите, чтобы значения не «перебивались».",
+                v0=name))
+            self._conflict_note.setVisible(True)
+        except RuntimeError:      # виджет уже удалён
+            pass
+
+    def _set_controls_enabled(self, on: bool) -> None:
+        """Включить/заблокировать управление лимитом (например, GPU недоступен)."""
+        for btn in getattr(self, "profile_btns", {}).values():
+            btn.setEnabled(on)
+        for attr in ("sl_pl", "btn_apply", "btn_restore"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setEnabled(on)
+
     # -- обновление --------------------------------------------------------
     def _tick(self):
-        st = gd_gpu.read_state()
-        self._state = st
+        import gd_metrics
+
+        st = gd_metrics.gpu() or self._state
         if st is None:
             self.lbl_gpu.setText(i18n.t("GPU не отвечает"))
+            if not self._pending_gpu_probe and gd_metrics.gpu_unavailable():
+                # nvidia-smi молчит несколько попыток подряд — карты нет
+                self._gpu_warn.setText(i18n.t(
+                    "NVIDIA GPU или nvidia-smi не найдены. Управление недоступно: для этой карты/системы публичного способа менять лимит мощности нет."))
+                self._gpu_warn.setVisible(True)
+                self._set_controls_enabled(False)
             return
+        if self._pending_gpu_probe:
+            self._pending_gpu_probe = False      # первый ответ пришёл — вкладка живая
+            self._gpu_warn.setVisible(False)
+        self._state = st
         self.lbl_gpu.setText(st["name"])
         self.lbl_temp.setText(f"{st['temp']:.0f} °C" if st["temp"] is not None else "—")
         self.lbl_clk.setText(i18n.t("{v0:.0f} МГц", v0=st['clock']) if st["clock"] is not None else "—")
@@ -283,14 +316,29 @@ class GpuWidget(QWidget):
         self._pending = None
         self.lbl_pl_val.setText(i18n.t("{v0} Вт", v0=value))
 
+    def _tick_later(self, delay_ms: int = 800) -> None:
+        """Обновить показания после операции: пусть кэш метрик пере-снимет GPU."""
+        import gd_metrics
+
+        gd_metrics.refresh_now("gpu")
+        QTimer.singleShot(delay_ms, self._tick)
+
     # -- действия ----------------------------------------------------------
     def _on_profile(self, name):
-        st = self._state or gd_gpu.read_state()
+        import gd_metrics
+
+        st = self._state or gd_metrics.gpu()
         if not st:
+            gd_agent.finish(getattr(self, "_ext_done", None), False,
+                            i18n.t("нет данных GPU (nvidia-smi недоступен)"))
+            self._ext_done = None
             return
         target = gd_gpu.profile_target(st, name)
         pl = target.get("pl")
         if pl is None:
+            gd_agent.finish(getattr(self, "_ext_done", None), False,
+                            i18n.t("драйвер не сообщил лимит для этого профиля"))
+            self._ext_done = None
             return
         self.sl_pl.setValue(int(pl))
         self.profile_desc.setText(
@@ -299,13 +347,37 @@ class GpuWidget(QWidget):
         self._apply({"pl": pl}, profile_name=name)
 
     def _on_apply(self):
+        self._source = "UI"
         self._apply({"pl": self.sl_pl.value()})
 
+    def _ui_profile(self, name: str):
+        """Клик по профилю в вкладке: источник — UI, а не трей/агент."""
+        self._source = "UI"
+        self._on_profile(name)
+
     def _apply(self, payload: dict, profile_name=None):
-        resp = self.client.call({"v": 1, "cmd": "apply", **payload})
+        # запуск хелпера (UAC) и запись nvidia-smi долгие — не морозим GUI
+        if gd_bg.is_running(self._apply_worker):
+            gd_agent.finish(getattr(self, "_ext_done", None), False,
+                            i18n.t("занято: операция уже выполняется"))
+            self._ext_done = None
+            return
+        self.btn_apply.setEnabled(False)
+        self.profile_desc.setText(i18n.t("Применяю…"))
+
+        self._apply_worker = gd_bg.submit(
+            lambda: self.client.call({"v": 1, "cmd": "apply", **payload}),
+            lambda resp: self._apply_done(resp, payload, profile_name),
+            parent=self,
+        )
+
+    def _apply_done(self, resp, payload: dict, profile_name):
+        self.btn_apply.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("Драйвер не принял изменение: {v0}", v0=resp.get('error')), ok=False)
             self.profile_desc.setText(i18n.t("Изменение не применено."))
+            gd_agent.finish(getattr(self, "_ext_done", None), False, resp.get("error"))
+            self._ext_done = None
             return
         self._pending = payload
         self._active_profile = profile_name
@@ -318,25 +390,42 @@ class GpuWidget(QWidget):
         self._journal("gpu_pl", i18n.t("{v0} Вт", v0=payload['pl']),
                       before=(self._state or {}).get("pl"), after=payload["pl"],
                       why=i18n.t("лимит мощности GPU"))
+        gd_agent.finish(getattr(self, "_ext_done", None), True)
+        self._ext_done = None
 
     def _confirm_tick(self):
         self._confirm_left -= 1
         if self._confirm_left <= 0:
             self._confirm_timer.stop()
-            resp = self.client.call({"v": 1, "cmd": "restore"})
             self._pending = None
             self.btn_keep.setVisible(False)
             self.profile_desc.setText(i18n.t("Подтверждение не получено — прежнее значение возвращено."))
-            self._set_status(
-                i18n.t("Время подтверждения вышло — прежний лимит возвращён.")
-                if resp.get("ok") else i18n.t("Откат не удался: {v0}", v0=resp.get('error')),
-                ok=resp.get("ok", False))
-            self._tick()
+            self._set_status(i18n.t("Время подтверждения вышло — возвращаю прежний лимит…"), ok=True)
+            self._restore_async(self._auto_restore_done)
             return
         pl_val = (self._pending or {}).get("pl")
         self._set_status(
             i18n.t("Применено: лимит {v0} Вт. Подтвердите за {v1} с.", v0=pl_val, v1=self._confirm_left),
             ok=True)
+
+    def _auto_restore_done(self, resp):
+        self._set_status(
+            i18n.t("Время подтверждения вышло — прежний лимит возвращён.")
+            if resp.get("ok") else i18n.t("Откат не удался: {v0}", v0=resp.get('error')),
+            ok=resp.get("ok", False))
+        self._tick_later()
+
+    def _restore_async(self, on_done) -> None:
+        """Откат лимита в фоне (общий путь для таймера и кнопки)."""
+        if gd_bg.is_running(self._restore_worker):
+            gd_agent.finish(getattr(self, "_ext_done", None), False,
+                            i18n.t("занято: операция уже выполняется"))
+            self._ext_done = None
+            return
+
+        self._restore_worker = gd_bg.submit(
+            lambda: self.client.call({"v": 1, "cmd": "restore"}), on_done, parent=self
+        )
 
     def _on_keep(self):
         self._confirm_timer.stop()
@@ -349,14 +438,24 @@ class GpuWidget(QWidget):
         self.profile_group.setExclusive(True)
         self.profile_desc.setText(i18n.t("Лимит {v0} Вт оставлен.", v0=pl))
         self._set_status(i18n.t("Изменение оставлено: лимит {v0} Вт.", v0=pl), ok=True)
-        self._tick()
+        self._tick_later()
+
+    def _ui_restore(self):
+        """Клик «Вернуть исходный лимит» в вкладке: источник — UI."""
+        self._source = "UI"
+        self._on_restore()
 
     def _on_restore(self):
         self._confirm_timer.stop()
         self.btn_keep.setVisible(False)
         self._pending = None
         self._active_profile = None
-        resp = self.client.call({"v": 1, "cmd": "restore"})
+        self.btn_restore.setEnabled(False)
+        self._set_status(i18n.t("Возвращаю исходный лимит…"), ok=True)
+        self._restore_async(self._restore_done)
+
+    def _restore_done(self, resp):
+        self.btn_restore.setEnabled(True)
         if resp.get("ok"):
             self._set_status(i18n.t("Исходный лимит возвращён."), ok=True)
             self.profile_desc.setText(i18n.t("Профиль не применён."))
@@ -367,7 +466,9 @@ class GpuWidget(QWidget):
             self.profile_group.setExclusive(True)
         else:
             self._set_status(i18n.t("Откат не удался: {v0}", v0=resp.get('error')), ok=False)
-        self._tick()
+        gd_agent.finish(getattr(self, "_ext_done", None), resp.get("ok"), resp.get("error"))
+        self._ext_done = None
+        self._tick_later()
 
     def _set_status(self, text: str, ok: bool = True):
         self.bottom_status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
@@ -380,21 +481,53 @@ class GpuWidget(QWidget):
             gd_journal.record(kind, target, before, after, why=why,
                               source=getattr(self, "_source", "UI"))
             import gd_toast
-            import gd_i18n as i18n
 
             gd_toast.show_toast(i18n.t("toast.gpu", target=target),
                                 "info" if str(kind).startswith("restore") else "ok")
         except Exception:  # noqa: BLE001
             pass
 
-    # -- внешнее управление (трей, палитра команд) -------------------------
-    def apply_profile(self, name: str, source: str = i18n.t("трей")):
-        """Применить профиль GPU извне (или вернуть исходный лимит)."""
+    # -- внешнее управление (трей, палитра команд, локальный API) -----------
+    def apply_profile(self, name: str, source: str = i18n.t("трей"), on_done=None):
+        """Применить профиль GPU извне (или вернуть исходный лимит).
+
+        `on_done(result)` — хук внешних вызовов (локальный API, ТЗ этап 8):
+        один раз получает ``{"ok", "error"}`` по завершении, в том числе при
+        отказе «занято» или отсутствии данных nvidia-smi.
+        """
+        if gd_bg.is_running(self._apply_worker) or gd_bg.is_running(self._restore_worker):
+            gd_agent.finish(on_done, False, i18n.t("занято: операция уже выполняется"))
+            return
         self._source = source
+        self._ext_done = on_done
         if name == "restore":
             self._on_restore()
             return
         self._on_profile(name)
+
+    def apply_limit(self, watts: int, source: str = i18n.t("трей"), on_done=None):
+        """Лимит мощности в ваттах извне: как движение слайдера + «Применить».
+
+        Диапазон берём у драйвера (min_limit/max_limit из nvidia-smi), а не из
+        слайдера: вкладка могла ещё не открываться, и границы были бы чужими.
+        """
+        if gd_bg.is_running(self._apply_worker) or gd_bg.is_running(self._restore_worker):
+            gd_agent.finish(on_done, False, i18n.t("занято: операция уже выполняется"))
+            return
+        import gd_metrics
+
+        st = self._state or gd_metrics.gpu() or gd_gpu.read_state() or {}
+        lo = st.get("min_limit")
+        hi = st.get("max_limit")
+        if lo and hi and not (float(lo) <= float(watts) <= float(hi)):
+            gd_agent.finish(on_done, False, i18n.t(
+                "лимит {v0} Вт вне диапазона драйвера {v1}..{v2} Вт",
+                v0=watts, v1=int(lo), v2=int(hi)))
+            return
+        self._source = source
+        self._ext_done = on_done
+        self.sl_pl.setValue(int(watts))
+        self._apply({"pl": int(watts)})
 
     def current_profile(self):
         return getattr(self, "_active_profile", None)
@@ -403,7 +536,7 @@ class GpuWidget(QWidget):
     def closeEvent(self, event):
         if self._standalone:
             try:
-                self.client.shutdown(restore=True)
+                self.client.shutdown_async(restore=True)
             except Exception:  # noqa: BLE001
                 pass
         super().closeEvent(event)

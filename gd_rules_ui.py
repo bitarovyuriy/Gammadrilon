@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 
 # --- PyQt5 и не-ASCII путь к venv (exit 127 без traceback) ---
 try:
@@ -60,6 +61,10 @@ class RuleDialog(QDialog):
         trig = self.rule.get("trigger") or {}
         cond = self.rule.get("condition") or {}
         act = self.rule.get("action") or {}
+        # что было выбрано в правиле: профиль CPU/GPU или провайдер DNS — иначе правка
+        # правила молча сбрасывала бы выбор на первый пункт списка
+        self._want = {"cpu_profile": act.get("profile"), "gpu_profile": act.get("profile"),
+                      "set_dns": act.get("dns")}
 
         root = QVBoxLayout(self)
         form = QFormLayout()
@@ -103,6 +108,7 @@ class RuleDialog(QDialog):
 
         self.act_profile = QComboBox()
         form.addRow(i18n.t("Профиль"), self.act_profile)
+        self._profile_label = form.labelForField(self.act_profile)
 
         root.addLayout(form)
 
@@ -132,20 +138,30 @@ class RuleDialog(QDialog):
         else:
             self.trig_param.setEnabled(True)
             self.trig_param.setPlaceholderText(i18n.t("ЧЧ:ММ, например 23:30"))
-            self.trig_hint.setText(i18n.t("Сработает один раз в сутки в указанное время."))
+            self.trig_hint.setText(i18n.t("Сработает один раз в сутки, когда указанное время наступит при работающем приложении: пропущенное время (приложение было закрыто) не «догоняется»."))
 
         kind = self.act_kind.currentData()
         self.act_profile.clear()
-        if kind == "cpu_profile":
-            for key, label in gd_rules.CPU_PROFILES:
-                self.act_profile.addItem(label, key)
-        elif kind == "gpu_profile":
-            for key, label in gd_rules.GPU_PROFILES:
-                self.act_profile.addItem(label, key)
-        self.act_profile.setEnabled(kind in ("cpu_profile", "gpu_profile"))
-        if kind in gd_rules.UNAVAILABLE_ACTIONS:
+        placeholders = {
+            "cpu_profile": (gd_rules.CPU_PROFILES, i18n.t("Профиль")),
+            "gpu_profile": (gd_rules.GPU_PROFILES, i18n.t("Профиль")),
+            "set_dns": (gd_rules.DNS_PROFILES, i18n.t("Провайдер DNS")),
+        }
+        pairs, label = placeholders.get(kind, ((), i18n.t("Профиль")))
+        for key, text in pairs:
+            self.act_profile.addItem(text, key)
+        self.act_profile.setEnabled(bool(pairs))
+        self._profile_label.setText(label)
+        want = self._want.get(kind)
+        if want:
+            idx = self.act_profile.findData(want)
+            if idx >= 0:
+                self.act_profile.setCurrentIndex(idx)
+        if kind in gd_rules.ADMIN_ACTIONS:
             self.trig_hint.setText(
-                self.trig_hint.text() + i18n.t("  Действие появится вместе с разделом «Утилиты».")
+                self.trig_hint.text()
+                + i18n.t("  Действию нужны права администратора: сработает, только если хелпер "
+                         "уже запущен — фоновое правило не показывает запрос UAC.")
             )
 
 
@@ -246,8 +262,12 @@ class RulesWidget(QWidget):
     def _reload_log(self):
         self.log.clear()
         fires = gd_rules.recent_fires()
+        today = datetime.now().strftime("%Y-%m-%d")
         for f in fires:
-            ts = (f.get("ts") or "")[11:16]
+            stamp = f.get("ts") or ""
+            ts = stamp[11:16]
+            if stamp[:10] and stamp[:10] != today:
+                ts = f"{stamp[8:10]}.{stamp[5:7]} {ts}"   # старые записи — с датой
             self.log.addItem(QListWidgetItem(
                 f"{ts}  {f.get('rule')} → {f.get('action')}  ({f.get('result')})"
             ))
@@ -270,35 +290,13 @@ class RulesWidget(QWidget):
         rows = {i.row() for i in self.table.selectedIndexes()}
         return min(rows) if rows else None
 
-    def _add(self):
-        dlg = RuleDialog(parent=self)
-        if dlg.exec_() == QDialog.Accepted:
-            rule = dlg.rule
-            rule["name"] = dlg.name.text().strip() or rule["name"]
-            ttype = dlg.trig_type.currentData()
-            rule["trigger"] = {"type": ttype}
-            if ttype == "schedule":
-                rule["trigger"]["at"] = dlg.trig_param.text().strip()
-            elif ttype == "process_start":
-                rule["trigger"]["process"] = dlg.trig_param.text().strip()
-            txt = dlg.condition.text().strip()
-            rule["condition"] = {"load_below": int(txt) if txt.isdigit() else None}
-            kind = dlg.act_kind.currentData()
-            rule["action"] = {"kind": kind}
-            if kind in ("cpu_profile", "gpu_profile"):
-                rule["action"]["profile"] = dlg.act_profile.currentData()
-            self._rules.append(rule)
-            gd_rules.save_rules(self._rules)
-            self.reload()
+    @staticmethod
+    def _apply_dialog(dlg, rule: dict) -> dict:
+        """Перенести значения из диалога в правило.
 
-    def _edit(self):
-        row = self._selected()
-        if row is None:
-            return
-        dlg = RuleDialog(self._rules[row], parent=self)
-        if dlg.exec_() != QDialog.Accepted:
-            return
-        rule = dlg.rule
+        Один код на «Добавить…» и «Правку»: раньше это были две почти одинаковые
+        портянки, и правка легко разъезжалась с добавлением.
+        """
         rule["name"] = dlg.name.text().strip() or rule["name"]
         ttype = dlg.trig_type.currentData()
         rule["trigger"] = {"type": ttype}
@@ -312,7 +310,25 @@ class RulesWidget(QWidget):
         rule["action"] = {"kind": kind}
         if kind in ("cpu_profile", "gpu_profile"):
             rule["action"]["profile"] = dlg.act_profile.currentData()
-        self._rules[row] = rule
+        elif kind == "set_dns":
+            rule["action"]["dns"] = dlg.act_profile.currentData()
+        return rule
+
+    def _add(self):
+        dlg = RuleDialog(parent=self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._rules.append(self._apply_dialog(dlg, dlg.rule))
+            gd_rules.save_rules(self._rules)
+            self.reload()
+
+    def _edit(self):
+        row = self._selected()
+        if row is None:
+            return
+        dlg = RuleDialog(self._rules[row], parent=self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        self._rules[row] = self._apply_dialog(dlg, dlg.rule)
         gd_rules.save_rules(self._rules)
         self.reload()
 

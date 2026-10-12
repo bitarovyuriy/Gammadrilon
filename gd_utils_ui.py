@@ -42,6 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import gd_bg  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_memory  # noqa: E402
 import gd_theme as th
@@ -76,12 +77,14 @@ class ProcessPicker(QDialog):
 
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.NoSelection)
-        for p in gd_memory.list_processes(40):
-            it = QListWidgetItem(i18n.t("{v0}  ·  pid {v1}  ·  {v2:.0f} МБ", v0=p['name'], v1=p['pid'], v2=p['rss'] / 1024 ** 2))
-            it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            it.setCheckState(Qt.Unchecked)
-            it.setData(Qt.UserRole, p["pid"])
-            self.list.addItem(it)
+        self._proc_worker = None
+        loading = QListWidgetItem(i18n.t("Читаю список процессов…"))
+        loading.setFlags(Qt.NoItemFlags)
+        self.list.addItem(loading)
+        # psutil.process_iter — дорогой вызов: список наполняем из фонового потока
+        self._proc_worker = gd_bg.submit(
+            lambda: gd_memory.list_processes(40), self._fill_list, parent=self
+        )
         root.addWidget(self.list, 1)
 
         row = QHBoxLayout()
@@ -102,6 +105,16 @@ class ProcessPicker(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    def _fill_list(self, rows):
+        """Заполнить список процессов после фонового чтения."""
+        self.list.clear()
+        for p in rows or []:
+            it = QListWidgetItem(i18n.t("{v0}  ·  pid {v1}  ·  {v2:.0f} МБ", v0=p['name'], v1=p['pid'], v2=p['rss'] / 1024 ** 2))
+            it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            it.setCheckState(Qt.Unchecked)
+            it.setData(Qt.UserRole, p["pid"])
+            self.list.addItem(it)
 
     def _set_all(self, state):
         for i in range(self.list.count()):
@@ -127,6 +140,8 @@ class UtilsWidget(QWidget):
         self.client = None
         self._sensors = None
         self._before = None
+        self._worker = None       # фоновая очистка standby
+        self._ws_worker = None    # фоновое сжатие рабочих наборов
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
@@ -295,9 +310,24 @@ class UtilsWidget(QWidget):
 
     # -- действия ----------------------------------------------------------
     def _purge(self, auto: bool = False):
+        # запуск хелпера (UAC) и сама операция долгие — уводим в фон, GUI не мерзнет
+        if gd_bg.is_running(self._worker):
+            return
         self._ensure()
         before = self._sensors.sample()
-        resp = self.client.call({"cmd": "purge_standby"})
+        if not auto:
+            self.btn_purge.setEnabled(False)
+            self._set_status(i18n.t("Идёт очистка…"), ok=True)
+
+        self._worker = gd_bg.submit(
+            lambda: self.client.call({"cmd": "purge_standby"}),
+            lambda resp: self._purge_done(resp, before, auto),
+            parent=self,
+        )
+
+    def _purge_done(self, resp, before, auto: bool):
+        if not auto:
+            self.btn_purge.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("Очистка не выполнена: {v0}", v0=resp.get('error')), ok=False)
             gd_journal.record("memory_purge", "standby list", None, None,
@@ -319,11 +349,12 @@ class UtilsWidget(QWidget):
                           reversible=False)
         if not auto:
             import gd_toast
-            import gd_i18n as i18n
 
             gd_toast.show_toast(i18n.t("toast.purge", mb=freed), "ok")
 
     def _pick_and_empty(self):
+        if gd_bg.is_running(self._ws_worker):
+            return
         dlg = ProcessPicker(self)
         if dlg.exec_() != QDialog.Accepted:
             return
@@ -333,7 +364,17 @@ class UtilsWidget(QWidget):
             return
         self._ensure()
         before = self._sensors.sample()
-        resp = self.client.call({"cmd": "empty_working_sets", "pids": pids})
+        self.btn_ws.setEnabled(False)
+        self._set_status(i18n.t("Идёт сжатие…"), ok=True)
+
+        self._ws_worker = gd_bg.submit(
+            lambda: self.client.call({"cmd": "empty_working_sets", "pids": pids}),
+            lambda resp: self._empty_done(resp, before, len(pids)),
+            parent=self,
+        )
+
+    def _empty_done(self, resp, before, want: int):
+        self.btn_ws.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("Сжатие не выполнено: {v0}", v0=resp.get('error')), ok=False)
             return
@@ -342,14 +383,13 @@ class UtilsWidget(QWidget):
         a = data.get("after") or self._sensors.sample()
         self._show_delta(b, a)
         self._set_status(
-            i18n.t("Рабочие наборы сжаты: процессов {v0} из {v1}. Вернётся к обычному объёму по мере работы программ.", v0=data.get('count'), v1=len(pids)),
+            i18n.t("Рабочие наборы сжаты: процессов {v0} из {v1}. Вернётся к обычному объёму по мере работы программ.", v0=data.get('count'), v1=want),
             ok=True,
         )
         gd_journal.record("memory_working_sets", i18n.t("процессов: {v0}", v0=data.get('count')),
                           human(b.get("In Use")), human(a.get("In Use")),
                           why=i18n.t("сжатие рабочих наборов"), source=i18n.t("утилиты"), reversible=False)
         import gd_toast
-        import gd_i18n as i18n
 
         gd_toast.show_toast(i18n.t("toast.working_sets", count=data.get("count")), "ok")
 

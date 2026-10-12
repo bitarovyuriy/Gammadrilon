@@ -80,6 +80,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "pal.open_rules": "Открыть вкладку «Правила»",
         "pal.open_utils": "Открыть вкладку «Утилиты»",
         "pal.open_dns": "Открыть вкладку «DNS»",
+        "pal.open_zapret": "Открыть вкладку «Обход DPI»",
         "pal.theme": "Переключить тему (тёмная / светлая)",
         "pal.onboarding": "Показать экран первого запуска",
         "pal.purge": "Очистить standby list (ОЗУ)",
@@ -130,6 +131,17 @@ STRINGS: dict[str, dict[str, str]] = {
         "toast.quiet_off": "Тихий час: состояние возвращено",
         # журнал
         "journal.title": "Журнал изменений — что произошло",
+        # обход DPI (zapret)
+        "tab.zapret": "Обход DPI",
+        "tab.zapret.full": "Обход DPI (zapret-discord-youtube)",
+        "tab.zapret.title": "Обход DPI",
+        "tab.zapret.sub": "Контроллер zapret-discord-youtube: стратегии, тумблеры и журнал winws",
+        # локальный API для инструментов (ТЗ, этап 8)
+        "pal.open_agent": "Открыть вкладку «API агентов»",
+        "tab.agent": "API агентов",
+        "tab.agent.full": "Локальный API для инструментов",
+        "tab.agent.title": "API агентов",
+        "tab.agent.sub": "Локальный API для инструментов: белый список действий, подтверждение и аудит",
     },
     "en": {
         # tabs
@@ -196,6 +208,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "pal.open_rules": "Open tab “Rules”",
         "pal.open_utils": "Open tab “Utilities”",
         "pal.open_dns": "Open tab “DNS”",
+        "pal.open_zapret": "Open tab “DPI bypass”",
         "pal.theme": "Toggle theme (dark / light)",
         "pal.onboarding": "Show first-run screen",
         "pal.purge": "Purge standby list (RAM)",
@@ -246,6 +259,17 @@ STRINGS: dict[str, dict[str, str]] = {
         "toast.quiet_off": "Quiet hour: state restored",
         # journal
         "journal.title": "Change log — what happened",
+        # DPI bypass (zapret)
+        "tab.zapret": "DPI bypass",
+        "tab.zapret.full": "DPI bypass (zapret-discord-youtube)",
+        "tab.zapret.title": "DPI bypass",
+        "tab.zapret.sub": "zapret-discord-youtube controller: strategies, toggles and the winws log",
+        # local tool API (spec stage 8)
+        "pal.open_agent": "Open tab “Agent API”",
+        "tab.agent": "Agent API",
+        "tab.agent.full": "Local tool API",
+        "tab.agent.title": "Agent API",
+        "tab.agent.sub": "Local tool API: action whitelist, confirmation and audit",
     },
 }
 
@@ -281,6 +305,32 @@ def set_language(name: str, config: dict | None = None, save_fn=None) -> str:
     return _current
 
 
+def init_for_process() -> str:
+    """Язык для отдельного процесса (компаньон/хелпер) — из presets.json, без Qt.
+
+    Компаньоны питания и GPU живут отдельными процессами и не видят настройки UI.
+    Без этого их сообщения («нечего откатывать», «исходные значения возвращены»)
+    оставались бы русскими в английском интерфейсе. Если файл настроек не
+    прочитался — остаётся ru: это честный дефолт, а не выдумка.
+    """
+    try:
+        import json
+        import sys
+        from pathlib import Path
+
+        if getattr(sys, "frozen", False):
+            base = Path(sys.executable).resolve().parent
+        else:
+            base = Path(__file__).resolve().parent
+        data = json.loads((base / "presets.json").read_text(encoding="utf-8"))
+        lang = (data.get("settings") or {}).get("language")
+        if lang in LANGS:
+            return set_language(lang)
+    except Exception:  # noqa: BLE001
+        pass
+    return set_language("ru")
+
+
 def t(key: str, **fmt) -> str:
     """Перевод: сначала ключи вида "tab.cpu", затем прямые русские строки (DIRECT)."""
     if _current == "en":
@@ -303,8 +353,6 @@ DIRECT: dict[str, str] = {
     "Сохранить как…": "Save as…",
     "Сброс": "Reset",
     "Кошачье зрение": "Cat vision",
-    "Расширенные настройки →": "Advanced settings →",
-    "← Скрыть расширенные настройки": "← Hide advanced settings",
     "Точная настройка": "Fine tuning",
     "Гамма": "Gamma",
     "Яркость": "Brightness",
@@ -354,7 +402,7 @@ DIRECT: dict[str, str] = {
     "Включён": "On",
     "Выключен": "Off",
     "Макс": "Max",
-    "Макс. состояние ⓘ": "Max state ⓘ",
+    "Макс. состояние": "Max state",
     "НОРМАЛ": "NORMAL",
     "Охлаждение": "Cooling",
     "ПРОФИЛЬ": "PROFILE",
@@ -368,7 +416,6 @@ DIRECT: dict[str, str] = {
     "Профиль применяется к схеме питания через её клон — исходная схема не меняется, откат в один клик. Значения пишутся и в AC, и в DC.": "The profile is applied to a clone of the power scheme — the original stays untouched, rollback in one click. Values are written for both AC and DC.",
     "Профиль применён.": "Profile applied.",
     "Профиль применён. Проверяю реакцию частоты…": "Profile applied. Checking clock reaction…",
-    "РАСШИРЕННЫЕ ПАРАМЕТРЫ": "ADVANCED",
     "Режим «СВОЙ»: настройте параметры ниже и нажмите «Применить как «СВОЙ»».": "CUSTOM mode: adjust the values below and press “Apply as CUSTOM”.",
     "Режим усиления": "Boost mode",
     "СВОЙ": "CUSTOM",
@@ -383,7 +430,6 @@ DIRECT: dict[str, str] = {
     "загрузка": "load",
     "исходная схема": "original scheme",
     "компаньон не запустился": "companion did not start",
-    "компаньон недоступен": "companion unavailable",
     "н/д": "n/a",
     "питание CPU": "CPU power",
     "производит.": "perf.",
@@ -394,7 +440,9 @@ DIRECT: dict[str, str] = {
     "трей": "tray",
     "частота": "clock",
     # --- остальные экраны (пилот → все модули) ---
-    "  Действие появится вместе с разделом «Утилиты».": "  The action will arrive with the “Utilities” section.",
+    "  Действию нужны права администратора: сработает, только если хелпер уже запущен — фоновое правило не показывает запрос UAC.":
+        "  The action needs administrator rights: it runs only if the helper is already up — "
+        "a background rule never shows the UAC prompt.",
     " МБ": " MB",
     "0.5 мс": "0.5 ms",
     "Bufferbloat: под нагрузкой узлы не отвечали.": "Bufferbloat: nodes did not respond under load.",
@@ -487,7 +535,7 @@ DIRECT: dict[str, str] = {
     "Сжать рабочие наборы…": "Trim working sets…",
     "Снять все": "Clear all",
     "Сохранить": "Save",
-    "Сработает один раз в сутки в указанное время.": "Fires once a day at the specified time.",
+    "Сработает один раз в сутки, когда указанное время наступит при работающем приложении: пропущенное время (приложение было закрыто) не «догоняется».": "Fires once a day when that time comes while the app is running: a missed time (the app was closed) is not caught up.",
     "Сработает при переходе с сети на батарею. На этой машине батарея не обнаружена — правило будет ждать.": "Fires when switching from AC to battery. No battery found on this machine — the rule will wait.",
     "Сработает, когда процесс появится в системе.": "Fires when the process appears in the system.",
     "ТИХИЙ ЧАС — ЭКО И МИНИМУМ ЯРКОСТИ ПО РАСПИСАНИЮ": "QUIET HOUR — ECO AND MINIMUM BRIGHTNESS ON SCHEDULE",
@@ -559,7 +607,7 @@ DIRECT: dict[str, str] = {
     "Профиль GPU": "GPU profile",
     "Свой": "Custom",
     "Смена DNS может ухудшить резолв в вашей сети. Сравнивайте латентность до и после.": "Changing DNS may worsen resolution on your network. Compare latency before and after.",
-    "Сменить DNS (нужны Утилиты)": "Change DNS (needs Utilities)",
+    "Сменить DNS": "Switch DNS",
     "Тихий": "Quiet",
     "Это измерение, а не «оптимизатор пинга»: показывает долю повторно переданных сегментов TCP, джиттер, потери и рост задержки под нагрузкой (bufferbloat).": "This is a measurement, not a “ping optimizer”: it shows the TCP retransmit share, jitter, loss and latency growth under load (bufferbloat).",
     "Яндекс": "Yandex",
@@ -578,32 +626,32 @@ DIRECT: dict[str, str] = {
     "требуется повышение прав": "elevation required",
     "условие выполнено": "condition met",
     "успех": "success",
-    "хелпер GPU не запустился (нужны права администратора)": "GPU helper did not start (administrator rights required)",
+    "хелпер не запустился (нужны права администратора)": "helper did not start (administrator rights required)",
+    # --- индикаторы фоновых операций (UAC/хелпер) и краши ---
+    "Идёт очистка…": "Purging…",
+    "Идёт сжатие…": "Trimming…",
+    "Применяю…": "Applying…",
+    "Применяю профиль CPU…": "Applying the CPU profile…",
+    "Читаю список процессов…": "Reading the process list…",
+    "Экспортирую настройки…": "Exporting settings…",
+    "Применяю DNS…": "Applying DNS…",
+    "Возвращаю исходный лимит…": "Restoring the original limit…",
+    "Возвращаю исходную схему…": "Restoring the original scheme…",
+    "Возвращаю прежнюю конфигурацию DNS…": "Restoring the previous DNS configuration…",
+    "Время подтверждения вышло — возвращаю прежний лимит…": "Confirmation timed out — restoring the previous limit…",
+    "Непредвиденная ошибка": "Unexpected error",
     # --- шаблоны f-строк (UI) ---
-    " (Δ {v0} Вт)": " (Δ {v0} W)",
-    " → {v0} Вт{v1}": " → {v0} W{v1}",
     "Bufferbloat до ближайшего узла: {v0} → {v1} мс (+{v2} мс), класс {v3}. ": "Bufferbloat to the nearest node: {v0} → {v1} ms (+{v2} ms), class {v3}. ",
     "DNS не изменён: {v0}": "DNS unchanged: {v0}",
     "DNS переключён на «{v0}» ({v1}) — было {v2}.{v3} Сравните латентность замером.": "DNS switched to “{v0}” ({v1}) — was {v2}.{v3} Compare latency with a measurement.",
     "Standby list очищен ({v0}). Свободная память выросла на {v1:+.0f} МБ. Кэш будет наполняться заново — это нормально.": "Standby list purged ({v0}). Free memory grew by {v1:+.0f} MB. The cache refills by itself — that is normal.",
     "Standby {v0:.0f} МБ, свободно {v1:.0f} МБ — ": "Standby {v0:.0f} MB, free {v1:.0f} MB — ",
-    "VRAM {v0}/{v1} ГБ": "VRAM {v0}/{v1} GB",
-    "{v0}  ·  pid {v1}  ·  {v2} МБ": "{v0}  ·  pid {v1}  ·  {v2} MB",
     "{v0} Вт": "{v0} W",
-    "{v0} ГБ": "{v0} GB",
-    "{v0} ГГц": "{v0} GHz",
-    "{v0} МБ": "{v0} MB",
-    "{v0} МГц": "{v0} MHz",
     "{v0} мс": "{v0} ms",
-    "{v0}/{v1} Вт": "{v0}/{v1} W",
     "{v0:.0f} МГц": "{v0:.0f} MHz",
     "{v0:+.0f} МБ": "{v0:+.0f} MB",
     "{v0:.0f}/{v1:.0f} Вт": "{v0:.0f}/{v1:.0f} W",
-    "{v0} Вт": "{v0} W",
-    "±{v0} мс": "±{v0} ms",
-    "±{v0} мс · потери {v1}%": "±{v0} ms · loss {v1}%",
     "Драйвер не принял изменение: {v0}": "Driver rejected the change: {v0}",
-    "Замер готов. Быстрее всех: {v0} ({v1} мс).": "Measurement done. Fastest: {v0} ({v1} ms).",
     "Изменение оставлено: лимит {v0} Вт.": "Change kept: limit {v0} W.",
     "Конфигурация DNS возвращена ({v0}).": "DNS configuration restored ({v0}).",
     "Лимит {v0} Вт оставлен.": "Limit {v0} W kept.",
@@ -621,17 +669,14 @@ DIRECT: dict[str, str] = {
     "Применено: лимит {v0} Вт. Подтвердите за {v1} с.": "Applied: limit {v0} W. Confirm within {v1} s.",
     "Профиль «{v0}» → лимит {v1} Вт. Применяю…": "Profile “{v0}” → limit {v1} W. Applying…",
     "Рабочие наборы сжаты: процессов {v0} из {v1}. Вернётся к обычному объёму по мере работы программ.": "Working sets trimmed: {v0} of {v1} processes. They return to normal as programs run.",
-    "Реакция есть: {v0} → {v1} ГГц": "Reaction detected: {v0} → {v1} GHz",
     "Сжатие не выполнено: {v0}": "Trim not performed: {v0}",
     "макс {v0}%": "max {v0}%",
     "память {v0:.0f} МГц": "memory {v0:.0f} MHz",
     "потери {v0}%": "loss {v0}%",
     "правил: {v0}": "rules: {v0}",
-    "причина: {v0}\\nисточник: {v1}\\nоткат: {v2}": "reason: {v0}\\nsource: {v1}\\nrollback: {v2}",
     "процессов: {v0}": "processes: {v0}",
     "свободно {v0}": "free {v0}",
     "сейчас: {v0} мс": "now: {v0} ms",
-    "сейчас: {v0:.1f} мс": "now: {v0:.1f} ms",
     # --- палитра и трей ---
     "Палитра команд": "Command palette",
     "Что сделать?  ·  >200 — быстрый параметр  ·  Esc — отмена": "What to do?  ·  >200 — quick parameter  ·  Esc — cancel",
@@ -639,8 +684,8 @@ DIRECT: dict[str, str] = {
     "Схема по умолчанию": "Default scheme",
     # --- трей и палитра (f-строки) ---
     "{v0:.2f} ГГц": "{v0:.2f} GHz",
-    "«{v0}»: standby list очищен": "“{v0}”: standby list purged",
-    "«{v0}»: вкладка «Утилиты» недоступна": "“{v0}”: the “Utilities” tab is unavailable",
+    "«{v0}»: standby list очищен, свободно {v1:+.0f} МБ": "“{v0}”: standby list purged, {v1:+.0f} MB free",
+    "«{v0}»: у резолвера нет адресов — пропущено": "“{v0}”: the resolver has no addresses — skipped",
     "«{v0}»: действие недоступно": "“{v0}”: action unavailable",
     "«{v0}»: лимит GPU возвращён": "“{v0}”: GPU limit restored",
     "«{v0}»: ошибка — {v1}": "“{v0}”: error — {v1}",
@@ -651,4 +696,403 @@ DIRECT: dict[str, str] = {
     "Профиль GPU не применён: {v0}": "GPU profile not applied: {v0}",
     "Профиль не применён: {v0}": "Profile not applied: {v0}",
     "правила ({v0})": "rules ({v0})",
+    # --- фут сайдбара: честный индикатор службы питания ---
+    "Служба питания не запущена": "Power service not running",
+    "Компаньон питания работает: профили применяются через него.":
+        "Power companion is running: profiles are applied through it.",
+    "Компаньон поднимется, когда применишь профиль CPU.":
+        "The companion starts as soon as you apply a CPU profile.",
+    "Активна исходная схема.": "The original scheme is active.",
+    "Профиль: {v0}.": "Profile: {v0}.",
+    # --- DNS: статусбар честно показывает, что данные читаются по запросу ---
+    "DNS читается только по запросу: откройте вкладку «DNS» или нажмите "
+    "«Замерить». В скобках — возраст показанных данных.":
+        "DNS is read on demand only: open the “DNS” tab or press “Measure”. "
+        "The age of the data is shown in brackets.",
+    " ({v0:.0f} мин)": " ({v0:.0f} min)",
+    # --- правила: действия из «Утилит» (очистка ОЗУ, смена DNS) ---
+    "Провайдер DNS": "DNS provider",
+    "нужны права администратора, а фоновое действие не поднимает UAC: "
+    "откройте вкладку «Утилиты» или «DNS» и разрешите один раз":
+        "administrator rights are required, and a background action never raises UAC: "
+        "open the “Utilities” or “DNS” tab and allow it once",
+    "«{v0}»: очистка не выполнена — {v1}": "“{v0}”: cleanup not performed — {v1}",
+    "Правило «{v0}»: очистка ОЗУ не выполнена.": "Rule “{v0}”: RAM cleanup not performed.",
+    "очистка ОЗУ по правилу": "RAM cleanup by rule",
+    "«{v0}»: DNS не изменён — {v1}": "“{v0}”: DNS not changed — {v1}",
+    "Правило «{v0}»: DNS не изменён.": "Rule “{v0}”: DNS not changed.",
+    "«{v0}»: DNS переключён на {v1} ({v2})": "“{v0}”: DNS switched to {v1} ({v2})",
+    "смена DNS по правилу": "DNS change by rule",
+    # --- CPU: чтение состояния без компаньона и откат прошлой сессии ---
+    "Читаю состояние питания…": "Reading the power state…",
+    "состояние питания недоступно": "power state unavailable",
+    "откатываю профиль прошлой сессии…": "rolling back the previous session's profile…",
+    "Профиль прошлой сессии откатил — компаньона не было.":
+        "Rolled back the previous session's profile — no companion was running.",
+    "Профиль прошлой сессии откатить не удалось.":
+        "Failed to roll back the previous session's profile.",
+    "откат профиля прошлой сессии": "rollback of the previous session's profile",
+    "профиль применён": "profile applied",
+    "профиль остался от прошлой сессии, а компаньон не работал":
+        "the profile was left over from the previous session, and no companion was running",
+    "автооткат": "auto rollback",
+    "компаньон не запущен": "companion is not running",
+    # --- обход DPI: zapret (ТЗ 8) ---
+    "Обход DPI": "DPI bypass",
+    "ПАПКА ZAPRET": "ZAPRET FOLDER",
+    "СОСТОЯНИЕ": "STATUS",
+    "СТРАТЕГИИ": "STRATEGIES",
+    "ФИЛЬТРЫ": "FILTERS",
+    "ЖУРНАЛ WINWS": "WINWS LOG",
+    "Выбрать папку…": "Choose folder…",
+    "Открыть папку": "Open folder",
+    "Включить": "Enable",
+    "Выключить": "Disable",
+    "Переосвоить": "Re-learn",
+    "service.bat…": "service.bat…",
+    "Взять под управление": "Take under management",
+    "Оставить как есть": "Leave as is",
+    "Копировать": "Copy",
+    "не выбрана": "not selected",
+    "Папка zapret-discord-youtube": "zapret-discord-youtube folder",
+    "Папка комплекта zapret-discord-youtube. Комплект остаётся внешним: Gammadrilon — контроллер и UI, обновления приходят от автора zapret. Путь должен быть без кириллицы.":
+        "The zapret-discord-youtube bundle folder. The bundle stays external: Gammadrilon is "
+        "the controller and UI, updates come from the zapret author. The path must not contain "
+        "non-ASCII characters.",
+    "ВЫКЛЮЧЕНО / РАБОТАЕТ (наша стратегия, PID и аптайм) / внешний winws.exe, который Gammadrilon не трогает без вашего решения.":
+        "OFF / RUNNING (our strategy, PID and uptime) / an external winws.exe that Gammadrilon "
+        "never touches without your decision.",
+    "Видимый запуск service.bat: служба zapret, обновление списков, диагностика — интерактивное меню открывается в своём окне.":
+        "Visible service.bat launch: the zapret service, list updates, diagnostics — the "
+        "interactive menu opens in its own window.",
+    "Список — это файлы general*.bat в корне папки. «Освоение» один раз ловит командную строку winws.exe, дальше запуск идёт напрямую — без cmd.exe, с контролем статуса и stdout.":
+        "The list is the general*.bat files in the bundle root. “Learning” captures the "
+        "winws.exe command line once; after that the app launches it directly — no cmd.exe, "
+        "with status and stdout control.",
+    "GameFilter — диапазоны портов для игр: батник читает их при запуске, поэтому смена тумблера запускает повторное освоение. IPSet — список IP (lists\\ipset-all.txt): winws читает его при старте, поэтому при работающем обходе список перезапускается.":
+        "GameFilter — game port ranges: the batch reads them at launch, so flipping the toggle "
+        "triggers re-learning. IPSet — the IP list (lists\\ipset-all.txt): winws reads it at "
+        "startup, so with the bypass running the list is applied by a restart.",
+    "Последние строки stdout winws.exe: пишутся при прямом запуске. Драйвер WinDivert и стратегия пишут сюда же свои сообщения.":
+        "The last lines of winws.exe stdout: written on direct launch. The WinDivert driver "
+        "and the strategy write their messages here too.",
+    "Найден посторонний winws.exe (PID {v0}) — вероятно, запущен вручную. Gammadrilon не трогает его молча: можно взять под управление (прочитает аргументы и сможет останавливать) или оставить как есть.":
+        "A foreign winws.exe (PID {v0}) was found — probably started manually. Gammadrilon "
+        "never touches it silently: take it under management (reads its arguments and allows "
+        "stopping) or leave it as is.",
+    "Внешний winws.exe взят под управление — его можно остановить кнопкой «Выключить».":
+        "The external winws.exe is now under management — it can be stopped with the "
+        "“Disable” button.",
+    "ВЫКЛЮЧЕНО": "OFF",
+    "РАБОТАЕТ: {v0}": "RUNNING: {v0}",
+    "ПОД УПРАВЛЕНИЕМ: внешний winws.exe": "UNDER MANAGEMENT: external winws.exe",
+    "ВНЕШНИЙ winws.exe (PID {v0})": "EXTERNAL winws.exe (PID {v0})",
+    "служба zapret: RUNNING (внешняя, не управляется)":
+        "zapret service: RUNNING (external, not managed)",
+    "драйвер WinDivert: RUNNING — им пользуется другая программа":
+        "WinDivert driver: RUNNING — another program is using it",
+    "посторонний обходчик: {v0} (PID {v1})": "another bypass tool: {v0} (PID {v1})",
+    "winws.exe завершился вне Gammadrilon.": "winws.exe exited outside Gammadrilon.",
+    "Обход: {v0} (PID {v1})": "Bypass: {v0} (PID {v1})",
+    "Обход не запущен — журнал пуст, пока не включите.":
+        "Bypass is off — the log stays empty until you enable it.",
+    "Обход остановлен.": "Bypass stopped.",
+    "освоена": "learned",
+    "освоение будет выполнено при включении": "learning will run on enable",
+    "освоение": "learning",
+    "переосвоение": "re-learning",
+    "запуск": "launch",
+    "выбрано: {v0}  ·  файл: {v1}{v2}": "selected: {v0}  ·  file: {v1}{v2}",
+    "Стратегия не выбрана.": "No strategy selected.",
+    "Сначала выберите корректную папку zapret.": "Choose a valid zapret folder first.",
+    "Сначала выберите корректную папку и стратегию.":
+        "Choose a valid folder and strategy first.",
+    "Выберите стратегию в списке.": "Select a strategy in the list.",
+    "Проблемы: {v0}": "Problems: {v0}",
+    "Предупреждение: {v0}": "Warning: {v0}",
+    "Папка принята: {v0}": "Folder accepted: {v0}",
+    "ipset-all.txt: {v0} строк · {v1} · {v2}  ·  {v3}":
+        "ipset-all.txt: {v0} lines · {v1} · {v2}  ·  {v3}",
+    "загружен": "loaded",
+    "отключён (заглушка)": "disabled (placeholder)",
+    "пуст — фильтруются любые IP": "empty — any IP is filtered",
+    "нет файла": "file missing",
+    "Включаю: {v0}{v1}…": "Enabling: {v0}{v1}…",
+    "сначала освоение": "learning first",
+    "Включено: {v0} (PID {v1}).": "Enabled: {v0} (PID {v1}).",
+    "{v0} не удалось: {v1}": "{v0} failed: {v1}",
+    "Останавливаю winws.exe (PID {v0})…": "Stopping winws.exe (PID {v0})…",
+    "Остановить не удалось: {v0}": "Could not stop: {v0}",
+    "Нечего останавливать.": "Nothing to stop.",
+    "Переосваиваю {v0}…": "Re-learning {v0}…",
+    "Переосвоено и перезапущено: {v0} (PID {v1}).":
+        "Re-learned and restarted: {v0} (PID {v1}).",
+    "Переосвоено: {v0} (аргументов: {v1}).": "Re-learned: {v0} ({v1} arguments).",
+    "Переосвоение не удалось: {v0}": "Re-learning failed: {v0}",
+    "остановка: {v0}": "stop: {v0}",
+    "нет освоенного argv — нажмите «Переосвоить»": "no learned argv — press “Re-learn”",
+    "Перезапущено: {v0} (PID {v1}).": "Restarted: {v0} (PID {v1}).",
+    "Перезапуск не удался: {v0}": "Restart failed: {v0}",
+    "Читаю аргументы winws.exe (PID {v0})…": "Reading winws.exe arguments (PID {v0})…",
+    "Не удалось взять под управление: {v0}": "Could not take under management: {v0}",
+    "Оставил как есть — Gammadrilon не трогает этот процесс.":
+        "Left as is — Gammadrilon does not touch this process.",
+    "GameFilter: {v0} — стратегия переосваивается, winws перезапускается…":
+        "GameFilter: {v0} — re-learning the strategy and restarting winws…",
+    "IPSet: {v0} — winws перезапускается…": "IPSet: {v0} — restarting winws…",
+    "Журнал скопирован в буфер обмена.": "Log copied to the clipboard.",
+    "service.bat не найден.": "service.bat not found.",
+    "service.bat открыт в своём окне.": "service.bat opened in its own window.",
+    "Фоновая операция не вернула результат.":
+        "The background operation returned no result.",
+    "{v0} с": "{v0} s",
+    "{v0} мин": "{v0} min",
+    "{v0} ч {v1} мин": "{v0} h {v1} min",
+    "включение из вкладки": "enabled from the tab",
+    "остановка из вкладки": "stopped from the tab",
+    "выключено": "off",
+    "работает (PID {v0})": "running (PID {v0})",
+    "работает": "running",
+    "обход": "bypass",
+    "обход DPI": "DPI bypass",
+    "argv обновлён ({v0} арг.)": "argv updated ({v0} args)",
+    "внешний winws.exe": "external winws.exe",
+    "вне управления": "unmanaged",
+    "под управлением": "under management",
+    "решение пользователя": "user decision",
+    "выбор пользователя": "user choice",
+    "тумблер вкладки": "tab toggle",
+    "папка": "folder",
+    "(внешний)": "(external)",
+    # --- локальный API для инструментов (ТЗ, этап 8) ---
+    "СЕРВЕР": "SERVER",
+    "ДЕЙСТВИЯ": "ACTIONS",
+    "АУДИТ": "AUDIT",
+    "Работает: {v0}": "Running: {v0}",
+    "Скопировать адрес": "Copy endpoint",
+    "Скопировать токен": "Copy token",
+    "адрес скопирован": "endpoint copied",
+    "токен скопирован": "token copied",
+    "Запускать при старте Gammadrilon": "Start with Gammadrilon",
+    "доступно только в главном окне": "available in the main window only",
+    "нечего копировать — сервер выключен": "nothing to copy — the server is off",
+    "журнал аудита пуст": "the audit log is empty",
+    "журнал скопирован": "audit log copied",
+    "не удалось открыть папку: {v0}": "could not open the folder: {v0}",
+    "Тип": "Type",
+    "Что делает": "What it does",
+    "чтение": "read",
+    "изменение": "change",
+    "Пока пусто — вызовов не было.": "Nothing yet — no calls were made.",
+    "Запрос от локального агента": "Request from a local agent",
+    "Разрешить": "Allow",
+    "Отклонить": "Decline",
+    "автоотклонение через {v0} с": "auto-decline in {v0} s",
+    "Изменение выполнится один раз и только после вашего решения. Если понадобится, Windows отдельно спросит права администратора.":
+        "The change runs once and only after your decision. If needed, Windows will separately ask "
+        "for administrator rights.",
+    "Локальный API для инструментов: сервер слушает только 127.0.0.1 и требует токен из файла. Агент видит только действия из списка ниже — реестр, shell и файлы ему недоступны. Изменения выполняются только после вашего подтверждения в окне.":
+        "Local tool API: the server listens on 127.0.0.1 only and requires the token from the file. "
+        "The agent sees only the actions listed below — the registry, shell and files are out of reach. "
+        "Changes run only after your confirmation in a dialog.",
+    "Журнал аудита только дописывается — приложение его не редактирует. Запись: время, действие, решение и параметры.":
+        "The audit log is append-only — the app never edits it. Each entry: time, action, decision and parameters.",
+    "параметры: {v0}\nисточник: {v1}\nдлительность: {v2} мс":
+        "parameters: {v0}\nsource: {v1}\nduration: {v2} ms",
+    # действия API
+    "Сводка: профили CPU/GPU, обход DPI, версия": "Summary: CPU/GPU profiles, DPI bypass, version",
+    "Живые сенсоры CPU: частота, загрузка, ОЗУ": "Live CPU sensors: frequency, load, RAM",
+    "Последние записи журнала изменений": "Recent change-log entries",
+    "Правила автоматизации": "Automation rules",
+    "Состояние обхода DPI (winws)": "DPI bypass state (winws)",
+    "Профиль питания CPU": "CPU power profile",
+    "Профиль питания GPU": "GPU power profile",
+    "Лимит мощности GPU, Вт": "GPU power limit, W",
+    "Смена DNS-сервера": "Change the DNS resolver",
+    "температура CPU на этой системе недоступна без доп. ПО":
+        "CPU temperature is unavailable on this system without extra software",
+    # решения аудита и источник журнала
+    "сервер запущен": "server started",
+    "сервер остановлен": "server stopped",
+    "выполнено": "done",
+    "отклонено": "declined",
+    "отвергнуто (валидация)": "rejected (validation)",
+    "ошибка": "error",
+    "агент": "agent",
+    # отказы и ошибки шлюза
+    "неизвестное действие": "unknown action",
+    "неизвестное действие: {v0}": "unknown action: {v0}",
+    "нет параметра «{v0}»": "missing parameter “{v0}”",
+    "«{v0}» — целое число": "“{v0}” must be an integer",
+    "«{v0}» вне диапазона {v1}..{v2}": "“{v0}” is outside the range {v1}..{v2}",
+    "«{v0}» — строка": "“{v0}” must be a string",
+    "«{v0}»: допустимо {v1}": "“{v0}”: allowed values are {v1}",
+    "лишние параметры: {v0}": "extra parameters: {v0}",
+    "не удалось открыть порт: {v0}": "could not open the port: {v0}",
+    "неверный или отсутствующий токен": "missing or wrong token",
+    "нужен токен: Authorization: Bearer <токен из файла>":
+        "a token is required: Authorization: Bearer <token from the file>",
+    "неизвестный маршрут: {v0}": "unknown route: {v0}",
+    "тело запроса слишком большое": "the request body is too large",
+    "тело запроса — не JSON": "the request body is not JSON",
+    "тело запроса — объект JSON": "the request body must be a JSON object",
+    "«{v0}» — изменяющее действие: вызывайте POST /v1/action/{v0}":
+        "“{v0}” is a mutating action: call POST /v1/action/{v0}",
+    "исполнитель вернул не объект": "the runner returned a non-object",
+    "результат не удалось сериализовать в JSON": "the result could not be serialized to JSON",
+    "сервер поднят на {v0}": "server is up at {v0}",
+    "не удалось определить пользователя — права на токен не ограничены":
+        "could not determine the user — token file permissions were not restricted",
+    "не удалось ограничить права файла токена: {v0}":
+        "could not restrict the token file permissions: {v0}",
+    "icacls отказал: {v0}": "icacls refused: {v0}",
+    "не удалось записать файл токена: {v0}": "could not write the token file: {v0}",
+    # подтверждение, таймауты и итоги
+    "таймаут: окно не ответило — приложение занято, скрыто в трее или запрос ждёт подтверждения":
+        "timeout: the window did not answer — the app is busy, hidden in the tray, "
+        "or the request is awaiting confirmation",
+    "пустой ответ приложения": "empty reply from the app",
+    "уже есть запрос на подтверждение — этот отклонён":
+        "another confirmation request is already open — this one is declined",
+    "пользователь отклонил запрос": "the user declined the request",
+    "действие не подключено: {v0}": "action is not wired: {v0}",
+    "подтвердите изменение во вкладке «Питание GPU» в течение 12 с, иначе вернётся прежний лимит":
+        "confirm the change on the “GPU power” tab within 12 s, otherwise the previous limit returns",
+    "Локальный API не запущен: {v0}": "Local API did not start: {v0}",
+    "Локальный API включён: {v0}": "Local API is on: {v0}",
+    "Локальный API выключен.": "Local API is off.",
+    # страницы: занятость и валидация внешних вызовов
+    "занято: операция уже выполняется": "busy: an operation is already running",
+    "занято: профиль уже применяется": "busy: the profile is already being applied",
+    "нет данных GPU (nvidia-smi недоступен)": "no GPU data (nvidia-smi is unavailable)",
+    "драйвер не сообщил лимит для этого профиля": "the driver did not report a limit for this profile",
+    "лимит {v0} Вт вне диапазона драйвера {v1}..{v2} Вт":
+        "the limit {v0} W is outside the driver range {v1}..{v2} W",
+    "неизвестный резолвер: {v0}": "unknown resolver: {v0}",
+    "не выбран резолвер": "no resolver is selected",
+    # аудит локализации 12.10.2026: строки экранов вне t() (ТЗ 5, «ни одного хардкода»)
+    # --- zapret (ТЗ 8) ---
+    "папка zapret не выбрана": "the zapret folder is not selected",
+    "папка не существует": "the folder does not exist",
+    "в bin\\ нет winws.exe — это не папка zapret-discord-youtube":
+        "no winws.exe in bin\\ — this is not a zapret-discord-youtube folder",
+    "в корне нет service.bat — неполный комплект": "no service.bat in the root — incomplete package",
+    "не найдено ни одного general*.bat — нечего осваивать":
+        "no general*.bat found — nothing to learn",
+    "путь содержит не-ASCII символы (кириллица и т.п.) — zapret требует ASCII-путь, иначе winws.exe может не запуститься":
+        "the path contains non-ASCII characters (Cyrillic etc.) — zapret needs an ASCII path, "
+        "otherwise winws.exe may fail to start",
+    "недопустимое имя стратегии": "invalid strategy name",
+    "нет файла стратегии: {v0}": "the strategy file is missing: {v0}",
+    "в bin\\ нет winws.exe": "no winws.exe in bin\\",
+    "не удалось прочитать аргументы winws.exe": "could not read winws.exe arguments",
+    "пустой argv — сначала освоение": "empty argv — run learning first",
+    "уже запущен winws.exe (PID {v0}) — остановите его или возьмите под управление":
+        "winws.exe is already running (PID {v0}) — stop it or adopt it",
+    " Хвост журнала: {v0}": " Log tail: {v0}",
+    "winws.exe завершился сразу (код {v0}).{v1}": "winws.exe exited at once (code {v0}).{v1}",
+    "winws.exe не появился за {v0:.0f} с": "winws.exe did not appear within {v0:.0f} s",
+    "; вывод батника: {v0}": "; batch output: {v0}",
+    "winws.exe (PID {v0}) остановлен": "winws.exe (PID {v0}) stopped",
+    "процесс уже завершён": "the process has already exited",
+    "не удалось открыть процесс: {v0}": "could not open the process: {v0}",
+    "не удалось остановить winws.exe: {v0}": "could not stop winws.exe: {v0}",
+    "не удалось запустить батник: {v0}": "could not start the batch file: {v0}",
+    "не удалось запустить winws.exe: {v0}": "could not start winws.exe: {v0}",
+    "PID {v0} — это {v1}, а не winws.exe; не трогаю":
+        "PID {v0} is {v1}, not winws.exe; leaving it alone",
+    "PID {v0} — это {v1}, а не winws.exe": "PID {v0} is {v1}, not winws.exe",
+    "не удалось изменить game_filter.enabled: {v0}": "could not change game_filter.enabled: {v0}",
+    "файл ipset-all.txt отсутствует": "ipset-all.txt is missing",
+    "уже выключен": "already off",
+    "уже загружен": "already loaded",
+    "список возвращён из резервной копии": "the list was restored from the backup",
+    "список отключён (заглушка, копия сохранена)": "the list is off (placeholder set, a copy kept)",
+    "резервной копии списка нет — сначала обновите списки через service.bat (пункт «Update IPSet List»)":
+        "there is no list backup — update the lists via service.bat (“Update IPSet List”) first",
+    "не удалось изменить ipset-all.txt: {v0}": "could not change ipset-all.txt: {v0}",
+    # --- ядро питания и компаньон GPU ---
+    "PowerGetActiveScheme: код {v0}": "PowerGetActiveScheme: code {v0}",
+    "PowerDuplicateScheme: код {v0}": "PowerDuplicateScheme: code {v0}",
+    "PowerSetActiveScheme не сработал": "PowerSetActiveScheme failed",
+    "неизвестный профиль: {v0}": "unknown profile: {v0}",
+    "не удалось записать настройки: {v0}": "could not write the settings: {v0}",
+    "неизвестная команда: {v0}": "unknown command: {v0}",
+    "nvidia-smi недоступен": "nvidia-smi is unavailable",
+    "код {v0}": "code {v0}",
+    "лимит мощности: {v0}": "power limit: {v0}",
+    "частоты: {v0}": "clocks: {v0}",
+    "сброс частот: {v0}": "clock reset: {v0}",
+    "PL {v0} Вт": "PL {v0} W",
+    "клоки {v0}–{v1} МГц": "clocks {v0}–{v1} MHz",
+    "применено: {v0}": "applied: {v0}",
+    "нечего применять": "nothing to apply",
+    "нечего откатывать": "nothing to roll back",
+    "исходные значения возвращены": "original values restored",
+    "не удалось прочитать командную строку: {v0}": "could not read the command line: {v0}",
+    "ожидался объект": "a dict was expected",
+    # --- память ---
+    "не удалось открыть токен процесса (код {v0})": "could not open the process token (code {v0})",
+    "привилегия {v0} не найдена в системе": "privilege {v0} was not found on this system",
+    "AdjustTokenPrivileges не сработал (код {v0})": "AdjustTokenPrivileges failed (code {v0})",
+    "код 0x{v0:08X}": "code 0x{v0:08X}",
+    "ни один процесс не удалось сжать (отказов: {v0})":
+        "no process could be trimmed (refused: {v0})",
+    "сжато процессов: {v0}": "working sets trimmed: {v0}",
+    ", отказов: {v0} (чужие процессы требуют прав администратора)":
+        ", refused: {v0} (other users’ processes need admin rights)",
+    # --- экспорт/импорт настроек ---
+    "Экспортировано в {v0}: правила — {v1}, настройки — таймер/тихий час/DNS.":
+        "Exported to {v0}: rules — {v1}, settings — timer/quiet hour/DNS.",
+    "импортировано: {v0}. Профили CPU/GPU встроенные — их не перезаписываю.":
+        "imported: {v0}. CPU/GPU profiles are built-in — they are not overwritten.",
+    "это не файл настроек Gammadrilon": "this is not a Gammadrilon settings file",
+    "в файле нет знакомых разделов": "the file has no known sections",
+    "не удалось записать файл: {v0}": "could not write the file: {v0}",
+    "файл не читается как JSON: {v0}": "the file does not parse as JSON: {v0}",
+    # --- журнал и правила ---
+    "Лимит GPU": "GPU limit",
+    "Частоты GPU": "GPU clocks",
+    "Откат": "Rollback",
+    "исходное состояние возвращено": "the original state was restored",
+    "причина: {v0}\nисточник: {v1}\nоткат: {v2}": "reason: {v0}\nsource: {v1}\nrollback: {v2}",
+    "доступен": "available",
+    "Запуск «{v0}»": "Start of “{v0}”",
+    "По расписанию {v0}": "On schedule {v0}",
+    "CPU-загрузка < {v0}%": "CPU load < {v0}%",
+    "Профиль CPU: {v0}": "CPU profile: {v0}",
+    "Профиль GPU: {v0}": "GPU profile: {v0}",
+    "Сменить DNS: {v0}": "Change DNS: {v0}",
+    # --- палитра, сброс всего и «тихий час» ---
+    "палитра команд": "command palette",
+    "Enter — выполнить  ·  >число — быстрый параметр": "Enter — run  ·  >number — quick parameter",
+    "автоочистка ОЗУ": "RAM auto-cleanup",
+    "точность таймера": "timer resolution",
+    "гамма": "gamma",
+    "тихий час": "quiet hour",
+    "тихий час завершён": "quiet hour finished",
+    "все изменения Gammadrilon": "all Gammadrilon changes",
+    "сброс всех изменений": "reset of all changes",
+    "нечего": "nothing",
+    "ЭКО CPU + минимум яркости": "ECO CPU + minimum brightness",
+    "ЭКО + минимум яркости": "ECO + minimum brightness",
+    "выход из окна": "leaving the quiet-hour window",
+    # --- единицы и метрики ---
+    " {v0:.2f} ГГц": " {v0:.2f} GHz",
+    "{v0:.0f} Вт": "{v0:.0f} W",
+    "GPU {v0:.0f} °C · {v1:.0f}/{v2:.0f} Вт": "GPU {v0:.0f} °C · {v1:.0f}/{v2:.0f} W",
+    "Реакция есть: {v0:.2f} → {v1:.2f} ГГц": "Frequency responded: {v0:.2f} → {v1:.2f} GHz",
+    " (Δ {v0:+.0f} Вт)": " (Δ {v0:+.0f} W)",
+    " → {v0:.0f} Вт{v1}": " → {v0:.0f} W{v1}",
+    "VRAM {v0:.1f}/{v1:.1f} ГБ": "VRAM {v0:.1f}/{v1:.1f} GB",
+    "{v0:.2f} ГБ": "{v0:.2f} GB",
+    "{v0}  ·  pid {v1}  ·  {v2:.0f} МБ": "{v0}  ·  pid {v1}  ·  {v2:.0f} MB",
+    "{v0:.1f} МБ": "{v0:.1f} MB",
+    "{v0:.0f} КБ": "{v0:.0f} KB",
+    "{v0} Б": "{v0} B",
+    "{v0:.1f} мс": "{v0:.1f} ms",
+    "±{v0:.1f} мс": "±{v0:.1f} ms",
+    "±{v0:.1f} мс · потери {v1}%": "±{v0:.1f} ms · loss {v1}%",
+    "Замер готов. Быстрее всех: {v0} ({v1:.1f} мс).": "Measurement done. Fastest: {v0} ({v1:.1f} ms).",
+    "нет": "none",
 }

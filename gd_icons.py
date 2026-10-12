@@ -50,6 +50,16 @@ _SVG = {
         '<path d="M4 6h16M4 12h16M4 18h10"/>'
         '<circle cx="18" cy="18" r="3"/>'
     ),
+    "api": (
+        '<rect x="4" y="5" width="16" height="5.5" rx="1.5"/>'
+        '<rect x="4" y="13.5" width="16" height="5.5" rx="1.5"/>'
+        '<path d="M8 7.75h.01M8 16.25h.01"/>'
+    ),
+    "zapret": (
+        '<path d="M4 12h9"/>'
+        '<path d="M9.5 8.5 13 12l-3.5 3.5"/>'
+        '<path d="M18 5.5v13"/>'
+    ),
     "journal": '<path d="M5 4h11l3 3v13H5z"/><path d="M8 9h8M8 13h8M8 17h5"/>',
     "theme": '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/>',
 }
