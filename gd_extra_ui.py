@@ -209,17 +209,75 @@ class ExtraPanel(QWidget):
 
     # -- таймер --------------------------------------------------------------
     def _timer_toggle(self, on: bool):
+        before = gd_extra.timer_ms()
         ok, actual = gd_extra.set_timer_resolution(bool(on))
-        ms = gd_extra.timer_ms()
+        # факт берём из ответа вызова, а не только из повторного чтения: между ними
+        # значение могло измениться (например, другой процесс его отпустил)
+        ms = gd_extra.ms_from_100ns(actual)
+        if ms is None:
+            ms = gd_extra.timer_ms()
         self.lbl_timer.setText(i18n.t("сейчас: {v0} мс", v0=ms) if ms else i18n.t("н/д"))
-        if not ok:
-            self._set_status(self.lbl_net, i18n.t("Не удалось изменить точность таймера."), ok=False)
-        gd_journal.record("timer", i18n.t("0.5 мс") if on else i18n.t("по умолчанию"),
-                          None, i18n.t("{v0} мс", v0=ms), why=i18n.t("точность системного таймера"),
-                          source=i18n.t("утилиты"))
         import gd_toast
 
-        gd_toast.show_toast(i18n.t("toast.timer_on" if on else "toast.timer_off"), "ok")
+        if not ok:
+            # запрос не принят системой: тост «0,5 мс» был бы выдуманным успехом
+            self._set_status(
+                self.lbl_net,
+                i18n.t("Не удалось изменить точность таймера: система отказала "
+                       "(сейчас {v0}).",
+                       v0=i18n.t("{v0} мс", v0=ms) if ms else i18n.t("н/д")),
+                ok=False,
+            )
+            gd_journal.record("timer", i18n.t("точность системного таймера"),
+                              gd_extra.ms_from_100ns(before) if before else None,
+                              ms, why=i18n.t("система отказала в запросе точности таймера"),
+                              source=i18n.t("утилиты"), reversible=False)
+            gd_toast.show_toast(i18n.t("toast.timer_failed"), "warn")
+            return
+
+        if ms is None:
+            # запрос мог пройти, но фактическое значение не читается: успех подтвердить нечем
+            self._set_status(self.lbl_net, i18n.t(
+                "Точность таймера: запрос принят, но фактическое значение не подтвердилось — "
+                "считайте, что оно не изменилось."), ok=False)
+            gd_journal.record("timer", i18n.t("точность системного таймера"),
+                              gd_extra.ms_from_100ns(before) if before else None, None,
+                              why=i18n.t("не удалось прочитать фактическую точность таймера"),
+                              source=i18n.t("утилиты"), reversible=False)
+            gd_toast.show_toast(i18n.t("toast.timer_failed"), "warn")
+            return
+
+        if on:
+            if abs(ms - 0.5) > 0.01:
+                # система приняла запрос, но фактическое значение другое — показываем факт
+                self._set_status(
+                    self.lbl_net,
+                    i18n.t("Система дала {v0} мс вместо 0,5 — платформа не поддерживает "
+                           "запрошенное значение. Действует, пока приложение запущено.",
+                           v0=ms),
+                    ok=False,
+                )
+                gd_toast.show_toast(i18n.t("toast.timer_other", ms=ms), "warn")
+            else:
+                self._set_status(
+                    self.lbl_net,
+                    i18n.t("Точность таймера: 0,5 мс — действует, пока приложение "
+                           "запущено, и сбрасывается при выходе."),
+                    ok=True,
+                )
+                gd_toast.show_toast(i18n.t("toast.timer_on", ms=ms), "ok")
+        else:
+            self._set_status(
+                self.lbl_net,
+                i18n.t("Точность таймера: по умолчанию ({v0} мс).",
+                       v0=ms if ms else i18n.t("н/д")),
+                ok=True,
+            )
+            gd_toast.show_toast(i18n.t("toast.timer_off"), "ok")
+
+        gd_journal.record("timer", i18n.t("точность системного таймера"),
+                          gd_extra.ms_from_100ns(before) if before else None, ms,
+                          why=i18n.t("точность системного таймера"), source=i18n.t("утилиты"))
 
     # -- сеть ----------------------------------------------------------------
     def _probe(self):
@@ -267,7 +325,23 @@ class ExtraPanel(QWidget):
             return
         bb = data.get("bufferbloat", {})
         if bb.get("loaded") is None:
-            self._set_status(self.lbl_net, i18n.t("Bufferbloat: под нагрузкой узлы не отвечали."), ok=False)
+            self._set_status(self.lbl_net, i18n.t(
+                "Bufferbloat: под нагрузкой узлы не отвечали — класс не посчитан."), ok=False)
+            return
+        if bb.get("idle") is None:
+            self._set_status(self.lbl_net, i18n.t(
+                "Bufferbloat: базу без нагрузки измерить не удалось (узлы не отвечали) — "
+                "класс не посчитан."), ok=False)
+            return
+        if bb.get("increase") is None:
+            # нагрузка не создалась: считать рост задержки не с чем сравнивать
+            err = bb.get("load_error") or ""
+            self._set_status(self.lbl_net, i18n.t(
+                "Bufferbloat: задержка {v0} → {v1} мс, но нагрузку создать не удалось "
+                "(скачано {v2} КБ{v3}) — класс не посчитан.",
+                v0=bb["idle"], v1=bb["loaded"],
+                v2=round((bb.get("load_bytes") or 0) / 1024),
+                v3=f" — {err}" if err else ""), ok=False)
             return
         self._set_status(
             self.lbl_net,
@@ -317,5 +391,10 @@ class ExtraPanel(QWidget):
         q["start"] = self.ed_start.text().strip() or "23:00"
         q["end"] = self.ed_end.text().strip() or "08:00"
         q["applied"] = False
-        gd_profiles.save_quiet(q)
+        saved = gd_profiles.save_quiet(q)
         self.refresh()
+        if not saved:
+            # refresh() уже вернул на экран фактические значения из файла —
+            # честно объясняем, почему правка не удержалась
+            self._set_status(self.lbl_quiet, i18n.t(
+                "Настройка «тихий час» не сохранена: файл недоступен для записи."), ok=False)

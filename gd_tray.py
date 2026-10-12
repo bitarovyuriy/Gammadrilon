@@ -61,6 +61,7 @@ NEUTRAL = th.MUTED
 class TrayAssistant(QSystemTrayIcon):
     cpuProfileRequested = pyqtSignal(str)
     gpuProfileRequested = pyqtSignal(str)
+    perfToggleRequested = pyqtSignal()
     showRequested = pyqtSignal()
     paletteRequested = pyqtSignal()
     journalRequested = pyqtSignal()
@@ -83,6 +84,7 @@ class TrayAssistant(QSystemTrayIcon):
 
         self._cpu_actions: dict[str, QAction] = {}
         self._gpu_actions: dict[str, QAction] = {}
+        self._perf_limited = False     # галка «Переключить производительность»
         self._tip: str | None = None       # кэш тултипа: explorer не дёргаем зря
         self._icon_key = None              # кэш отрисовки иконки (цвет + мигание)
         self._build_menu()
@@ -128,6 +130,13 @@ class TrayAssistant(QSystemTrayIcon):
         self._gpu_restore = gpu_menu.addAction(i18n.t("tray.gpu_restore"))
         self._gpu_restore.triggered.connect(lambda: self.gpuProfileRequested.emit("restore"))
 
+        # переключатель производительности — то же действие, что и горячая клавиша
+        # (пара профилей CPU+GPU): галка = ограничения включены
+        self._perf_act = menu.addAction(i18n.t("tray.perf_toggle"))
+        self._perf_act.setCheckable(True)
+        self._perf_act.setChecked(self._perf_limited)
+        self._perf_act.triggered.connect(self.perfToggleRequested.emit)
+
         util_menu = menu.addMenu(i18n.t("tray.utils_menu"))
         a = util_menu.addAction(i18n.t("tray.palette"))
         a.triggered.connect(self.paletteRequested.emit)
@@ -153,6 +162,18 @@ class TrayAssistant(QSystemTrayIcon):
         """Галка «Светлая тема» — текущее состояние."""
         try:
             self._theme_act.setChecked(bool(light))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def set_perf_limited(self, limited: bool):
+        """Галка «Переключить производительность» — ограничения включены?
+
+        Состояние хранится и в самом трее: меню пересобирается при смене языка
+        (`retranslate`), и без этого галка терялась бы при каждой смене.
+        """
+        self._perf_limited = bool(limited)
+        try:
+            self._perf_act.setChecked(self._perf_limited)
         except Exception:  # noqa: BLE001
             pass
 

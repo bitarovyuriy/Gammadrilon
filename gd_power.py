@@ -42,6 +42,11 @@ SETTINGS = {
     "cool_policy":  "94d3a615-a899-4ac5-ae2b-e4d8f634367f",  # 0=passive, 1=active
 }
 
+#: метка в имени своей копии схемы. Нужна для одного случая: файл состояния
+#: пропал или повреждён, и без метки копию в списке схем Windows невозможно
+#: отличить от пользовательской — она осталась бы в системе навсегда и молча.
+CLONE_MARK = "Gammadrilon"
+
 # --------------------------------------------------------------------------
 # Профили
 # --------------------------------------------------------------------------
@@ -109,6 +114,22 @@ _p.PowerSetActiveScheme.restype = wintypes.DWORD
 _p.PowerReadFriendlyName.argtypes = [ctypes.c_void_p, POINTER(GUID), POINTER(GUID),
                                      POINTER(GUID), ctypes.c_void_p, POINTER(wintypes.DWORD)]
 _p.PowerReadFriendlyName.restype = wintypes.DWORD
+
+# BufferSize здесь — по значению (в PowerReadFriendlyName это указатель, поэтому
+# argtypes НЕ переиспользуем: с чужим argtypes в размер уезжал мусор, и вызов
+# падал access violation — проверено на живой системе)
+_p.PowerWriteFriendlyName.argtypes = [ctypes.c_void_p, POINTER(GUID), POINTER(GUID),
+                                      POINTER(GUID), ctypes.c_void_p, wintypes.DWORD]
+_p.PowerWriteFriendlyName.restype = wintypes.DWORD
+
+# перечисление схем питания: ACCESS_SCHEME, пока не вернётся ERROR_NO_MORE_ITEMS
+_p.PowerEnumerate.argtypes = [ctypes.c_void_p, POINTER(GUID), POINTER(GUID),
+                              wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                              POINTER(wintypes.DWORD)]
+_p.PowerEnumerate.restype = wintypes.DWORD
+
+ACCESS_SCHEME = 16
+ERROR_NO_MORE_ITEMS = 259
 
 _SUB = guid_from_str(SUB_PROCESSOR)
 _G = {name: guid_from_str(s) for name, s in SETTINGS.items()}
@@ -203,6 +224,91 @@ def scheme_name(scheme_guid: str) -> str:
         return ""
 
 
+def list_schemes() -> list[str]:
+    """GUID'ы всех схем питания в системе (порядок Windows). Без прав."""
+    out = []
+    index = 0
+    while True:
+        buf = (ctypes.c_ubyte * 16)()
+        size = wintypes.DWORD(16)
+        # буфер — массивом (см. rename_scheme: ctypes.cast роняет вызов)
+        r = _p.PowerEnumerate(None, None, None, ACCESS_SCHEME, index, buf, byref(size))
+        if r != 0:                      # ERROR_NO_MORE_ITEMS или отказ — список кончился
+            return out
+        out.append(guid_to_str(ctypes.cast(buf, POINTER(GUID)).contents))
+        index += 1
+
+
+def rename_scheme(scheme_guid: str, name: str) -> bool:
+    """Переименовать схему питания. False — не получилось (не повод падать)."""
+    g = guid_from_str(scheme_guid)
+    raw = name.encode("utf-16-le") + b"\x00\x00"
+    buf = (ctypes.c_ubyte * len(raw)).from_buffer_copy(raw)
+    try:
+        r = _p.PowerWriteFriendlyName(None, byref(g), None, None, buf,
+                                      wintypes.DWORD(len(raw)))
+    except OSError:
+        # нативный отказ (в т.ч. access violation при неверном argtypes) — это
+        # украшение имени копии, оно не повод валить применение профиля
+        return False
+    return r == 0
+
+
+def clone_name(src_guid: str) -> str:
+    """Имя своей копии: метка + имя исходной схемы (видно и в панели Windows)."""
+    base = scheme_name(src_guid) or i18n.t("схема питания")
+    return f"{CLONE_MARK} — {base}"[:80]
+
+
+def list_clones() -> list[dict]:
+    """Свои копии схем питания, оставшиеся в системе: ``[{guid, name, active}]``.
+
+    Нужны ровно для одного случая: файл состояния пропал или повреждён, и копия
+    осталась жить. Раньше о ней никто и никогда не узнавал — приложение считало,
+    что профиль не применён, а схема с нашими настройками висела в списке Windows.
+    """
+    active = ""
+    try:
+        active = get_active_scheme()
+    except OSError:
+        pass
+    out = []
+    for guid in list_schemes():
+        try:
+            name = scheme_name(guid)
+        except OSError:
+            continue
+        if name.startswith(CLONE_MARK):
+            out.append({"guid": guid, "name": name, "active": guid == active})
+    return out
+
+
+def remove_clone(scheme_guid: str) -> tuple[bool, str]:
+    """Убрать свою копию схемы. Возвращает (получилось?, причина отказа)."""
+    try:
+        if get_active_scheme() == scheme_guid:
+            return False, i18n.t(
+                "копия сейчас активна: Windows не даст её удалить — сначала выберите "
+                "другую схему питания")
+    except OSError:
+        pass
+    if delete_scheme(scheme_guid):
+        return True, ""
+    return False, i18n.t("PowerDeleteScheme не сработал")
+
+
+def cleanup_clones() -> dict:
+    """Убрать все свои оставшиеся копии: ``{removed, failed}`` (guid'ы копий)."""
+    removed, failed = [], {}
+    for clone in list_clones():
+        ok, note = remove_clone(clone["guid"])
+        if ok:
+            removed.append(clone["guid"])
+        else:
+            failed[clone["guid"]] = note
+    return {"removed": removed, "failed": failed}
+
+
 # --------------------------------------------------------------------------
 # Состояние (файл для отката; пишет тот, кто применяет профиль — компаньон)
 # --------------------------------------------------------------------------
@@ -211,12 +317,42 @@ STATE_DIR = os.path.join(os.environ.get("PROGRAMDATA", r"C:\ProgramData"), "Gamm
 STATE_FILE = os.path.join(STATE_DIR, "power_state.json")
 
 
-def load_state() -> Optional[dict]:
+def read_state_report() -> tuple[Optional[dict], str]:
+    """Состояние для отката + причина, если файлом нельзя воспользоваться.
+
+    Возвращает ``(state|None, problem)``. Пустая причина — два разных «нормальных»
+    случая: файла нет (профиль не применяли) и файл цел. Непустая — файл есть, но
+    откатывать по нему нельзя: обрезанный JSON, отказ чтения или не объект.
+
+    Молчать об этом нельзя: по этому файлу приложение решает, что «профиль не
+    применён», а клон схемы с нашими настройками при этом живёт в системе.
+    """
+    if not os.path.exists(STATE_FILE):
+        return None, ""
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
+            text = f.read()
+    except OSError as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        return None, f"JSON: {exc}"
+    if not isinstance(data, dict):
+        return None, i18n.t("в файле не объект, а {v0}", v0=type(data).__name__)
+    if not data.get("original_scheme") and not data.get("clone_scheme"):
+        return None, i18n.t("в файле нет ни исходной схемы, ни клона")
+    return data, ""
+
+
+def load_state() -> Optional[dict]:
+    """Состояние отката или None (см. :func:`read_state_report`)."""
+    return read_state_report()[0]
+
+
+def state_problem() -> str:
+    """Почему файл состояния непригоден ("" — файла нет или он цел)."""
+    return read_state_report()[1]
 
 
 def save_state(state: dict) -> None:
@@ -227,11 +363,15 @@ def save_state(state: dict) -> None:
     os.replace(tmp, STATE_FILE)
 
 
-def clear_state() -> None:
+def clear_state() -> bool:
+    """Убрать файл состояния. False — файл остался (откат нельзя считать полным)."""
     try:
         os.remove(STATE_FILE)
+        return True
+    except FileNotFoundError:
+        return True
     except OSError:
-        pass
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -253,7 +393,8 @@ def state_snapshot() -> dict:
         OSError: powercfg не отдал активную схему.
     """
     active = get_active_scheme()
-    state = load_state() or {}
+    state, problem = read_state_report()
+    state = state or {}
     data: dict = {
         "active_scheme": active,
         "profile": None,
@@ -274,6 +415,10 @@ def state_snapshot() -> dict:
             data["original_values"] = read_values(orig) if orig else None
         except OSError:
             data["original_values"] = None
+    if problem:
+        # «файл есть, но непригоден» — не то же самое, что «профиль не применён»:
+        # откатывать нечем, а клон схемы с нашими настройками может быть жив
+        data["state_problem"] = problem
     return data
 
 
@@ -294,6 +439,9 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
 
     original = get_active_scheme()
     clone = duplicate_scheme(original)
+    # метка в имени копии: её видно в панели управления Windows и по ней потом
+    # находится остаток, если файл состояния пропадёт (см. list_clones)
+    rename_scheme(clone, clone_name(original))
     try:
         res = write_values(clone, values)
         if res["failed"]:
@@ -317,24 +465,58 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
     return state
 
 
-def restore(state: Optional[dict] = None) -> bool:
-    """Возвращает исходную схему и удаляет клон. Идемпотентно."""
+def restore_report(state: Optional[dict] = None) -> dict:
+    """Откат + честный отчёт: ``{ok, applied, note, clones}``.
+
+    * ``ok`` — откат завершён: схема возвращена, клон удалён, файл состояния убран;
+    * ``applied`` — было ли что откатывать;
+    * ``note`` — что именно не получилось ("" — всё хорошо);
+    * ``clones`` — свои копии схем, найденные в системе (могут остаться от старой
+      версии или из-за потерянного файла состояния).
+
+    При неполном откате файл состояния **остаётся**: он и есть признак того, что
+    остаток профиля жив. Значит следующая сессия попробует снова, а UI/компаньон
+    скажут причину. Раньше state удалялся всегда — повторной попытки не было,
+    и о неудаче не узнавал никто.
+    """
     st = state if state is not None else load_state()
+    problem = state_problem()
     if not st:
-        return False
-    ok = True
+        clones = list_clones()
+        note = ""
+        if problem:
+            note = i18n.t("файл состояния питания непригоден: {v0}", v0=problem)
+        if clones:
+            names = ", ".join(c["name"] for c in clones)
+            extra = i18n.t("в системе осталась наша копия схемы питания: {v0}", v0=names)
+            note = f"{note}. {extra}" if note else extra
+        return {"ok": not note, "applied": False, "note": note, "clones": clones}
+
+    problems = []
     orig = st.get("original_scheme")
     clone = st.get("clone_scheme")
-    if orig:
-        ok = set_active_scheme(orig) and ok
-    if clone and clone != orig:
-        ok = delete_scheme(clone) and ok
-    clear_state()
-    return ok
+    if orig and not set_active_scheme(orig):
+        problems.append(i18n.t("не удалось вернуть исходную схему {v0}", v0=orig))
+    if clone and clone != orig and not delete_scheme(clone):
+        problems.append(i18n.t("не удалось удалить клон схемы {v0}", v0=clone))
+    if problems:
+        # state не трогаем: попробуем откатить снова, а не «забудем» остаток
+        return {"ok": False, "applied": True, "note": "; ".join(problems), "clones": []}
+    if not clear_state():
+        return {"ok": False, "applied": True,
+                "note": i18n.t("не удалось убрать файл состояния {v0}", v0=STATE_FILE),
+                "clones": []}
+    return {"ok": True, "applied": True, "note": "", "clones": []}
+
+
+def restore(state: Optional[dict] = None) -> bool:
+    """Вернуть исходную схему и удалить клон. Идемпотентно (см. restore_report)."""
+    return restore_report(state)["ok"]
 
 
 # --------------------------------------------------------------------------
-# CLI для отладки: python gd_power.py read|clone-test|apply <id>|restore
+# CLI для отладки: python gd_power.py read|state|schemes|clones|clean-clones|
+#                 clone-test|clone-mark-test|apply <id>|restore
 # --------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -356,7 +538,30 @@ if __name__ == "__main__":
     elif cmd == "apply":
         print(json.dumps(apply_profile(sys.argv[2]), indent=2, ensure_ascii=False))
     elif cmd == "restore":
-        print("restored:", restore())
+        print(json.dumps(restore_report(), indent=2, ensure_ascii=False))
+    elif cmd == "state":
+        st, problem = read_state_report()
+        print("state:", json.dumps(st, ensure_ascii=False))
+        print("problem:", problem or "—")
+    elif cmd == "schemes":
+        for guid in list_schemes():
+            print(guid, scheme_name(guid))
+    elif cmd == "clones":
+        print(json.dumps(list_clones(), indent=2, ensure_ascii=False))
+    elif cmd == "clean-clones":
+        print(json.dumps(cleanup_clones(), indent=2, ensure_ascii=False))
+    elif cmd == "clone-mark-test":
+        # проверка метки на живой системе: клон создаётся, называется, удаляется
+        a = get_active_scheme()
+        c = duplicate_scheme(a)
+        renamed = rename_scheme(c, clone_name(a))
+        found = [x for x in list_clones() if x["guid"] == c]
+        removed, note = remove_clone(c)
+        print("clone:", c)
+        print("renamed:", renamed, "| named:", scheme_name(c))
+        print("found by mark:", found)
+        print("removed:", removed, note)
     else:
         # i18n: skip (CLI-подсказка для разработчика, не UI)
-        print("команды: read | clone-test | apply <eco|normal|boost> | restore")
+        print("команды: read | clone-test | clone-mark-test | schemes | clones | "
+              "clean-clones | state | apply <eco|normal|boost> | restore")

@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import gd_i18n as i18n
+import gd_state
 
 PROTOCOL = 1
 HOST = "127.0.0.1"
@@ -272,8 +273,8 @@ def _trim_audit(path: str) -> None:
         with open(path, encoding="utf-8") as fh:
             lines = fh.readlines()
         if len(lines) > MAX_AUDIT:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.writelines(lines[-MAX_AUDIT:])
+            # обрезка аудита — тоже атомарно: журнал доступа не должен «исчезать»
+            gd_state.write_text_atomic(path, "".join(lines[-MAX_AUDIT:]))
     except OSError:
         pass
 
@@ -304,8 +305,13 @@ def audit_tail(n: int = 120) -> list[dict]:
 # --- сервер -------------------------------------------------------------------
 
 
-def _write_api_file(port: int, version: str) -> None:
-    """Фактический адрес сервера — в конфиг (ТЗ: порт не фиксированный)."""
+def _write_api_file(port: int, version: str) -> bool:
+    """Фактический адрес сервера — в конфиг (ТЗ: порт не фиксированный).
+
+    Атомарно: внешние инструменты читают файл в любой момент, и обрезанный JSON
+    выглядел бы для них как «API нет». False — записать не удалось; сервер
+    добавляет честную заметку в `warn` (её показывает вкладка API).
+    """
     data = {
         "protocol": PROTOCOL,
         "host": HOST,
@@ -316,12 +322,7 @@ def _write_api_file(port: int, version: str) -> None:
         "token_file": token_path(),
         "audit_file": audit_path(),
     }
-    try:
-        os.makedirs(base_dir(), exist_ok=True)
-        with open(api_path(), "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
+    return gd_state.write_json_atomic(api_path(), data)
 
 
 def read_api_file() -> dict | None:
@@ -528,7 +529,10 @@ class AgentServer:
         self._httpd = httpd
         self._thread = threading.Thread(target=httpd.serve_forever, name="gd-agent-api", daemon=True)
         self._thread.start()
-        _write_api_file(self.port, self._version)
+        if not _write_api_file(self.port, self._version):
+            note = i18n.t("адрес API не удалось записать в agent_api.json — "
+                          "внешние инструменты его не найдут")
+            self.warn = f"{self.warn} {note}".strip() if self.warn else note
         audit("api", "start", detail=i18n.t("сервер поднят на {v0}", v0=self.endpoint()))
         return True, ""
 

@@ -45,6 +45,7 @@ if HERE not in sys.path:
 import gd_bg  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_memory  # noqa: E402
+import gd_state  # noqa: E402
 import gd_theme as th
 import gd_i18n as i18n  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
@@ -78,14 +79,22 @@ class ProcessPicker(QDialog):
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.NoSelection)
         self._proc_worker = None
+        self._err = ""
         loading = QListWidgetItem(i18n.t("Читаю список процессов…"))
         loading.setFlags(Qt.NoItemFlags)
         self.list.addItem(loading)
         # psutil.process_iter — дорогой вызов: список наполняем из фонового потока
         self._proc_worker = gd_bg.submit(
-            lambda: gd_memory.list_processes(40), self._fill_list, parent=self
+            lambda: gd_memory.list_processes_report(40), self._fill_list, parent=self
         )
         root.addWidget(self.list, 1)
+
+        # отказ чтения списка — не то же самое, что «процессов нет»: говорим текстом
+        self.lbl_err = QLabel("")
+        self.lbl_err.setObjectName("Hint")
+        self.lbl_err.setWordWrap(True)
+        self.lbl_err.setVisible(False)
+        root.addWidget(self.lbl_err)
 
         row = QHBoxLayout()
         btn_all = QPushButton(i18n.t("Отметить все"))
@@ -94,6 +103,7 @@ class ProcessPicker(QDialog):
         btn_none = QPushButton(i18n.t("Снять все"))
         btn_none.setObjectName("Segment")
         btn_none.clicked.connect(lambda: self._set_all(Qt.Unchecked))
+        self._pick_btns = (btn_all, btn_none)
         row.addWidget(btn_all)
         row.addWidget(btn_none)
         row.addStretch(1)
@@ -102,14 +112,29 @@ class ProcessPicker(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText(i18n.t("Сжать выбранные"))
         buttons.button(QDialogButtonBox.Cancel).setText(i18n.t("Отмена"))
+        self._ok_btn = buttons.button(QDialogButtonBox.Ok)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
-    def _fill_list(self, rows):
-        """Заполнить список процессов после фонового чтения."""
+    def _fill_list(self, rep):
+        """Заполнить список после фонового чтения (список + причина отказа)."""
+        rows, err = rep if isinstance(rep, tuple) else (rep or [], "")
         self.list.clear()
-        for p in rows or []:
+        self._err = err
+        for btn in self._pick_btns:
+            btn.setEnabled(not err)
+        self._ok_btn.setEnabled(not err)
+        self.lbl_err.setVisible(bool(err))
+        if err:
+            self.lbl_err.setText(
+                i18n.t("Список процессов не прочитан: {v0}. Сжать рабочие наборы сейчас "
+                       "нельзя.", v0=err))
+            it = QListWidgetItem(i18n.t("— список недоступен —"))
+            it.setFlags(Qt.NoItemFlags)
+            self.list.addItem(it)
+            return
+        for p in rows:
             it = QListWidgetItem(i18n.t("{v0}  ·  pid {v1}  ·  {v2:.0f} МБ", v0=p['name'], v1=p['pid'], v2=p['rss'] / 1024 ** 2))
             it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             it.setCheckState(Qt.Unchecked)
@@ -330,8 +355,11 @@ class UtilsWidget(QWidget):
             self.btn_purge.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("Очистка не выполнена: {v0}", v0=resp.get('error')), ok=False)
+            # отказ — тоже событие: в журнале должна быть причина, иначе позже
+            # по записи не понять, почему очистка не сработала
             gd_journal.record("memory_purge", "standby list", None, None,
-                              why=i18n.t("очистка ОЗУ"), source=i18n.t("утилиты"), reversible=False)
+                              why=i18n.t("очистка ОЗУ не удалась: {v0}", v0=resp.get('error')),
+                              source=i18n.t("утилиты"), reversible=False)
             return
         data = resp.get("data") or {}
         b = data.get("before") or before
@@ -377,6 +405,10 @@ class UtilsWidget(QWidget):
         self.btn_ws.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("Сжатие не выполнено: {v0}", v0=resp.get('error')), ok=False)
+            gd_journal.record("memory_working_sets", i18n.t("процессов: {v0}", v0=want),
+                              None, None,
+                              why=i18n.t("сжатие не удалось: {v0}", v0=resp.get('error')),
+                              source=i18n.t("утилиты"), reversible=False)
             return
         data = resp.get("data") or {}
         b = data.get("before") or before
@@ -425,16 +457,11 @@ class UtilsWidget(QWidget):
         self.sp_free.setValue(int(data.get("free_mb", 1024)))
 
     def _save_auto(self):
-        import json
-
         data = {
             "enabled": self.chk_auto.isChecked(),
             "standby_mb": self.sp_standby.value(),
             "free_mb": self.sp_free.value(),
         }
-        try:
-            p = self._auto_path()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except OSError:
-            pass
+        if not gd_state.write_json_atomic(self._auto_path(), data):
+            self._set_status(i18n.t(
+                "Настройки автоочистки не сохранены: файл недоступен для записи."), ok=False)

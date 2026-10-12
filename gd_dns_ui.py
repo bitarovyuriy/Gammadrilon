@@ -318,17 +318,19 @@ class DnsWidget(QWidget):
 
         def work():
             # чтение прежней конфигурации (netsh) — тоже в фоне; запоминаем её ДО смены
-            before = gd_dns.remember_before_change()
+            remembered, before = gd_dns.remember_before_change()
             resp = client.call({"cmd": "dns_apply", "mode": "static",
                                 "servers": servers, "iface": before.get("iface")})
             if not resp.get("ok"):
-                return {"ok": False, "error": resp.get("error"), "before": before}
+                return {"ok": False, "error": resp.get("error"), "before": before,
+                        "remembered": remembered}
             doh_msg = ""
             if want_doh:
                 d = client.call({"cmd": "doh", "servers": servers,
                                  "template": r.get("doh"), "enable": True})
                 doh_msg = f" DoH: {d.get('data') or d.get('error')}"
-            return {"ok": True, "doh": doh_msg, "before": before}
+            return {"ok": True, "doh": doh_msg, "before": before,
+                    "remembered": remembered}
 
         self._apply_worker = gd_bg.submit(
             work, lambda resp: self._apply_done(resp, r, servers), parent=self
@@ -343,12 +345,18 @@ class DnsWidget(QWidget):
             return
         before = resp.get("before") or {}
         doh_msg = resp.get("doh", "")
+        remembered = bool(resp.get("remembered", True))
         self._refresh_now()
         self._set_status(
-            i18n.t("DNS переключён на «{v0}» ({v1}) — было {v2}.{v3} Сравните латентность замером.", v0=r['label'], v1=', '.join(servers), v2=', '.join(before.get('servers') or ['DHCP']), v3=doh_msg), ok=True)
+            i18n.t("DNS переключён на «{v0}» ({v1}) — было {v2}.{v3} Сравните латентность замером.", v0=r['label'], v1=', '.join(servers), v2=', '.join(before.get('servers') or ['DHCP']), v3=doh_msg)
+            + ("" if remembered else " " + i18n.t(
+                "Прежняя конфигурация не запомнена — «Вернуть как было» "
+                "после перезапуска будет недоступно.")),
+            ok=True)
         gd_journal.record("dns", r["label"], ", ".join(before.get("servers") or ["DHCP"]),
                           ", ".join(servers), why=i18n.t("смена DNS-серверов"),
-                          source=getattr(self, "_source", i18n.t("утилиты")))
+                          source=getattr(self, "_source", i18n.t("утилиты")),
+                          reversible=remembered)
         import gd_toast
 
         gd_toast.show_toast(i18n.t("toast.dns_apply", name=r["label"]), "ok")
@@ -365,10 +373,11 @@ class DnsWidget(QWidget):
 
         def work():
             st = saved or gd_dns.current_state()
-            gd_dns.save_state()
+            remembered = gd_dns.save_state()
             resp = client.call({"cmd": "dns_apply", "mode": st.get("mode") or "dhcp",
                                 "servers": st.get("servers") or [], "iface": st.get("iface")})
-            return {"ok": resp.get("ok"), "error": resp.get("error"), "st": st}
+            return {"ok": resp.get("ok"), "error": resp.get("error"), "st": st,
+                    "remembered": remembered}
 
         self._apply_worker = gd_bg.submit(work, self._restore_done, parent=self)
 
@@ -378,9 +387,12 @@ class DnsWidget(QWidget):
             self._set_status(i18n.t("Откат не удался: {v0}", v0=resp.get('error')), ok=False)
             return
         st = resp.get("st") or {}
+        remembered = bool(resp.get("remembered", True))
         self._refresh_now()
         self._set_status(
-            i18n.t("Конфигурация DNS возвращена ({v0}).", v0='DHCP' if st.get('mode') == 'dhcp' else ', '.join(st.get('servers') or [])),
+            i18n.t("Конфигурация DNS возвращена ({v0}).", v0='DHCP' if st.get('mode') == 'dhcp' else ', '.join(st.get('servers') or []))
+            + ("" if remembered else " " + i18n.t(
+                "Состояние для обратного переключения не сохранено.")),
             ok=True)
         gd_journal.record("dns", i18n.t("возврат"), None, None,
                           why=i18n.t("возврат прежней конфигурации DNS"), source=i18n.t("утилиты"))

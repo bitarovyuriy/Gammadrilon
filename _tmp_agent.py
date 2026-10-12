@@ -438,14 +438,25 @@ check("окно: вкладка показывает «Выключен»", apag
 
 # конфиг в памяти возвращаем как было, а файл на диске тест не трогал вовсе
 win.config.setdefault("settings", {})["agent_api"] = orig_flag
+win._config_pending = False
 _cfg_writes.clear()
 win.set_agent_autostart(False)          # привести к известному состоянию
+win._flush_config_save()                # запись отложенная — сбрасываем сами
 _cfg_writes.clear()
 win.set_agent_autostart(False)          # значение не менялось — записи быть не должно
-win.set_agent_autostart(True)           # изменилось — одна запись
-check("окно: флаг автостарта API пишется в конфиг только при изменении",
+win._flush_config_save()
+check("окно: флаг автостарта API молчит, когда значение не менялось",
+      len(_cfg_writes) == 0, f"записей: {len(_cfg_writes)}")
+win.set_agent_autostart(True)           # изменилось — конфиг помечен на запись
+check("окно: флаг автостарта API меняет значение в конфиге",
+      win.config["settings"]["agent_api"] is True,
+      repr(win.config["settings"]["agent_api"]))
+win._flush_config_save()
+check("окно: флаг автостарта API пишется в конфиг одной записью",
       len(_cfg_writes) == 1, f"записей: {len(_cfg_writes)}")
 win.set_agent_autostart(orig_flag)
+win._config_save_timer.stop()           # отложенную запись не выпускаем: файл не трогаем
+win._config_pending = False
 _cfg_after = _cfg_path.read_bytes() if _cfg_path.exists() else None
 check("конфиг: presets.json пользователя не тронут (запись перехвачена)",
       _cfg_after == _cfg_before,

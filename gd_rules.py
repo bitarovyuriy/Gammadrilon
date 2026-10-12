@@ -21,6 +21,7 @@ from __future__ import annotations
 import gd_i18n as i18n
 
 import gd_dns
+import gd_state
 
 import json
 import os
@@ -34,6 +35,11 @@ except Exception:  # noqa: BLE001
     psutil = None
 
 MAX_FIRES = 100
+
+#: восстановление файла правил: "" — всё в порядке; "backup" — файл был повреждён,
+#: копия сохранена как rules.json.bak; "no_backup" — копию сделать не удалось.
+#: Вкладка «Правила» показывает это пользователю (см. `recovery_note`)
+RECOVERY: str = ""
 
 #: окно между проверками расписания. Тик движка — 3 с, поэтому разрыв больше двух
 #: минут означает, что приложение спало или было заморожено: время, прошедшее «мимо»,
@@ -85,23 +91,46 @@ def log_path() -> Path:
 
 
 def load_rules() -> list[dict]:
+    """Прочитать правила. Повреждённый файл не затирается: остаётся копия .bak.
+
+    Раньше битый файл молча превращался в пустой список, и первое же сохранение
+    затирало его пустотой — правила пропадали насовсем. Теперь копия сохраняется,
+    а вкладка «Правила» честно говорит о восстановлении.
+    """
+    global RECOVERY
     p = rules_path()
     if not p.exists():
         return []
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        RECOVERY = "backup" if gd_state.quarantine(p) else "no_backup"
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        RECOVERY = "backup" if gd_state.quarantine(p) else "no_backup"
+        return []
+    # мусорная запись (строка, число) раньше роняла таблицу и движок — отбрасываем
+    return [r for r in data if isinstance(r, dict)]
 
 
-def save_rules(rules: list[dict]) -> None:
+def save_rules(rules: list[dict]) -> bool:
+    """Сохранить правила атомарно. False — не получилось (вызывающий скажет)."""
     p = rules_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(rules, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
-        pass
+        return False
+    return gd_state.write_json_atomic(p, rules)
+
+
+def recovery_note() -> str:
+    """Строка для вкладки «Правила» о восстановлении файла. Пусто — всё в порядке."""
+    if RECOVERY == "backup":
+        return i18n.t("Файл правил был повреждён — правила не загружены; "
+                      "копия сохранена как rules.json.bak")
+    if RECOVERY == "no_backup":
+        return i18n.t("Файл правил был повреждён — правила не загружены")
+    return ""
 
 
 def new_rule() -> dict:
@@ -178,7 +207,8 @@ def log_fire(rule: dict, result: str) -> dict:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         lines = p.read_text(encoding="utf-8").splitlines()
         if len(lines) > MAX_FIRES:
-            p.write_text("\n".join(lines[-MAX_FIRES:]) + "\n", encoding="utf-8")
+            # обрезка тоже атомарная: обрыв посреди неё не оставит пустой лог
+            gd_state.write_text_atomic(p, "\n".join(lines[-MAX_FIRES:]) + "\n")
     except OSError:
         pass
     return entry

@@ -114,6 +114,8 @@ class CommandPalette(QDialog):
              lambda: mw.on_gpu_profile("max")),
             (i18n.t("pal.gpu_restore"), "gpu restore откат лимит сброс",
              lambda: mw.on_gpu_profile("restore")),
+            (i18n.t("pal.perf_toggle"), "performance toggle boost eco ограничение производительность переключить",
+             lambda: mw._on_perf_toggle()),
             (i18n.t("pal.open_gamma"), "open tab gamma гамма цвет окно",
              lambda: self._open_tab(0)),
             (i18n.t("pal.open_cpu"), "open tab cpu питание процессор",

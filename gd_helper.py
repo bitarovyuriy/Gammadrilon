@@ -190,25 +190,28 @@ class HelperClient:
             self._conn = None
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    def shutdown(self, restore: bool = True) -> None:
+    def shutdown(self, restore: bool = True, force: bool = False) -> None:
         if self._conn is not None:
             try:
-                self.call({"cmd": "shutdown", "restore": restore})
+                self.call({"cmd": "shutdown", "restore": restore, "force": force})
             except Exception:  # noqa: BLE001
                 pass
         self._conn = None
 
-    def shutdown_async(self, restore: bool = True) -> None:
+    def shutdown_async(self, restore: bool = True, force: bool = False) -> None:
         """Попросить хелпер завершиться с откатом, не дожидаясь ответа.
 
         Нужен при выходе приложения: GUI не должен ждать (``ensure()`` может
         поднять UAC и занять секунды). Если хелпер не успеет обработать команду,
         откат доделает его watchdog по смерти UI-процесса.
+
+        `force=True` — откат обязателен вопреки настройке «не возвращать лимит
+        при выходе»: так уходит неподтверждённое изменение (ТЗ 4.3).
         """
         if self._conn is None:
             return
         try:
-            self._conn.send({"cmd": "shutdown", "restore": restore})
+            self._conn.send({"cmd": "shutdown", "restore": restore, "force": force})
         except Exception:  # noqa: BLE001
             pass
         finally:

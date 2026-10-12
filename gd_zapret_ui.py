@@ -369,6 +369,18 @@ class ZapretWidget(QWidget):
         self.status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
         self.status.setText(text)
 
+    def _remembered_note(self, result) -> tuple[str, bool]:
+        """Приписка к статусу: удалось ли запомнить запущенный процесс.
+
+        Не запомнили — после перезапуска приложение не узнает свой winws и не
+        сможет остановить его из окна: молчать об этом нельзя.
+        """
+        remembered = bool(result.get("remembered", True)) if isinstance(result, dict) else True
+        if remembered:
+            return "", True
+        return " " + i18n.t("Внимание: приложение не смогло запомнить процесс — "
+                            "после перезапуска остановить его из окна не получится."), False
+
 
     # -- отрисовка -----------------------------------------------------------
 
@@ -632,8 +644,9 @@ class ZapretWidget(QWidget):
             gd_zapret.cache_drop(path, st["id"])     # «при падении запуска» (ТЗ 8.2, п.5)
             return {"ok": False, "stage": i18n.t("запуск"), "error": res.get("error")}
         pid = int(res["data"]["pid"])
-        gd_zapret.save_our_state(path, st["id"], pid, argv)
-        return {"ok": True, "pid": pid, "name": st["name"], "recon": recon}
+        remembered = gd_zapret.save_our_state(path, st["id"], pid, argv)
+        return {"ok": True, "pid": pid, "name": st["name"], "recon": recon,
+                "remembered": remembered}
 
     def _start_done(self, result):
         if not isinstance(result, dict):
@@ -642,8 +655,9 @@ class ZapretWidget(QWidget):
             gd_journal.record("zapret", result["name"], before=i18n.t("выключено"),
                               after=i18n.t("работает (PID {v0})", v0=result["pid"]),
                               why=i18n.t("включение из вкладки"))
+            note, ok = self._remembered_note(result)
             self._set_status(i18n.t("Включено: {v0} (PID {v1}).",
-                                    v0=result["name"], v1=result["pid"]))
+                                    v0=result["name"], v1=result["pid"]) + note, ok=ok)
         else:
             self._set_status(i18n.t("{v0} не удалось: {v1}",
                                     v0=result.get("stage"), v1=result.get("error")), ok=False)
@@ -720,24 +734,26 @@ class ZapretWidget(QWidget):
         argv = res["data"]["argv"]
         gd_zapret.cache_put(path, st["id"], argv)
         pid = None
+        remembered = True
         if was_running:
             res2 = client.call({"v": 1, "cmd": "zapret_start", "path": path, "argv": argv,
                                 "log": gd_zapret.log_path(), "note": st["name"]}, timeout=40)
             if not res2.get("ok"):
                 return {"ok": False, "error": res2.get("error")}
             pid = int(res2["data"]["pid"])
-            gd_zapret.save_our_state(path, st["id"], pid, argv)
+            remembered = gd_zapret.save_our_state(path, st["id"], pid, argv)
         return {"ok": True, "name": st["name"], "pid": pid,
-                "was": was_running, "argv": argv}
+                "was": was_running, "argv": argv, "remembered": remembered}
 
     def _recon_done(self, result):
         if isinstance(result, dict) and result.get("ok"):
+            note, ok = self._remembered_note(result)
             if result.get("pid"):
                 self._set_status(i18n.t("Переосвоено и перезапущено: {v0} (PID {v1}).",
-                                        v0=result["name"], v1=result["pid"]))
+                                        v0=result["name"], v1=result["pid"]) + note, ok=ok)
             else:
                 self._set_status(i18n.t("Переосвоено: {v0} (аргументов: {v1}).",
-                                        v0=result["name"], v1=len(result.get("argv") or [])))
+                                        v0=result["name"], v1=len(result.get("argv") or [])) + note, ok=ok)
             gd_journal.record("zapret", result["name"], before=i18n.t("освоение"),
                               after=i18n.t("argv обновлён ({v0} арг.)",
                                            v0=len(result.get("argv") or [])),
@@ -766,8 +782,9 @@ class ZapretWidget(QWidget):
         res = self._ensure().call({"v": 1, "cmd": "zapret_adopt", "pid": pid}, timeout=30)
         if res.get("ok"):
             argv = (res.get("data") or {}).get("argv") or []
-            gd_zapret.save_our_state(self._path(), i18n.t("(внешний)"), pid, argv,
-                                     external=True)
+            remembered = gd_zapret.save_our_state(self._path(), i18n.t("(внешний)"),
+                                                  pid, argv, external=True)
+            res["remembered"] = remembered
         return res
 
     def _adopt_done(self, res):
@@ -776,9 +793,10 @@ class ZapretWidget(QWidget):
                               before=i18n.t("вне управления"),
                               after=i18n.t("под управлением"),
                               why=i18n.t("решение пользователя"))
+            note, ok = self._remembered_note(res)
             self._set_status(i18n.t(
                 "Внешний winws.exe взят под управление — его можно остановить "
-                "кнопкой «Выключить»."))
+                "кнопкой «Выключить».") + note, ok=ok)
         else:
             err = (res or {}).get("error") if isinstance(res, dict) else str(res)
             self._set_status(i18n.t("Не удалось взять под управление: {v0}", v0=err), ok=False)
@@ -884,13 +902,15 @@ class ZapretWidget(QWidget):
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error")}
         new_pid = int(res["data"]["pid"])
-        gd_zapret.save_our_state(path, st["id"], new_pid, argv)
-        return {"ok": True, "pid": new_pid, "name": st["name"]}
+        remembered = gd_zapret.save_our_state(path, st["id"], new_pid, argv)
+        return {"ok": True, "pid": new_pid, "name": st["name"],
+                "remembered": remembered}
 
     def _restart_done(self, result):
         if isinstance(result, dict) and result.get("ok"):
+            note, ok = self._remembered_note(result)
             self._set_status(i18n.t("Перезапущено: {v0} (PID {v1}).",
-                                    v0=result["name"], v1=result["pid"]))
+                                    v0=result["name"], v1=result["pid"]) + note, ok=ok)
         else:
             err = (result or {}).get("error") if isinstance(result, dict) else str(result)
             self._set_status(i18n.t("Перезапуск не удался: {v0}", v0=err), ok=False)

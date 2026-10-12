@@ -210,6 +210,13 @@ class RulesWidget(QWidget):
         self.empty_hint.setObjectName("Hint")
         root.addWidget(self.empty_hint)
 
+        # честные сообщения о сохранении/восстановлении (см. `_save`)
+        self.lbl_status = QLabel("")
+        self.lbl_status.setObjectName("Hint")
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setVisible(False)
+        root.addWidget(self.lbl_status)
+
         brow = QHBoxLayout()
         self.btn_add = QPushButton(i18n.t("Добавить…"))
         self.btn_add.setObjectName("PrimaryButton")
@@ -257,6 +264,10 @@ class RulesWidget(QWidget):
 
         self.lbl_count.setText(i18n.t("правил: {v0}", v0=len(self._rules)))
         self.empty_hint.setVisible(not self._rules)
+        note = gd_rules.recovery_note()
+        if note and not getattr(self, "_recovery_shown", False):
+            self._recovery_shown = True      # объясняем восстановление один раз
+            self._show_note(note, ok=False)
         self._reload_log()
 
     def _reload_log(self):
@@ -283,7 +294,28 @@ class RulesWidget(QWidget):
         enabled = item.checkState() == Qt.Checked
         if self._rules[row].get("enabled") != enabled:
             self._rules[row]["enabled"] = enabled
-            gd_rules.save_rules(self._rules)
+            self._save()
+
+    # -- сохранение ----------------------------------------------------------
+    def _save(self) -> bool:
+        """Сохранить правила и честно сказать, если запись не прошла.
+
+        Раньше отказ файловой системы молчал: пользователь видел «сохранено»,
+        а после перезапуска правила исчезали.
+        """
+        ok = gd_rules.save_rules(self._rules)
+        if ok:
+            self._show_note(gd_rules.recovery_note(), ok=False)
+        else:
+            self._show_note(i18n.t(
+                "Правила не сохранены: файл правил недоступен для записи. "
+                "Изменение будет потеряно при выходе."), ok=False)
+        return ok
+
+    def _show_note(self, text: str, ok: bool = True):
+        self.lbl_status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
+        self.lbl_status.setText(text)
+        self.lbl_status.setVisible(bool(text))
 
     # -- действия ----------------------------------------------------------
     def _selected(self) -> int | None:
@@ -318,7 +350,7 @@ class RulesWidget(QWidget):
         dlg = RuleDialog(parent=self)
         if dlg.exec_() == QDialog.Accepted:
             self._rules.append(self._apply_dialog(dlg, dlg.rule))
-            gd_rules.save_rules(self._rules)
+            self._save()
             self.reload()
 
     def _edit(self):
@@ -329,7 +361,7 @@ class RulesWidget(QWidget):
         if dlg.exec_() != QDialog.Accepted:
             return
         self._rules[row] = self._apply_dialog(dlg, dlg.rule)
-        gd_rules.save_rules(self._rules)
+        self._save()
         self.reload()
 
     def _delete(self):
@@ -337,5 +369,5 @@ class RulesWidget(QWidget):
         if row is None:
             return
         del self._rules[row]
-        gd_rules.save_rules(self._rules)
+        self._save()
         self.reload()

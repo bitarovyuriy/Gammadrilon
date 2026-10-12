@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import gd_i18n as i18n
+import gd_state
 
 APP_TAG = "Gammadrilon"
 FORMAT_VERSION = 3
@@ -33,25 +34,19 @@ DEFAULT_QUIET = {"enabled": False, "start": "23:00", "end": "08:00", "applied": 
 
 
 def load_quiet() -> dict:
-    try:
-        data = json.loads(quiet_path().read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    data = gd_state.read_json(quiet_path(), {})
+    if not isinstance(data, dict):
         return dict(DEFAULT_QUIET)
     out = dict(DEFAULT_QUIET)
     out.update({k: data[k] for k in DEFAULT_QUIET if k in data})
     return out
 
 
-def save_quiet(data: dict) -> dict:
+def save_quiet(data: dict) -> bool:
+    """Записать «тихий час» атомарно. False — не получилось (вызывающий скажет)."""
     out = dict(DEFAULT_QUIET)
     out.update({k: data[k] for k in DEFAULT_QUIET if k in data})
-    try:
-        p = quiet_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        pass
-    return out
+    return gd_state.write_json_atomic(quiet_path(), out)
 
 
 def _parse_hhmm(text: str):
@@ -112,20 +107,12 @@ def export_all(path: str | Path) -> tuple[bool, str]:
 
 
 def _read_autoclean() -> dict:
-    try:
-        return json.loads((_base_dir() / "autoclean.json").read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return {}
+    data = gd_state.read_json(_base_dir() / "autoclean.json", {})
+    return data if isinstance(data, dict) else {}
 
 
 def _write_autoclean(data: dict) -> bool:
-    try:
-        p = _base_dir() / "autoclean.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    return gd_state.write_json_atomic(_base_dir() / "autoclean.json", data)
 
 
 def import_all(path: str | Path) -> tuple[bool, str]:
@@ -140,21 +127,37 @@ def import_all(path: str | Path) -> tuple[bool, str]:
         return False, i18n.t("это не файл настроек Gammadrilon")
 
     done = []
+    failed = []
     rules = data.get("rules")
     if isinstance(rules, list) and all(isinstance(r, dict) for r in rules):
-        gd_rules.save_rules(rules)
-        done.append(i18n.t("правила ({v0})", v0=len(rules)))
+        if gd_rules.save_rules(rules):
+            done.append(i18n.t("правила ({v0})", v0=len(rules)))
+        else:
+            failed.append(i18n.t("правила"))
 
     quiet = data.get("quiet_hour")
     if isinstance(quiet, dict):
-        save_quiet(quiet)
-        done.append(i18n.t("тихий час"))
+        if save_quiet(quiet):
+            done.append(i18n.t("тихий час"))
+        else:
+            failed.append(i18n.t("тихий час"))
 
     autoclean = data.get("autoclean")
-    if isinstance(autoclean, dict) and autoclean and _write_autoclean(autoclean):
-        done.append(i18n.t("автоочистка ОЗУ"))
+    if isinstance(autoclean, dict) and autoclean:
+        if _write_autoclean(autoclean):
+            done.append(i18n.t("автоочистка ОЗУ"))
+        else:
+            failed.append(i18n.t("автоочистка ОЗУ"))
 
     if not done:
+        if failed:
+            return False, i18n.t("Не сохранено: {v0} — файл недоступен для записи.",
+                                 v0=", ".join(failed))
         return False, i18n.t("в файле нет знакомых разделов")
-    return True, i18n.t("импортировано: {v0}. Профили CPU/GPU встроенные — их не перезаписываю.",
-                        v0=", ".join(done))
+    msg = i18n.t("импортировано: {v0}. Профили CPU/GPU встроенные — их не перезаписываю.",
+                 v0=", ".join(done))
+    if failed:
+        # отказ записи не прячем: «импортировано» без оговорки было бы ложью
+        msg += " " + i18n.t("Не сохранено: {v0} — файл недоступен для записи.",
+                            v0=", ".join(failed))
+    return True, msg

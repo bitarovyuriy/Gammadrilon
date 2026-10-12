@@ -251,10 +251,17 @@ SIGNATURE = (
 AUTO_DEFAULTS = {"standby_mb": 1024, "free_mb": 1024}
 
 
-def list_processes(limit: int = 40) -> list[dict]:
-    """Процессы по убыванию памяти: [{'pid','name','rss'}]."""
+def list_processes_report(limit: int = 40) -> tuple[list[dict], str]:
+    """Процессы по убыванию памяти + причина, если список прочитать не удалось.
+
+    ``([], "")`` — процессов не нашлось (на живой системе это значит, что ни один
+    процесс не отдал размер памяти). ``([], причина)`` — список не прочитан:
+    нет psutil, отказ process_iter. Разница важна: без неё диалог «Сжать рабочие
+    наборы» показывал пустое окно, и это выглядело как «процессов нет» —
+    невозможно на живой системе — вместо «список не прочитан».
+    """
     if psutil is None:
-        return []
+        return [], i18n.t("нет модуля psutil — список процессов недоступен")
     out = []
     try:
         for p in psutil.process_iter(["pid", "name", "memory_info"]):
@@ -266,7 +273,15 @@ def list_processes(limit: int = 40) -> list[dict]:
                 out.append({"pid": info["pid"], "name": info.get("name") or "?", "rss": rss})
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-    except Exception:  # noqa: BLE001
-        return []
+    except Exception as exc:  # noqa: BLE001
+        return [], f"{type(exc).__name__}: {exc}"
     out.sort(key=lambda x: -x["rss"])
-    return out[:limit]
+    rows = out[:limit]
+    if not rows:
+        return [], i18n.t("ни один процесс не отдал размер памяти")
+    return rows, ""
+
+
+def list_processes(limit: int = 40) -> list[dict]:
+    """Только список процессов (см. :func:`list_processes_report`)."""
+    return list_processes_report(limit)[0]

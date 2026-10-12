@@ -277,6 +277,11 @@ class PowerWindow(QWidget):
         self._apply_busy = False       # идёт apply/restore (фон) — блокирует кнопки
         self._leftover_checked = False  # смотрели ли профиль от прошлой сессии
         self._leftover_busy = False
+        self._clones_checked = False    # искали ли свои копии схем в системе
+        self._clones_busy = False
+        self._clones_notified = False   # о найденных копиях сказано один раз
+        self._state_note_shown = False  # о непригодном state сказано один раз
+        self._clones: list = []
         self._build()
 
         self._sensor_timer = QTimer(self)
@@ -311,6 +316,7 @@ class PowerWindow(QWidget):
             btn.setEnabled(not busy)
         self.btn_apply_custom.setEnabled(not busy)
         self.btn_restore.setEnabled(not busy)
+        self.btn_clean_clones.setEnabled(not busy)
 
     # -- построение --------------------------------------------------------
     def _build(self):
@@ -453,6 +459,16 @@ class PowerWindow(QWidget):
         self.btn_restore = QPushButton(i18n.t("Вернуть как было"))
         self.btn_restore.clicked.connect(self._restore)
         bottom.addWidget(self.btn_restore)
+        # кнопка видна только тогда, когда в системе нашлись свои копии схем
+        # (остатки прошлых сессий) — иначе она была бы загадкой
+        self.btn_clean_clones = QPushButton(i18n.t("Убрать мои копии схем"))
+        self.btn_clean_clones.setObjectName("Segment")
+        self.btn_clean_clones.setToolTip(
+            i18n.t("Профиль применяется к копии схемы питания. Если файл состояния пропал, копия остаётся в системе — здесь её видно и можно убрать.")
+        )
+        self.btn_clean_clones.clicked.connect(self._clean_clones)
+        self.btn_clean_clones.setVisible(False)
+        bottom.addWidget(self.btn_clean_clones)
         bottom.addStretch(1)
         root.addLayout(bottom)
 
@@ -667,6 +683,17 @@ class PowerWindow(QWidget):
         self._profile = profile
         self._orig_values = data.get("original_values")
 
+        # файл состояния есть, но непригоден: «профиль не применён» и «откатывать
+        # нечем, а копия схемы может быть жива» — разные вещи, говорим один раз
+        problem = data.get("state_problem")
+        if problem and not self._state_note_shown:
+            self._state_note_shown = True
+            self._set_bottom_status(
+                i18n.t("Файл состояния питания нечитаем ({v0}) — остаток профиля мог "
+                       "остаться в системе.", v0=problem),
+                ok=False,
+            )
+
         # профиль от прошлой сессии, а компаньона (он сторожит откат) нет:
         # откатываем сами — иначе чужой клон схемы живёт до следующего
         # применения, а фут честно пишет «служба не запущена»
@@ -675,6 +702,13 @@ class PowerWindow(QWidget):
             if not self.client.alive():
                 self._rollback_leftover()
                 return
+
+        # свои копии схем ищем один раз за сессию: файл состояния мог пропасть
+        # или быть повреждённым, а копия при этом живёт в системе и в списке схем
+        # Windows от пользовательской не отличается
+        if not self._clones_checked:
+            self._clones_checked = True
+            self._scan_clones()
 
         for pid, btn in self.profile_btns.items():
             btn.setChecked(pid == profile and not self._custom_mode)
@@ -731,21 +765,28 @@ class PowerWindow(QWidget):
         gd_bg.submit(self._do_rollback, self._rollback_done, parent=self)
 
     @staticmethod
-    def _do_rollback() -> bool:
+    def _do_rollback() -> dict:
         import gd_power
 
-        return gd_power.restore()
+        return gd_power.restore_report()
 
-    def _rollback_done(self, ok) -> None:
+    def _rollback_done(self, rep) -> None:
         self._leftover_busy = False
-        if ok:
+        if not isinstance(rep, dict):          # совместимость с простым bool
+            rep = {"ok": bool(rep), "applied": bool(rep), "note": "", "clones": []}
+        note = rep.get("note") or ""
+        if not rep.get("ok"):
+            self._set_bottom_status(
+                i18n.t("Профиль прошлой сессии откатить не удалось: {v0}",
+                       v0=note or i18n.t("причина неизвестна")),
+                ok=False,
+            )
+        elif rep.get("applied"):
             self._set_bottom_status(
                 i18n.t("Профиль прошлой сессии откатил — компаньона не было."), ok=True
             )
         else:
-            self._set_bottom_status(
-                i18n.t("Профиль прошлой сессии откатить не удалось."), ok=False
-            )
+            self._set_bottom_status(i18n.t("Следов профиля не осталось."), ok=True)
         try:
             import gd_journal
 
@@ -754,11 +795,114 @@ class PowerWindow(QWidget):
                 i18n.t("откат профиля прошлой сессии"),
                 i18n.t("профиль применён"),
                 i18n.t("исходная схема"),
-                why=i18n.t("профиль остался от прошлой сессии, а компаньон не работал"),
+                why=i18n.t("профиль остался от прошлой сессии, а компаньон не работал")
+                + (f" — {note}" if note else ""),
                 source=i18n.t("автооткат"),
+                reversible=not rep.get("ok"),
             )
         except Exception:  # noqa: BLE001
             pass
+        if rep.get("clones"):
+            self._show_clones(rep["clones"])
+        self._refresh_status()
+
+    # -- свои копии схем питания в системе ------------------------------------
+
+    def _scan_clones(self) -> None:
+        """Найти свои копии схем, оставшиеся от прошлых сессий.
+
+        Поиск по метке в имени (``gd_power.list_clones``) — единственный способ
+        увидеть остаток, когда файл состояния потерян: без метки копия в списке
+        схем Windows неотличима от пользовательской.
+        """
+        gd_bg.submit(self._do_scan_clones, self._clones_done, parent=self)
+
+    @staticmethod
+    def _do_scan_clones() -> list:
+        import gd_power
+
+        return gd_power.list_clones()
+
+    def _clones_done(self, rows) -> None:
+        self._clones = list(rows or [])
+        if not self._clones:
+            self.btn_clean_clones.setVisible(False)
+            return
+        self._show_clones(self._clones)
+
+    def _show_clones(self, rows) -> None:
+        """Показать, что в системе остались наши копии схем питания."""
+        self._clones = list(rows)
+        names = ", ".join(r["name"] for r in rows if r.get("name"))
+        self.btn_clean_clones.setVisible(True)
+        self.btn_clean_clones.setToolTip(
+            i18n.t("Копии в системе: {v0}", v0=names or i18n.t("без имени")))
+        if self._clones_notified:
+            return
+        self._clones_notified = True
+        self._set_bottom_status(
+            i18n.t("В системе остались наши копии схем питания: {v0}. Это след прошлых "
+                   "сессий — их можно убрать.", v0=len(rows)),
+            ok=False,
+        )
+        try:
+            import gd_journal
+
+            gd_journal.record("cpu_profile", i18n.t("копии схем питания"),
+                              None, None,
+                              why=i18n.t("остатки прошлых сессий, файла состояния нет") + f": {names}",
+                              source=i18n.t("вкладка CPU"), reversible=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _clean_clones(self) -> None:
+        """Убрать свои копии схем (явное действие пользователя)."""
+        if self._clones_busy or self._apply_busy:
+            return
+        self._clones_busy = True
+        self.btn_clean_clones.setEnabled(False)
+        self._set_bottom_status(i18n.t("Убираю свои копии схем питания…"), ok=True)
+        gd_bg.submit(self._do_clean_clones, self._clones_cleaned, parent=self)
+
+    @staticmethod
+    def _do_clean_clones() -> dict:
+        import gd_power
+
+        return gd_power.cleanup_clones()
+
+    def _clones_cleaned(self, rep) -> None:
+        self._clones_busy = False
+        self.btn_clean_clones.setEnabled(True)
+        rep = rep if isinstance(rep, dict) else {"removed": [], "failed": {}}
+        removed = list(rep.get("removed") or [])
+        failed = dict(rep.get("failed") or {})
+        if failed:
+            reasons = "; ".join(f"{guid}: {note}" for guid, note in failed.items())
+            self._set_bottom_status(
+                i18n.t("Убрано копий: {v0}. Не убрано: {v1}", v0=len(removed), v1=reasons),
+                ok=False,
+            )
+        else:
+            self._set_bottom_status(
+                i18n.t("Убрано своих копий схем: {v0}.", v0=len(removed)), ok=True
+            )
+        # остались неубранные копии — кнопка нужна для повторной попытки
+        self.btn_clean_clones.setVisible(bool(failed))
+        try:
+            import gd_journal
+
+            gd_journal.record("cpu_profile", i18n.t("уборка копий схем питания"),
+                              i18n.t("копий: {v0}", v0=len(removed) + len(failed)),
+                              i18n.t("убрано: {v0}", v0=len(removed)),
+                              why=i18n.t("явная уборка остатков") if not failed
+                              else "; ".join(failed.values()),
+                              source=i18n.t("вкладка CPU"), reversible=False)
+        except Exception:  # noqa: BLE001
+            pass
+        if removed:
+            import gd_toast
+
+            gd_toast.show_toast(i18n.t("toast.clones_cleaned", count=len(removed)), "ok")
         self._refresh_status()
 
     def _tick(self):

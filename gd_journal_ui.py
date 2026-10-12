@@ -58,6 +58,13 @@ class JournalDialog(QDialog):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
+        # честное состояние самого журнала: путь, число записей, доступность записи
+        self.lbl_status = QLabel("")
+        self.lbl_status.setObjectName("Hint")
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setVisible(False)
+        root.addWidget(self.lbl_status)
+
         self.list = QListWidget()
         self.list.setObjectName("JournalList")
         self.list.setAlternatingRowColors(False)
@@ -88,7 +95,8 @@ class JournalDialog(QDialog):
 
     def reload(self):
         self.list.clear()
-        items = gd_journal.recent(200)
+        report = gd_journal.read_report(200)
+        items = report["items"]
         for e in items:
             it = QListWidgetItem(gd_journal.human(e))
             it.setToolTip(
@@ -100,6 +108,29 @@ class JournalDialog(QDialog):
         self.empty.setVisible(not items)
         self.list.setVisible(bool(items))
 
+        ok, err = gd_journal.probe()
+        if not ok:
+            self._show_note(i18n.t(
+                "Журнал недоступен для записи: {v0}. Новые изменения в него не попадут.",
+                v0=err), ok=False)
+        elif report["broken"]:
+            self._show_note(i18n.t("повреждено строк: {v0} — они пропущены.",
+                                   v0=report["broken"]), ok=False)
+        else:
+            self._show_note(i18n.t("файл журнала: {v0} · записей: {v1}",
+                                   v0=str(gd_journal.journal_path()),
+                                   v1=report["total"]), ok=True)
+
+    def _show_note(self, text: str, ok: bool = True):
+        self.lbl_status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
+        self.lbl_status.setText(text)
+        self.lbl_status.setVisible(bool(text))
+
     def _clear(self):
-        gd_journal.clear()
+        cleared = gd_journal.clear()
         self.reload()
+        if cleared:
+            self._show_note(i18n.t("Журнал очищен."), ok=True)
+        else:
+            self._show_note(i18n.t("не удалось очистить журнал: {v0}",
+                                   v0=gd_journal.write_error()), ok=False)

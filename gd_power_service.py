@@ -62,6 +62,31 @@ def is_process_alive(pid: int) -> bool:
 # --------------------------------------------------------------------------
 
 
+def _journal(why: str, note: str = "") -> None:
+    """Записать провал отката в журнал изменений.
+
+    У компаньона нет окна и тоста: если он не смог откатить схему после смерти UI,
+    честно сказать об этом можно только в журнал (его читает пользователь) и
+    оставленным файлом состояния — по нему откат повторится в следующей сессии.
+    """
+    try:
+        import gd_journal
+
+        gd_journal.record("cpu_profile", i18n.t("откат профиля питания"), None, None,
+                          why=why if not note else f"{why}: {note}",
+                          source=i18n.t("компаньон"), reversible=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _rollback(why: str) -> dict:
+    """Откатить остаток профиля и назвать провал (см. ``gp.restore_report``)."""
+    rep = gp.restore_report()
+    if not rep["ok"]:
+        _journal(why, rep["note"])
+    return rep
+
+
 def handle(cmd: dict) -> dict:
     name = cmd.get("cmd")
     if name == "ping":
@@ -81,9 +106,12 @@ def handle(cmd: dict) -> dict:
     if name == "restore":
         with _OP_LOCK:
             try:
-                return {"ok": True, "data": gp.restore()}
+                rep = _rollback(i18n.t("возврат исходной схемы по запросу окна"))
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            if not rep["ok"]:
+                return {"ok": False, "data": rep, "error": rep["note"]}
+            return {"ok": True, "data": rep}
     if name == "shutdown":
         return {"ok": True, "data": "bye"}
     return {"ok": False, "error": i18n.t("неизвестная команда: {v0}", v0=name)}
@@ -106,10 +134,7 @@ class PowerService:
             if self.ui_pid and not is_process_alive(self.ui_pid):
                 # UI умер, не попрощавшись: если висит применённый профиль — откат
                 if gp.load_state():
-                    try:
-                        gp.restore()
-                    except Exception:  # noqa: BLE001
-                        pass
+                    _rollback(i18n.t("профиль остался после смерти окна"))
                 self.stop.set()
                 os._exit(0)  # не ждём accept — выходим сразу
 
@@ -129,10 +154,7 @@ class PowerService:
                 if cmd.get("cmd") == "shutdown":
                     if cmd.get("restore", True) and gp.load_state():
                         with _OP_LOCK:
-                            try:
-                                gp.restore()
-                            except Exception:  # noqa: BLE001
-                                pass
+                            _rollback(i18n.t("окно закрывается — возвращаю схему"))
                     time.sleep(0.05)  # дать ответу уйти в pipe
                     os._exit(0)
         finally:
@@ -141,10 +163,7 @@ class PowerService:
     def run(self) -> int:
         # при старте: если остался «грязный» state от прошлой сессии — откат
         if gp.load_state():
-            try:
-                gp.restore()
-            except Exception:  # noqa: BLE001
-                pass
+            _rollback(i18n.t("профиль остался от прошлой сессии"))
 
         threading.Thread(target=self._watchdog, daemon=True).start()
 

@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import gd_i18n as i18n
 import gd_proc
+import gd_state
 
-import json
 import os
 import random
 import re
@@ -251,36 +251,36 @@ def current_state(iface: str | None = None) -> dict:
     return {"iface": iface, "mode": mode or ("static" if servers else "dhcp"), "servers": servers}
 
 
-def save_state() -> dict:
-    st = current_state()
-    try:
-        p = state_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        pass
-    return st
+def save_state() -> bool:
+    """Запомнить текущую конфигурацию DNS как «как было» — атомарно.
+
+    False — записать не удалось: «Вернуть как было» после перезапуска не сработает.
+    Вызывающий должен сказать об этом честно, а не считать, что запомнил.
+    """
+    return gd_state.write_json_atomic(state_path(), current_state())
 
 
 def saved_state() -> dict | None:
-    try:
-        return json.loads(state_path().read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return None
+    """Запомненная конфигурация «как было». Не объект/битый/нет файла — None."""
+    data = gd_state.read_json(state_path())
+    return data if isinstance(data, dict) else None
 
 
-def remember_before_change() -> dict:
+def remember_before_change() -> tuple[bool, dict]:
     """Прочитать текущую конфигурацию и запомнить её как «как было» — до смены.
 
     Запоминаем один раз на интерфейс: иначе вторая смена DNS затрёт исходное
     состояние, и «Вернуть как было» вернёт не исходное, а предыдущее изменение.
     Один код и для вкладки «DNS», и для действия правила («Сменить DNS»).
+
+    Возвращает (запомнено?, конфигурация «как было»): отказ записи не прячем —
+    откат после перезапуска будет недоступен, и пользователь должен знать.
     """
     before = current_state()
     saved = saved_state() or {}
     if not saved.get("iface") or saved.get("iface") != before.get("iface"):
-        save_state()
-    return before
+        return save_state(), before
+    return True, before
 
 
 # -- применение (только через elevated-хелпер) --------------------------------

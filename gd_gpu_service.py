@@ -10,10 +10,15 @@
   * при штатном выходе (команда shutdown),
   * при падении окна-владельца (watchdog по PID — как у CPU-компаньона).
 
+Если включена настройка «не возвращать лимит при выходе» (`keep_on_exit`), откат
+не делается ни при выходе, ни при крахе: лимит остаётся в драйвере, а исходное
+значение уходит в gpu_state.json — следующая сессия вернёт именно его.
+
 Команды (версия протокола 1):
   {"v":1,"cmd":"ping"}
   {"v":1,"cmd":"status"}
-  {"v":1,"cmd":"apply","pl":300,"lock_clocks":[900,1800]|null}
+  {"v":1,"cmd":"apply","pl":300,"lock_clocks":[900,1800]|null,"keep_on_exit":true}
+  {"v":1,"cmd":"keep","on":true}
   {"v":1,"cmd":"restore"}
   {"v":1,"cmd":"shutdown","restore":true}
 """
@@ -39,6 +44,13 @@ i18n.init_for_process()      # компаньон — отдельный про�
 _OP_LOCK = threading.Lock()
 _original: dict | None = None
 _applied: dict | None = None
+# Настройка UI «не возвращать лимит при выходе приложения». Приходит с командой
+# apply (и отдельной командой keep при переключении галочки) — решает, что делать
+# при выходе и при смерти окна-владельца. Хелпер — единственный, кто живёт дольше
+# окна, поэтому решение об откате принимает он, а не тот, кто успел крикнуть первым:
+# вкладка zapret тоже шлёт shutdown(restore=True), и раньше она могла вернуть лимит
+# вопреки настройке.
+_keep_on_exit = False
 
 
 _LOG_FILE: str | None = None
@@ -56,6 +68,89 @@ def _log(msg: str) -> None:
                 fh.write(line + "\n")
         except OSError:
             pass
+
+
+def _state_path():
+    """Файл «лимит оставлен»: исходное значение для кнопки «Вернуть как было».
+
+    Лимит мощности живёт в драйвере и после выхода приложения, но исходное
+    значение знал только этот процесс. Файл переживает перезапуск — следующая
+    сессия всё ещё может вернуть исходный лимит, а не «текущий».
+    """
+    from pathlib import Path
+
+    base = os.environ.get("ProgramData", r"C:\ProgramData")
+    return Path(base) / "Gammadrilon" / "gpu_state.json"
+
+
+def _read_keep_setting() -> bool:
+    """Настройка «не возвращать лимит при выходе» из presets.json.
+
+    Хелпер читает её сам (как gd_i18n.init_for_process читает язык): его мог
+    поднять любой клиент — не только вкладка GPU, — а настройка общая для всего
+    приложения. Нет файла или ключа — включена: так решил пользователь
+    («по умолчанию — не откатывать»).
+    """
+    try:
+        import json
+        import sys
+        from pathlib import Path
+
+        if getattr(sys, "frozen", False):
+            base = Path(sys.executable).resolve().parent
+        else:
+            base = Path(__file__).resolve().parent
+        data = json.loads((base / "presets.json").read_text(encoding="utf-8"))
+        return bool((data.get("settings") or {}).get("gpu_keep_on_exit", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _set_keep_on_exit(on) -> None:
+    global _keep_on_exit
+    _keep_on_exit = bool(on)
+
+
+def _load_kept_original() -> None:
+    """Прочитать исходный лимит, оставленный прошлой сессией (если был)."""
+    global _original, _keep_on_exit
+    _set_keep_on_exit(_read_keep_setting())
+    try:
+        import json
+
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
+        pl = float(data["original_pl"])
+    except Exception:  # noqa: BLE001 — файла нет, битый JSON или не число
+        return
+    _original = {"pl": pl, "clocks_locked": False}
+    # i18n: skip-start — строка лога компаньона (для разработчика)
+    _log(f"лимит с прошлой сессии: исходный {pl:.0f} Вт")
+    # i18n: skip-end
+
+
+def _keep_original() -> None:
+    """Запомнить исходный лимит на диск: лимит остался на карте после выхода."""
+    if not _original or _original.get("pl") is None:
+        return
+    try:
+        import json
+
+        path = _state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"original_pl": _original["pl"]}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _clear_kept_original() -> None:
+    """Лимит вернулся к исходному — помнить больше нечего."""
+    try:
+        _state_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _run_smi(args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
@@ -76,8 +171,11 @@ def _run_smi(args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
 # -- операции с GPU ---------------------------------------------------------
 
 
-def _apply(pl: float | None, lock_clocks: list | None) -> tuple[bool, str]:
+def _apply(pl: float | None, lock_clocks: list | None,
+           keep_on_exit: bool | None = None) -> tuple[bool, str]:
     global _original, _applied
+    if keep_on_exit is not None:
+        _set_keep_on_exit(keep_on_exit)
     state = gd_gpu.read_state()
     if state is None:
         return False, i18n.t("nvidia-smi недоступен")
@@ -100,7 +198,15 @@ def _apply(pl: float | None, lock_clocks: list | None) -> tuple[bool, str]:
     if _original is None:
         _original = before
     _applied = {"pl": pl, "lock_clocks": lock_clocks}
+    if what and _keep_on_exit:
+        # исходное значение — на диск сразу: лимит может пережить и крах окна,
+        # и аварийное завершение хелпера, а следующая сессия всё равно должна
+        # знать, к чему возвращаться по кнопке «Вернуть как было»
+        _keep_original()
     if what:
+        if _keep_on_exit:
+            return True, i18n.t("применено: {v0} (лимит останется после выхода)",
+                                v0=", ".join(what))
         return True, i18n.t("применено: {v0}", v0=", ".join(what))
     return True, i18n.t("нечего применять")
 
@@ -123,6 +229,7 @@ def _restore() -> tuple[bool, str]:
     _applied = None
     if errors:
         return False, "; ".join(errors)
+    _clear_kept_original()          # лимит вернулся — «исходный» больше не нужен
     return True, i18n.t("исходные значения возвращены")
 
 
@@ -218,8 +325,14 @@ def _handle(obj: dict) -> dict:
         return {"ok": True, "data": _status()}
     if cmd == "apply":
         with _OP_LOCK:
-            ok, msg = _apply(obj.get("pl"), obj.get("lock_clocks"))
+            ok, msg = _apply(obj.get("pl"), obj.get("lock_clocks"),
+                             obj.get("keep_on_exit"))
         return {"ok": ok, "data": _status(), "error": None if ok else msg}
+    if cmd == "keep":
+        # галочка «не возвращать лимит при выходе» переключена: решение об откате
+        # принимает хелпер — сообщаем ему сразу, без повторного UAC-цикла
+        _set_keep_on_exit(obj.get("on"))
+        return {"ok": True, "data": _status()}
     if cmd == "restore":
         with _OP_LOCK:
             ok, msg = _restore()
@@ -227,8 +340,14 @@ def _handle(obj: dict) -> dict:
     if cmd == "shutdown":
         with _OP_LOCK:
             _zapret_shutdown()               # обход DPI — к состоянию «до включения»
-            if obj.get("restore", True):
+            # решение об откате принимает хелпер: клиентов несколько (вкладка GPU,
+            # вкладка zapret, выход приложения), и они не должны перебивать друг
+            # друга. force — «откатить вопреки настройке»: неподтверждённое
+            # изменение (ТЗ 4.3) уходит с лимитом, даже если его велено оставить.
+            if obj.get("force") or (obj.get("restore", True) and not _keep_on_exit):
                 _restore()
+            else:
+                _keep_original()             # лимит остаётся: исходный — на диск
         return {"ok": True, "data": "bye"}
     # -- утилиты (ТЗ 6.1/6.2): требуют прав администратора, поэтому живут в хелпере --
     if cmd == "purge_standby":
@@ -335,10 +454,16 @@ def watchdog(ui_pid: int) -> None:
         return
     while True:
         if k32.WaitForSingleObject(handle_, 2000) == 0:   # процесс завершился
-            _log(f"окно (pid {ui_pid}) завершилось — откат")  # i18n: skip (лог компаньона)
             with _OP_LOCK:
                 _zapret_shutdown()           # обход DPI — к состоянию «до включения»
-                _restore()
+                if _keep_on_exit:
+                    _keep_original()         # лимит остаётся: исходный — на диск
+                else:
+                    _restore()
+            # i18n: skip-start — строка лога компаньона (для разработчика)
+            _log(f"окно (pid {ui_pid}) завершилось — "
+                 f"{'лимит оставлен' if _keep_on_exit else 'откат'}")
+            # i18n: skip-end
             os._exit(0)
 
 
@@ -352,6 +477,9 @@ def main() -> int:
     ap.add_argument("--log", default=None)
     args = ap.parse_args()
     _LOG_FILE = args.log
+
+    # лимит, оставленный прошлой сессией: помним исходное значение для отката
+    _load_kept_original()
 
     if args.ui_pid:
         threading.Thread(target=watchdog, args=(args.ui_pid,), daemon=True).start()

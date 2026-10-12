@@ -17,7 +17,6 @@ Gammadrilon — контроллер и UI, папка zapret остаётся �
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import re
 import subprocess
@@ -26,6 +25,7 @@ from pathlib import Path
 
 import gd_i18n as i18n
 import gd_proc
+import gd_state
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -329,23 +329,21 @@ def service_state(name: str) -> str | None:
 
 def our_state() -> dict | None:
     """Процесс, запущенный Gammadrilon: {path, strategy, pid, argv, started_at}."""
-    try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    data = gd_state.read_json(STATE_FILE)
     return data if isinstance(data, dict) else None
 
 
 def save_our_state(path: str, strategy: str, pid: int, argv: list,
-                   external: bool = False) -> None:
+                   external: bool = False) -> bool:
+    """Запомнить запущенный нами winws — атомарно.
+
+    False — записать не удалось: после перезапуска приложение не будет знать,
+    какой процесс запускало, и остановить его из окна не сможет. Вызывающий
+    должен сказать об этом честно.
+    """
     data = {"path": path, "strategy": strategy, "pid": int(pid), "argv": list(argv),
             "started_at": time.time(), "external": bool(external)}
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                              encoding="utf-8")
-    except OSError:
-        pass
+    return gd_state.write_json_atomic(STATE_FILE, data)
 
 
 def clear_our_state() -> None:
@@ -372,20 +370,13 @@ def _signature(root: str) -> str:
 
 
 def _cache_load() -> dict:
-    try:
-        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    data = gd_state.read_json(CACHE_FILE, {})
     return data if isinstance(data, dict) else {}
 
 
 def _cache_save(data: dict) -> None:
-    try:
-        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                              encoding="utf-8")
-    except OSError:
-        pass
+    # кэш argv восстанавливается освоением заново — молчаливый отказ допустим
+    gd_state.write_json_atomic(CACHE_FILE, data)
 
 
 def cache_get(root: str | None, strategy: str) -> list | None:

@@ -25,6 +25,7 @@ except Exception:  # noqa: BLE001
 from PyQt5.QtCore import Qt, QTimer  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
     QButtonGroup,
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -40,6 +41,7 @@ if HERE not in sys.path:
 import gd_bg  # noqa: E402
 import gd_gpu  # noqa: E402
 import gd_agent  # noqa: E402
+import gd_state  # noqa: E402
 import gd_theme as th
 import gd_i18n as i18n  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
@@ -55,8 +57,66 @@ def _delta_watts(cur, old):
     return i18n.t(" (Δ {v0:+.0f} Вт)", v0=d)
 
 
+def _presets_path() -> str:
+    """presets.json рядом с приложением.
+
+    Нужен только standalone-окну: вкладка внутри main.py получает config и
+    save_fn от приложения и файл не трогает.
+    """
+    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else HERE
+    return os.path.join(base, "presets.json")
+
+
+def _read_setting_file(key: str, default=None):
+    """Настройка из presets.json. Нет файла или ключа — честный default."""
+    try:
+        import json
+
+        with open(_presets_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return (data.get("settings") or {}).get(key, default)
+    except Exception:  # noqa: BLE001 — файла нет или он битый
+        return default
+
+
+def _write_setting_file(key: str, value) -> bool:
+    """Записать настройку в presets.json (нужно standalone-окну) — атомарно.
+
+    Тем же способом, что главное окно: обрыв записи не оставит обрезанный
+    presets.json. Битый или занятый файл не затираем (пусть решает главное
+    окно со своим восстановлением) — честный False. Файла ещё нет — создаём
+    минимальный: главное окно дополнит его при следующем старте.
+    """
+    import json
+
+    path = _presets_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return False
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data.get("settings"), (dict, type(None))):
+        return False
+    data.setdefault("settings", {})[key] = value
+    return gd_state.write_json_atomic(path, data, indent=4)
+
+
+def _read_keep_flag_file() -> bool:
+    """Настройка «не возвращать лимит при выходе» из файла. Нет файла — включена."""
+    return bool(_read_setting_file("gpu_keep_on_exit", True))
+
+
+def _write_keep_flag_file(on: bool) -> bool:
+    return _write_setting_file("gpu_keep_on_exit", bool(on))
+
+
 class GpuWidget(QWidget):
-    def __init__(self, standalone: bool = False):
+    def __init__(self, standalone: bool = False, config: dict | None = None,
+                 save_fn=None):
         super().__init__()
         self.setObjectName("PanelRoot")
         self._standalone = standalone
@@ -68,10 +128,20 @@ class GpuWidget(QWidget):
         self.client = gd_gpu.GpuClient()
         self._state = None
         self._pending = None          # применённое, но не подтверждённое значение
+        self._pl_dirty = False        # на слайдере — цель пользователя, ещё не применённая
         self._confirm_left = 0
         self._active_profile = None   # имя применённого профиля (для трея/палитры)
         self._apply_worker = None     # фоновое применение лимита (UAC + nvidia-smi)
         self._restore_worker = None   # фоновый откат
+        self._pre_apply_pl = None     # лимит до применения — для записей об откате
+        self._applied_pl = None       # последнее применённое значение (до подтверждения)
+        self._autostart_checked = False   # проверка автолимита при запуске — один раз
+
+        # Настройка «не возвращать лимит при выходе» (settings.gpu_keep_on_exit):
+        # config и save_fn передаёт main.py, standalone-окно пишет файл само.
+        self._config = config
+        self._save_fn = save_fn
+        self._keep_on_exit = self._read_keep_on_exit()
 
         self._build()
 
@@ -91,8 +161,91 @@ class GpuWidget(QWidget):
 
     def deactivate(self):
         self._sensor_timer.stop()
-        if self._confirm_timer.isActive():
-            self._confirm_timer.stop()
+        # Таймер подтверждения НЕ останавливаем: изменение, которое не подтвердили,
+        # должно откатиться и когда пользователь ушёл на другую вкладку — иначе
+        # лимит оставался бы в силе без подтверждения и без следа в журнале.
+
+    # -- настройка «не возвращать лимит при выходе» -------------------------
+    def _read_keep_on_exit(self) -> bool:
+        """Настройка settings.gpu_keep_on_exit. По умолчанию — включена."""
+        if self._config is not None:
+            try:
+                settings = self._config.get("settings") or {}
+                return bool(settings.get("gpu_keep_on_exit", True))
+            except Exception:  # noqa: BLE001
+                return True
+        return _read_keep_flag_file()
+
+    def keep_on_exit(self) -> bool:
+        """Оставлять ли лимит после выхода приложения (спрашивает main.py)."""
+        return bool(self._keep_on_exit)
+
+    def _on_keep_on_exit(self, state):
+        """Галочка переключена: пишем настройку и сообщаем её хелперу.
+
+        Хелперу — только в уже живую сессию (`call_existing`): поднимать UAC
+        ради галочки нельзя, поэтому при её переключении до первого применения
+        флаг уйдёт вместе с командой apply.
+        """
+        self._keep_on_exit = state == Qt.Checked
+        saved = True
+        if self._config is not None:
+            try:
+                self._config.setdefault("settings", {})["gpu_keep_on_exit"] = self._keep_on_exit
+                if self._save_fn is not None:
+                    self._save_fn(self._config)
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            saved = _write_keep_flag_file(self._keep_on_exit)
+
+        on = self._keep_on_exit
+        gd_bg.submit(
+            lambda: self.client.call_existing({"v": 1, "cmd": "keep", "on": on}, timeout=5.0),
+            lambda _resp: None,
+            parent=self,
+        )
+        self._set_status(
+            (i18n.t("Лимит останется после выхода приложения.") if on
+             else i18n.t("Лимит вернётся к исходному при выходе приложения."))
+            if saved else i18n.t("Настройка не сохранена: файл настроек недоступен для записи."),
+            ok=saved,
+        )
+
+    # -- настройка «применять лимит при запуске» ----------------------------
+    def _apply_on_start(self) -> bool:
+        """Настройка settings.gpu_apply_on_start. По умолчанию — выключена."""
+        if self._config is not None:
+            try:
+                settings = self._config.get("settings") or {}
+                return bool(settings.get("gpu_apply_on_start", False))
+            except Exception:  # noqa: BLE001
+                return False
+        return bool(_read_setting_file("gpu_apply_on_start", False))
+
+    def _on_autostart_changed(self, state):
+        """Галочка переключена: пишем настройку (UAC и хелпер здесь не нужны).
+
+        Возврат лимита делает `ensure_autostart_pl` при следующем запуске —
+        поднимать UAC ради галочки нельзя (как и у «не возвращать при выходе»).
+        """
+        on = state == Qt.Checked
+        saved = True
+        if self._config is not None:
+            try:
+                self._config.setdefault("settings", {})["gpu_apply_on_start"] = on
+                if self._save_fn is not None:
+                    self._save_fn(self._config)
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            saved = _write_setting_file("gpu_apply_on_start", on)
+        self._set_status(
+            (i18n.t("Лимит вернётся при запуске приложения.") if on
+             else i18n.t("Лимит не будет применяться при запуске."))
+            if saved else i18n.t("Настройка не сохранена: файл настроек недоступен для записи."),
+            ok=saved,
+        )
 
     # -- построение --------------------------------------------------------
     def _build(self):
@@ -214,6 +367,25 @@ class GpuWidget(QWidget):
         brow.addWidget(self.btn_apply)
         brow.addWidget(self.btn_keep)
         lay3.addLayout(brow)
+
+        self.chk_keep = QCheckBox(i18n.t("Не возвращать лимит при выходе приложения"))
+        self.chk_keep.setChecked(self._keep_on_exit)
+        self.chk_keep.stateChanged.connect(self._on_keep_on_exit)
+        lay3.addWidget(self.chk_keep)
+        keep_hint = QLabel(i18n.t("Галочка стоит — лимит остаётся на карте после закрытия Gammadrilon (до перезагрузки или кнопки «Вернуть как было»). Снята — при закрытии лимит возвращается к исходному."))
+        keep_hint.setObjectName("Hint")
+        keep_hint.setWordWrap(True)
+        lay3.addWidget(keep_hint)
+
+        self.chk_autostart = QCheckBox(i18n.t("Применять лимит при запуске"))
+        self.chk_autostart.setChecked(self._apply_on_start())
+        self.chk_autostart.stateChanged.connect(self._on_autostart_changed)
+        lay3.addWidget(self.chk_autostart)
+        autostart_hint = QLabel(i18n.t("Галочка стоит — при запуске Gammadrilon вернёт лимит к последнему подтверждённому значению (потребуется разрешение администратора). Снята — приложение только скажет, что лимит слетел."))
+        autostart_hint.setObjectName("Hint")
+        autostart_hint.setWordWrap(True)
+        lay3.addWidget(autostart_hint)
+
         root.addWidget(card3)
 
         self.btn_restore = QPushButton(i18n.t("Вернуть как было"))
@@ -256,7 +428,7 @@ class GpuWidget(QWidget):
         """Включить/заблокировать управление лимитом (например, GPU недоступен)."""
         for btn in getattr(self, "profile_btns", {}).values():
             btn.setEnabled(on)
-        for attr in ("sl_pl", "btn_apply", "btn_restore"):
+        for attr in ("sl_pl", "btn_apply", "btn_restore", "chk_keep"):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setEnabled(on)
@@ -292,8 +464,14 @@ class GpuWidget(QWidget):
         self.lbl_mem.setText(mem or "—")
 
         if st["pl_min"] is not None and st["pl_max"] is not None:
+            self.sl_pl.blockSignals(True)   # смена диапазона — не действие пользователя
             self.sl_pl.setRange(int(st["pl_min"]), int(st["pl_max"]))
-        if self._pending is None and st["pl"] is not None:
+            self.sl_pl.blockSignals(False)
+        # Слайдер переписываем, только когда он показывает состояние карты, а не
+        # цель пользователя: иначе тик раз в секунду возвращал «ползунок на 300»
+        # (живой разбор 12.10.2026) — сдвинутое значение не доживало до «Применить».
+        if (self._pending is None and not self._pl_dirty
+                and not self.sl_pl.isSliderDown() and st["pl"] is not None):
             self.sl_pl.blockSignals(True)
             self.sl_pl.setValue(int(st["pl"]))
             self.sl_pl.blockSignals(False)
@@ -313,7 +491,20 @@ class GpuWidget(QWidget):
         self.lbl_range.setText(txt)
 
     def _on_slider(self, value):
-        self._pending = None
+        """Сдвиг слайдера — цель пользователя, а не состояние карты.
+
+        Живой разбор 12.10.2026 («ползунок сам возвращается на 300»): тик метрик
+        раз в секунду переписывал слайдер значением драйвера, пока изменение не
+        применено, — сдвинутое значение не доживало до кнопки «Применить», а в
+        журнал уходило применение прежних 300 Вт (то есть «ничего не менялось»).
+        Теперь цель держится до применения (`_pl_dirty`), а не до опроса.
+
+        Применённое, но не подтверждённое изменение сдвиг слайдера НЕ отменяет:
+        это выбор новой цели, а не ответ на вопрос «оставить?». Раньше `_pending`
+        здесь сбрасывался — отсчёт терял значение, статус писал «лимит None Вт»,
+        а при выходе не срабатывала защита «неподтверждённое откатываем» (ТЗ 4.3).
+        """
+        self._pl_dirty = True
         self.lbl_pl_val.setText(i18n.t("{v0} Вт", v0=value))
 
     def _tick_later(self, delay_ms: int = 800) -> None:
@@ -355,7 +546,9 @@ class GpuWidget(QWidget):
         self._source = "UI"
         self._on_profile(name)
 
-    def _apply(self, payload: dict, profile_name=None):
+    def _apply(self, payload: dict, profile_name=None, silent: bool = False):
+        """Применить лимит. `silent` — автозапуск: подтверждать некому, таймер
+        «Оставить/откат» не запускается (см. `_apply_done`)."""
         # запуск хелпера (UAC) и запись nvidia-smi долгие — не морозим GUI
         if gd_bg.is_running(self._apply_worker):
             gd_agent.finish(getattr(self, "_ext_done", None), False,
@@ -365,13 +558,32 @@ class GpuWidget(QWidget):
         self.btn_apply.setEnabled(False)
         self.profile_desc.setText(i18n.t("Применяю…"))
 
+        keep = self._keep_on_exit      # настройка на момент применения
         self._apply_worker = gd_bg.submit(
-            lambda: self.client.call({"v": 1, "cmd": "apply", **payload}),
-            lambda resp: self._apply_done(resp, payload, profile_name),
+            lambda: self.client.call({"v": 1, "cmd": "apply",
+                                      "keep_on_exit": keep, **payload}),
+            lambda resp: self._apply_done(resp, payload, profile_name, silent=silent),
             parent=self,
         )
 
-    def _apply_done(self, resp, payload: dict, profile_name):
+    def _show_confirm(self, on: bool) -> None:
+        """Сделать подтверждение очевидным: главная кнопка + отсчёт секунд.
+
+        Живой разбор 12.10.2026: «Оставить» была серой второстепенной кнопкой без
+        отсчёта, а тост после применения читался как «готово» — лимит откатывался
+        через 12 с незаметно, и вкладка выглядела неработающей.
+        """
+        if on:
+            self.btn_keep.setText(i18n.t("Оставить ({v0} с)", v0=max(self._confirm_left, 0)))
+            self.btn_keep.setObjectName("PrimaryButton")
+        else:
+            self.btn_keep.setText(i18n.t("Оставить"))
+            self.btn_keep.setObjectName("Segment")
+        self.btn_keep.setVisible(on)
+        self.btn_keep.style().unpolish(self.btn_keep)
+        self.btn_keep.style().polish(self.btn_keep)
+
+    def _apply_done(self, resp, payload: dict, profile_name, silent: bool = False):
         self.btn_apply.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("Драйвер не принял изменение: {v0}", v0=resp.get('error')), ok=False)
@@ -379,17 +591,41 @@ class GpuWidget(QWidget):
             gd_agent.finish(getattr(self, "_ext_done", None), False, resp.get("error"))
             self._ext_done = None
             return
-        self._pending = payload
+        self._pl_dirty = False       # цель пользователя теперь на карте
         self._active_profile = profile_name
+        self._pre_apply_pl = (self._state or {}).get("pl")
+        self._applied_pl = payload["pl"]
+        if silent:
+            # Автозапуск: подтверждать некому — значение считается оставленным
+            # сразу, иначе таймер вернул бы лимит через CONFIRM_SECONDS.
+            self._pending = None
+            self._remember_plan(payload["pl"])
+            self._show_confirm(False)
+            self.profile_desc.setText(i18n.t("Лимит {v0} Вт возвращён при запуске.", v0=payload['pl']))
+            self._set_status(
+                i18n.t("Лимит {v0} Вт возвращён при запуске (настройка «применять при запуске»).",
+                       v0=payload['pl']),
+                ok=True, color=th.ACCENT)
+            self._journal("gpu_pl", i18n.t("{v0} Вт", v0=payload['pl']),
+                          before=self._pre_apply_pl, after=payload["pl"],
+                          why=i18n.t("запуск приложения"))
+            gd_agent.finish(getattr(self, "_ext_done", None), True)
+            self._ext_done = None
+            self._tick_later()
+            return
+        self._pending = payload
         self._confirm_left = CONFIRM_SECONDS
-        self.btn_keep.setVisible(True)
+        self._show_confirm(True)
         self._confirm_timer.start()
         self._set_status(
-            i18n.t("Применено: лимит {v0} Вт. Подтвердите за {v1} с, иначе вернётся прежнее значение.", v0=payload['pl'], v1=self._confirm_left), ok=True)
+            i18n.t("Применено: лимит {v0} Вт. Подтвердите за {v1} с, иначе вернётся прежнее значение.", v0=payload['pl'], v1=self._confirm_left),
+            ok=True, color=th.ACCENT)
         self.profile_desc.setText(i18n.t("Лимит {v0} Вт — ожидает подтверждения.", v0=payload['pl']))
         self._journal("gpu_pl", i18n.t("{v0} Вт", v0=payload['pl']),
-                      before=(self._state or {}).get("pl"), after=payload["pl"],
-                      why=i18n.t("лимит мощности GPU"))
+                      before=self._pre_apply_pl, after=payload["pl"],
+                      why=i18n.t("лимит мощности GPU"),
+                      toast=(i18n.t("toast.gpu_confirm", v0=payload['pl'],
+                                    v1=self._confirm_left), "warn"))
         gd_agent.finish(getattr(self, "_ext_done", None), True)
         self._ext_done = None
 
@@ -398,21 +634,34 @@ class GpuWidget(QWidget):
         if self._confirm_left <= 0:
             self._confirm_timer.stop()
             self._pending = None
-            self.btn_keep.setVisible(False)
+            self._show_confirm(False)
             self.profile_desc.setText(i18n.t("Подтверждение не получено — прежнее значение возвращено."))
             self._set_status(i18n.t("Время подтверждения вышло — возвращаю прежний лимит…"), ok=True)
             self._restore_async(self._auto_restore_done)
             return
         pl_val = (self._pending or {}).get("pl")
+        self.btn_keep.setText(i18n.t("Оставить ({v0} с)", v0=self._confirm_left))
         self._set_status(
             i18n.t("Применено: лимит {v0} Вт. Подтвердите за {v1} с.", v0=pl_val, v1=self._confirm_left),
-            ok=True)
+            ok=True, color=th.ACCENT)
 
     def _auto_restore_done(self, resp):
+        ok = bool(resp.get("ok"))
         self._set_status(
-            i18n.t("Время подтверждения вышло — прежний лимит возвращён.")
-            if resp.get("ok") else i18n.t("Откат не удался: {v0}", v0=resp.get('error')),
-            ok=resp.get("ok", False))
+            i18n.t("Время подтверждения вышло — прежний лимит возвращён.") if ok
+            else i18n.t("Откат не удался: {v0}", v0=resp.get('error')),
+            ok=ok)
+        if ok:
+            self._pl_dirty = False   # карта вернулась к прежнему — слайдер снова «состояние»
+            # Откат вернул прежнее значение — план «какой лимит должен быть»
+            # обновляем на фактическое состояние карты.
+            self._remember_plan(self._pre_apply_pl)
+            # Раньше откат по таймауту не попадал в журнал: записи о применении
+            # оставались без «стало», и журнал выглядел как череда успехов.
+            self._journal("restore", i18n.t("лимит GPU"),
+                          before=self._applied_pl, after=self._pre_apply_pl,
+                          why=i18n.t("подтверждение не получено — прежний лимит возвращён"),
+                          toast=(i18n.t("toast.gpu_restored"), "info"))
         self._tick_later()
 
     def _restore_async(self, on_done) -> None:
@@ -429,9 +678,11 @@ class GpuWidget(QWidget):
 
     def _on_keep(self):
         self._confirm_timer.stop()
-        self.btn_keep.setVisible(False)
+        self._show_confirm(False)
         pl = (self._pending or {}).get("pl")
         self._pending = None
+        self._pl_dirty = False       # оставленное значение = состояние карты
+        self._remember_plan(self._applied_pl)
         self.profile_group.setExclusive(False)
         for b in self.profile_btns.values():
             b.setChecked(False)
@@ -447,7 +698,7 @@ class GpuWidget(QWidget):
 
     def _on_restore(self):
         self._confirm_timer.stop()
-        self.btn_keep.setVisible(False)
+        self._show_confirm(False)
         self._pending = None
         self._active_profile = None
         self.btn_restore.setEnabled(False)
@@ -457,6 +708,8 @@ class GpuWidget(QWidget):
     def _restore_done(self, resp):
         self.btn_restore.setEnabled(True)
         if resp.get("ok"):
+            self._pl_dirty = False
+            self._remember_plan(None)    # лимит возвращён к исходному — плана нет
             self._set_status(i18n.t("Исходный лимит возвращён."), ok=True)
             self.profile_desc.setText(i18n.t("Профиль не применён."))
             self._journal("restore", i18n.t("лимит GPU"), why=i18n.t("возврат исходного лимита"))
@@ -470,11 +723,17 @@ class GpuWidget(QWidget):
         self._ext_done = None
         self._tick_later()
 
-    def _set_status(self, text: str, ok: bool = True):
-        self.bottom_status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
+    def _set_status(self, text: str, ok: bool = True, color: str | None = None):
+        self.bottom_status.setStyleSheet(f"color: {color or (th.MUTED if ok else th.WARN)};")
         self.bottom_status.setText(text)
 
-    def _journal(self, kind: str, target: str, before=None, after=None, why: str = ""):
+    def _journal(self, kind: str, target: str, before=None, after=None, why: str = "",
+                 toast: tuple | None = None):
+        """Строка в журнал + тост.
+
+        `toast=(текст, вид)` — когда тост должен отличаться от общей подписи
+        «Питание GPU: …» (например, предупреждение «подтвердите за N с»).
+        """
         try:
             import gd_journal
 
@@ -482,8 +741,10 @@ class GpuWidget(QWidget):
                               source=getattr(self, "_source", "UI"))
             import gd_toast
 
-            gd_toast.show_toast(i18n.t("toast.gpu", target=target),
-                                "info" if str(kind).startswith("restore") else "ok")
+            text, tone = toast if toast else (
+                i18n.t("toast.gpu", target=target),
+                "info" if str(kind).startswith("restore") else "ok")
+            gd_toast.show_toast(text, tone)
         except Exception:  # noqa: BLE001
             pass
 
@@ -505,40 +766,137 @@ class GpuWidget(QWidget):
             return
         self._on_profile(name)
 
-    def apply_limit(self, watts: int, source: str = i18n.t("трей"), on_done=None):
+    def apply_limit(self, watts: int, source: str = i18n.t("трей"), on_done=None,
+                    silent: bool = False):
         """Лимит мощности в ваттах извне: как движение слайдера + «Применить».
 
-        Диапазон берём у драйвера (min_limit/max_limit из nvidia-smi), а не из
+        Диапазон берём у драйвера (pl_min/pl_max из nvidia-smi), а не из
         слайдера: вкладка могла ещё не открываться, и границы были бы чужими.
+        `silent=True` — автозапуск: без ожидания подтверждения.
         """
         if gd_bg.is_running(self._apply_worker) or gd_bg.is_running(self._restore_worker):
             gd_agent.finish(on_done, False, i18n.t("занято: операция уже выполняется"))
+            self._set_status(i18n.t("занято: операция уже выполняется"), ok=False)
             return
         import gd_metrics
 
         st = self._state or gd_metrics.gpu() or gd_gpu.read_state() or {}
-        lo = st.get("min_limit")
-        hi = st.get("max_limit")
+        lo = st.get("pl_min")
+        hi = st.get("pl_max")
         if lo and hi and not (float(lo) <= float(watts) <= float(hi)):
-            gd_agent.finish(on_done, False, i18n.t(
+            msg = i18n.t(
                 "лимит {v0} Вт вне диапазона драйвера {v1}..{v2} Вт",
-                v0=watts, v1=int(lo), v2=int(hi)))
+                v0=watts, v1=int(lo), v2=int(hi))
+            gd_agent.finish(on_done, False, msg)
+            self._set_status(msg, ok=False)   # видно и в самой вкладке, не только вызывающему
             return
         self._source = source
         self._ext_done = on_done
         self.sl_pl.setValue(int(watts))
-        self._apply({"pl": int(watts)})
+        self._apply({"pl": int(watts)}, silent=silent)
+
+    def _remember_plan(self, pl) -> None:
+        """Запомнить «какой лимит должен быть» (settings.gpu_auto_pl) — план старта.
+
+        План обновляется только на подтверждённых состояниях: «Оставить» после
+        применения, успешный автозапуск и откат к прежнему. Неподтверждённое
+        изменение в план не попадает — оно и не остаётся на карте. `None` —
+        плана нет («Вернуть как было» или откат при выходе).
+        """
+        if self._config is None:
+            return
+        try:
+            self._config.setdefault("settings", {})["gpu_auto_pl"] = (
+                None if pl is None else int(pl))
+            if self._save_fn is not None:
+                self._save_fn(self._config)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def ensure_autostart_pl(self) -> None:
+        """Старт приложения: держать лимит по настройке «применять при запуске».
+
+        Один раз за сессию, в фоне (nvidia-smi). План — settings.gpu_auto_pl
+        (последнее подтверждённое значение):
+
+          * факт совпал с планом — тишина;
+          * план слетел (перезагрузка вернула номинал) и галочка включена —
+            вернуть план на карту (единственный путь применения, который
+            поднимает UAC без клика: так решил пользователь);
+          * план слетел, галочка выключена — только честно сказать в журнал и
+            статус, драйвер не трогаем.
+        """
+        if self._autostart_checked:
+            return
+        self._autostart_checked = True
+
+        settings = {}
+        if self._config is not None:
+            try:
+                settings = self._config.get("settings") or {}
+            except Exception:  # noqa: BLE001
+                settings = {}
+        plan = settings.get("gpu_auto_pl")
+        if plan is None:
+            return
+        try:
+            plan = int(plan)
+        except (TypeError, ValueError):
+            return
+        apply_on_start = bool(settings.get("gpu_apply_on_start", False))
+
+        def done(resp):
+            st = (resp or {}).get("state") or {}
+            cur = st.get("pl")
+            if cur is None:      # GPU не отвечает — молча: это не ошибка старта
+                return
+            if abs(float(cur) - float(plan)) < 1:
+                return           # всё на месте
+            if apply_on_start:
+                self.apply_limit(plan, source=i18n.t("запуск приложения"),
+                                 silent=True)
+                return
+            # план слетел, а возвращать его не просили — сказать честно
+            self._journal(
+                "gpu_pl", i18n.t("лимит GPU"), before=cur, after=plan,
+                why=i18n.t("лимит слетел после перезапуска"),
+                toast=(i18n.t("Лимит GPU слетел: был {v0:.0f} Вт, сейчас {v1:.0f} Вт",
+                              v0=plan, v1=cur), "warn"))
+            self._set_status(
+                i18n.t("Лимит GPU слетел: был {v0:.0f} Вт, сейчас {v1:.0f} Вт. "
+                       "Включите «Применять лимит при запуске», чтобы возвращать его автоматически.",
+                       v0=plan, v1=cur),
+                ok=False)
+
+        gd_bg.submit(lambda: {"state": gd_gpu.read_state()}, done, parent=self)
 
     def current_profile(self):
         return getattr(self, "_active_profile", None)
 
+    def shutdown_for_exit(self) -> None:
+        """Выход приложения: решить, откатывать ли лимит.
+
+        Настройка «не возвращать лимит при выходе» (по умолчанию включена)
+        оставляет лимит на карте. Исключение — неподтверждённое изменение:
+        его откатывает сам хелпер (ТЗ 4.3), причём до его конца, а не пока
+        открыто окно.
+        """
+        force = self._pending is not None          # не подтвердили — откат по ТЗ
+        restore = force or not self._keep_on_exit
+        if restore and not force:
+            # Лимит вернётся к исходному — «плана» на следующий запуск нет.
+            # Неподтверждённое (force) план не трогает: он указывает на прежнее
+            # подтверждённое значение, к которому откат и вернёт карту.
+            self._remember_plan(None)
+        try:
+            self.client.shutdown_async(restore=restore, force=force)
+        except Exception:  # noqa: BLE001
+            pass
+
     # -- отдельное окно ----------------------------------------------------
     def closeEvent(self, event):
         if self._standalone:
-            try:
-                self.client.shutdown_async(restore=True)
-            except Exception:  # noqa: BLE001
-                pass
+            self.shutdown_for_exit()
         super().closeEvent(event)
 
 

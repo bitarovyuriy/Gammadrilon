@@ -316,6 +316,20 @@ try:
 finally:
     gd_dns.current_state = _real_dns_state
 
+check("гамма: сторож запущен с заданным интервалом",
+      win.gamma_watch_timer.isActive()
+      and win.gamma_watch_timer.interval() == gd_main.GAMMA_WATCH_INTERVAL_MS,
+      f"active={win.gamma_watch_timer.isActive()}, {win.gamma_watch_timer.interval()} мс")
+check("гамма: флаг факта применения — честный bool",
+      isinstance(win._gamma_applied_ok, bool), repr(win._gamma_applied_ok))
+try:
+    win.gamma_watch_tick()
+    tick_ok = True
+except Exception as exc:  # noqa: BLE001
+    tick_ok = False
+    print("тик сторожа упал:", exc)
+check("гамма: тик сторожа не падает на живом окне", tick_ok)
+
 check("QSS: правило для погашенного LED есть", '[state="off"]' in gd_main.build_app_stylesheet())
 
 foot_widget = win._foot_led.parentWidget()
@@ -410,6 +424,13 @@ check("трей: 3 одинаковых тика → одна отрисовка
 # значок перерисовывается только при смене профиля (тултип меняется чаще — °C, RAM)
 check("трей: тултип обновляется, значок — только по профилю",
       after["tip"] == 3 and after["icon"] == 2, str(after))
+
+# трей: галка переключателя производительности (то же действие, что горячая клавиша)
+check("трей: пункт переключателя с галкой",
+      hasattr(tray, "_perf_act") and tray._perf_act.isCheckable())
+tray.set_perf_limited(True)
+check("трей: галка переключателя включается", tray._perf_act.isChecked())
+tray.set_perf_limited(False)
 
 # окружение правил: метод окна не снимает то, что не нужно
 env = win._collect_rule_env()
