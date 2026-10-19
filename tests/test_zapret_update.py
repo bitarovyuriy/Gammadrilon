@@ -49,6 +49,27 @@ def test_release_zip_url_prefers_zip_asset():
     assert fallback.endswith("/download/1.10.4/zapret-discord-youtube-1.10.4.zip")
 
 
+def test_check_updates_caches_for_a_day(tmp_path, monkeypatch):
+    cache = tmp_path / "cache.json"
+    monkeypatch.setattr(upd, "CACHE_FILE", cache)
+    calls = {"n": 0}
+
+    def fake_json(url, timeout=0):
+        calls["n"] += 1
+        return {"tag_name": "1.10.4", "name": "1.10.4", "published_at": "",
+                "body": "notes", "html_url": "https://example/release",
+                "assets": [{"name": "x.zip", "size": 1, "browser_download_url": "https://x",
+                            "download_count": 1}]}
+
+    monkeypatch.setattr(upd, "_http_json", fake_json)
+    (tmp_path / "installed-version.txt").write_text("1.10.3\n", encoding="ascii")
+    first = upd.check_updates(str(tmp_path), force=True)
+    second = upd.check_updates(str(tmp_path), force=False)
+    assert first["ok"] and first["newer"] and not first["cached"]
+    assert second["ok"] and second["cached"] and second["latest"] == "1.10.4"
+    assert calls["n"] == 1
+
+
 def test_validate_zip_rejects_path_traversal(tmp_path):
     bad = tmp_path / "bad.zip"
     with zipfile.ZipFile(bad, "w") as zf:
