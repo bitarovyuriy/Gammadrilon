@@ -68,6 +68,7 @@ class TrayAssistant(QSystemTrayIcon):
     rulesRequested = pyqtSignal()
     utilsRequested = pyqtSignal()
     themeRequested = pyqtSignal()
+    resetEverythingRequested = pyqtSignal()
     quitRequested = pyqtSignal()
 
     def __init__(self, icon_path=None, parent=None):
@@ -149,6 +150,12 @@ class TrayAssistant(QSystemTrayIcon):
         self._theme_act = util_menu.addAction(i18n.t("tray.theme_light"))
         self._theme_act.setCheckable(True)
         self._theme_act.triggered.connect(self.themeRequested.emit)
+
+        # «вернуть всё как было» — то же действие, что кнопка в «Утилитах»;
+        # отделено и стоит в конце: промахнуться по нему не должно быть легко
+        util_menu.addSeparator()
+        a = util_menu.addAction(i18n.t("tray.reset_all"))
+        a.triggered.connect(self.resetEverythingRequested.emit)
 
         menu.addSeparator()
         act = menu.addAction(i18n.t("tray.quit"))

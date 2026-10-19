@@ -2,6 +2,7 @@
 """Панель прочих утилит (ТЗ 6.3): таймер, сетевой чек, сброс всего, профили, тихий час."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -137,7 +138,7 @@ class ExtraPanel(QWidget):
         lay.addWidget(card3)
 
         # --- профили --------------------------------------------------------
-        card4, c4 = make_card(i18n.t("ПРОФИЛИ — ЭКСПОРТ / ИМПОРТ"))
+        card4, c4 = make_card(i18n.t("НАСТРОЙКИ И ПРОФИЛИ — ЭКСПОРТ / ИМПОРТ"))
         r4 = QHBoxLayout()
         self.btn_export = QPushButton(i18n.t("Экспорт в JSON…"))
         self.btn_export.setObjectName("Segment")
@@ -149,7 +150,7 @@ class ExtraPanel(QWidget):
         r4.addWidget(self.btn_import)
         r4.addStretch(1)
         c4.addLayout(r4)
-        self.lbl_prof = QLabel(i18n.t("Правила, «тихий час» и настройки автоочистки делятся файлом; профили CPU/GPU встроенные."))
+        self.lbl_prof = QLabel(i18n.t("Одним файлом переносятся настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистка; профили CPU/GPU встроенные. Настройки приложения вступят в силу после перезапуска."))
         self.lbl_prof.setObjectName("Hint")
         self.lbl_prof.setWordWrap(True)
         c4.addWidget(self.lbl_prof)
@@ -365,13 +366,23 @@ class ExtraPanel(QWidget):
         self.refresh()
 
     def _export(self):
-        path, _ = QFileDialog.getSaveFileName(self, i18n.t("Экспорт настроек"), "gammadrilon-profiles.json",
+        path, _ = QFileDialog.getSaveFileName(self, i18n.t("Экспорт настроек"), "gammadrilon-settings.json",
                                               "JSON (*.json)")
         if not path:
             return
+        # Снимок конфига берём здесь, в GUI-потоке: в фоне читать его нельзя —
+        # окно может менять настройки прямо в этот момент (слайдеры, галочки).
+        settings = None
+        config = getattr(self.host, "config", None) if self.host is not None else None
+        if isinstance(config, dict):
+            try:
+                settings = json.loads(json.dumps(config))
+            except (TypeError, ValueError):
+                settings = None
         # сбор снимка читает DNS/GPU/правила — уводим в фон, чтобы окно не замирало
         self._set_status(self.lbl_prof, i18n.t("Экспортирую настройки…"))
-        gd_bg.submit(lambda: gd_profiles.export_all(path), self._export_done, parent=self)
+        gd_bg.submit(lambda: gd_profiles.export_all(path, app_settings=settings),
+                     self._export_done, parent=self)
 
     def _export_done(self, res):
         ok, msg = res if isinstance(res, tuple) else (False, str(res))
@@ -381,8 +392,13 @@ class ExtraPanel(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, i18n.t("Импорт настроек"), "", "JSON (*.json)")
         if not path:
             return
-        ok, msg = gd_profiles.import_all(path)
+        # Настройки приложения применяет окно: только оно знает путь конфига и
+        # умеет проверить чужой файл по структуре умолчаний.
+        apply_settings = getattr(self.host, "import_app_settings", None) if self.host is not None else None
+        ok, msg = gd_profiles.import_all(path, apply_settings=apply_settings)
         self._set_status(self.lbl_prof, msg, ok=ok)
+        if ok:
+            self.refresh()
 
     # -- тихий час -----------------------------------------------------------
     def _quiet_changed(self, *_):

@@ -120,6 +120,45 @@ def test_readme_documents_checks():
     assert "ruff" in readme, "в README нет команды линтера"
 
 
+def test_settings_keys_are_known_to_import():
+    """Каждый ключ settings из кода должен быть в схеме импорта настроек.
+
+    Схема — это ``DEFAULT_CONFIG["settings"]`` плюс ``RUNTIME_SETTINGS`` (ключи,
+    которые приложение дописывает уже по ходу работы). Ключ вне схемы при
+    переносе на другую машину молча пропал бы — так чуть не потерялся язык
+    интерфейса: он живёт вне умолчаний.
+    """
+    import main as gd_main
+
+    patterns = (
+        r'settings", \{\}\)\.get\("(\w+)"',
+        r'settings"\]\.get\("(\w+)"',
+        r'settings"\]\["(\w+)"\]',
+        r'setdefault\("settings", \{\}\)\["(\w+)"\]',
+        r'settings", \{\}\)\["(\w+)"\]',
+        r'settings"\]\.setdefault\("(\w+)"',
+    )
+    used: set[str] = set()
+    for path in [MAIN, *GD_MODULES]:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for pattern in patterns:
+            used.update(re.findall(pattern, text))
+
+    known = (set(gd_main.DEFAULT_CONFIG["settings"])
+             | set(gd_main.RUNTIME_SETTINGS)
+             | set(gd_main.SETTINGS_NOT_TRANSFERABLE))
+    unknown = sorted(key for key in used if key not in known)
+    assert not unknown, "ключи settings вне схемы (перенос их потеряет): " + ", ".join(unknown)
+
+    overlap = sorted(set(gd_main.DEFAULT_CONFIG["settings"]) & set(gd_main.RUNTIME_SETTINGS))
+    assert not overlap, "ключ в двух схемах сразу: " + ", ".join(overlap)
+
+    mixed = sorted(set(gd_main.SETTINGS_NOT_TRANSFERABLE)
+                   & (set(gd_main.DEFAULT_CONFIG["settings"]) | set(gd_main.RUNTIME_SETTINGS)))
+    assert not mixed, ("ключ и переносимый, и запрещённый к переносу сразу: "
+                       + ", ".join(mixed))
+
+
 def test_second_instance_warning_reaches_user(monkeypatch):
     """Второй экземпляр не должен выходить молча.
 

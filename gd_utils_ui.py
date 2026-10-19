@@ -290,6 +290,44 @@ class UtilsWidget(QWidget):
         lay_run.addWidget(self.lbl_startup)
         root.addWidget(card_run)
 
+        # --- обновления (по желанию) ---
+        # Галочка выключена по умолчанию: приложение обещает «без облака», и
+        # включать сеть за человека оно не имеет права.
+        card_upd, lay_upd = make_card(i18n.t("ОБНОВЛЕНИЯ"))
+        self._updates_host = host if (host is not None and hasattr(host, "check_updates")) else None
+
+        self.chk_updates = QCheckBox(i18n.t("Проверять при запуске"))
+        self.chk_updates.setEnabled(self._updates_host is not None)
+        self.chk_updates.stateChanged.connect(self._updates_changed)
+        self.btn_updates = QPushButton(i18n.t("Проверить сейчас"))
+        self.btn_updates.setObjectName("Segment")
+        self.btn_updates.setEnabled(self._updates_host is not None)
+        self.btn_updates.clicked.connect(self._check_updates)
+
+        urow = QHBoxLayout()
+        urow.addWidget(self.chk_updates)
+        urow.addWidget(self.btn_updates)
+        urow.addStretch(1)
+        lay_upd.addLayout(urow)
+
+        upd_note = QLabel(i18n.t(
+            "Запрос уходит на api.github.com и не несёт ничего, кроме самого запроса: "
+            "ни версии приложения, ни идентификаторов, ни счётчиков. GitHub при этом "
+            "видит IP — поэтому галочка выключена, пока её не поставить."))
+        upd_note.setObjectName("Hint")
+        upd_note.setWordWrap(True)
+        lay_upd.addWidget(upd_note)
+
+        self.lbl_updates = QLabel(i18n.t("Обновления не проверялись."))
+        self.lbl_updates.setObjectName("Hint")
+        self.lbl_updates.setWordWrap(True)
+        self.lbl_updates.setOpenExternalLinks(True)
+        if self._updates_host is None:
+            self.lbl_updates.setText(i18n.t("Проверка обновлений доступна из главного окна."))
+        lay_upd.addWidget(self.lbl_updates)
+        root.addWidget(card_upd)
+        self._sync_updates()
+
         # --- прочие утилиты (ТЗ 6.3) ---
         try:
             from gd_extra_ui import ExtraPanel
@@ -505,6 +543,52 @@ class UtilsWidget(QWidget):
         self.lbl_startup.setStyleSheet(f"color: {th.MUTED};")
         self.lbl_startup.setText(i18n.t("Автозапуск включён") if on
                                  else i18n.t("Автозапуск выключен"))
+
+    # -- обновления: галочка и ручная проверка ------------------------------
+    def _sync_updates(self) -> None:
+        """Галочка — из конфига (факт), а не из памяти виджета."""
+        host = self._updates_host
+        if host is None:
+            return
+        try:
+            enabled = bool((host.config.get("settings") or {}).get("check_updates", False))
+        except Exception:  # noqa: BLE001
+            enabled = False
+        self.chk_updates.blockSignals(True)
+        self.chk_updates.setChecked(enabled)
+        self.chk_updates.blockSignals(False)
+
+    def _updates_changed(self, state) -> None:
+        """Галочка переключена: хранит её окно, проверка — при следующем запуске."""
+        host = self._updates_host
+        if host is None:
+            return
+        on = state == Qt.Checked
+        try:
+            host.set_check_updates(on)
+        except Exception as exc:  # noqa: BLE001
+            self.lbl_updates.setStyleSheet(f"color: {th.WARN};")
+            self.lbl_updates.setText(i18n.t("Галочка не сохранена: {v0}",
+                                            v0=f"{type(exc).__name__}: {exc}"))
+            self._sync_updates()      # галочка возвращается к факту, а не к нажатию
+            return
+        self.lbl_updates.setStyleSheet(f"color: {th.MUTED};")
+        self.lbl_updates.setText(i18n.t("Включено: проверю при следующем запуске.") if on
+                                 else i18n.t("Выключено: приложение в сеть не ходит."))
+
+    def _check_updates(self) -> None:
+        """«Проверить сейчас»: сама проверка идёт в фоне, ответ придёт в подпись."""
+        host = self._updates_host
+        if host is None:
+            return
+        host.check_updates(silent=False)
+
+    def set_update_status(self, text: str, ok: bool = True, url: str = "") -> None:
+        """Строка результата: сюда пишут и ручная проверка, и стартовая (тихая)."""
+        self.lbl_updates.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
+        if url:
+            text = f'{text} <a href="{url}">{i18n.t("скачать")}</a>'
+        self.lbl_updates.setText(text)
 
     # -- автоочистка: настройки ---------------------------------------------
     def _auto_path(self):

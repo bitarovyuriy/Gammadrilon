@@ -15,7 +15,9 @@ import gd_i18n as i18n
 import gd_state
 
 APP_TAG = "Gammadrilon"
-FORMAT_VERSION = 3
+#: 4 — в файле появился раздел "settings" (настройки приложения и пресеты гаммы);
+#: импорт читает и старые файлы: разделы просто смотрятся по наличию.
+FORMAT_VERSION = 4
 
 
 # -- пути --------------------------------------------------------------------
@@ -79,7 +81,13 @@ def in_window(data: dict, now: _dt.datetime | None = None) -> bool:
 
 
 # -- экспорт / импорт ---------------------------------------------------------
-def export_all(path: str | Path) -> tuple[bool, str]:
+def export_all(path: str | Path, app_settings: dict | None = None) -> tuple[bool, str]:
+    """Собрать всё настраиваемое в один файл.
+
+    ``app_settings`` — конфиг приложения (presets.json) как есть: настройки,
+    пресеты гаммы, горячие клавиши. Без него экспорт прежний — правила, тихий
+    час, автоочистка, состояние DNS.
+    """
     import gd_dns
     import gd_gpu
     import gd_power
@@ -97,11 +105,16 @@ def export_all(path: str | Path) -> tuple[bool, str]:
         "dns": gd_dns.current_state(),
         "autoclean": _read_autoclean(),
     }
+    if isinstance(app_settings, dict) and app_settings:
+        payload["settings"] = app_settings
     try:
         p = Path(path)
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return True, i18n.t("Экспортировано в {v0}: правила — {v1}, настройки — таймер/тихий час/DNS.",
-                            v0=p.name, v1=len(payload['rules']))
+        msg = i18n.t("Экспортировано в {v0}: правила — {v1}, настройки — таймер/тихий час/DNS.",
+                     v0=p.name, v1=len(payload['rules']))
+        if "settings" in payload:
+            msg += " " + i18n.t("Настройки приложения и пресеты гаммы — внутри.")
+        return True, msg
     except OSError as exc:
         return False, i18n.t("не удалось записать файл: {v0}", v0=exc)
 
@@ -115,7 +128,14 @@ def _write_autoclean(data: dict) -> bool:
     return gd_state.write_json_atomic(_base_dir() / "autoclean.json", data)
 
 
-def import_all(path: str | Path) -> tuple[bool, str]:
+def import_all(path: str | Path, apply_settings=None) -> tuple[bool, str]:
+    """Применить файл переноса к этой машине.
+
+    ``apply_settings`` — callback ``(settings: dict) -> (bool, str)``: применить
+    настройки приложения. Путь конфига и его проверка живут в окне, поэтому
+    применяет их именно оно, а не этот модуль. Без callback'а профили
+    применятся, а про настройки будет честно сказано, что они остались в файле.
+    """
     import gd_rules
 
     try:
@@ -128,6 +148,7 @@ def import_all(path: str | Path) -> tuple[bool, str]:
 
     done = []
     failed = []
+    notes = []
     rules = data.get("rules")
     if isinstance(rules, list) and all(isinstance(r, dict) for r in rules):
         if gd_rules.save_rules(rules):
@@ -149,13 +170,34 @@ def import_all(path: str | Path) -> tuple[bool, str]:
         else:
             failed.append(i18n.t("автоочистка ОЗУ"))
 
+    settings = data.get("settings")
+    if isinstance(settings, dict) and settings:
+        if apply_settings is None:
+            notes.append(i18n.t(
+                "Настройки приложения в файле есть, но перенос идёт без окна: применяю только профили."))
+        else:
+            try:
+                settings_ok, note = apply_settings(settings)
+            except Exception as exc:  # noqa: BLE001 — чужой конфиг не должен ронять импорт
+                settings_ok = False
+                note = i18n.t("настройки приложения применить не удалось: {v0}", v0=exc)
+            if settings_ok:
+                done.append(i18n.t("настройки приложения"))
+                if note:
+                    notes.append(note)
+            else:
+                notes.append(note or i18n.t("настройки приложения применить не удалось"))
+
     if not done:
         if failed:
             return False, i18n.t("Не сохранено: {v0} — файл недоступен для записи.",
                                  v0=", ".join(failed))
+        if notes:
+            return False, " ".join(notes)
         return False, i18n.t("в файле нет знакомых разделов")
     msg = i18n.t("импортировано: {v0}. Профили CPU/GPU встроенные — их не перезаписываю.",
                  v0=", ".join(done))
+    msg += "".join(" " + note for note in notes)
     if failed:
         # отказ записи не прячем: «импортировано» без оговорки было бы ложью
         msg += " " + i18n.t("Не сохранено: {v0} — файл недоступен для записи.",

@@ -1,0 +1,83 @@
+# -*- coding: utf-8 -*-
+"""Проверка обновлений: сравнение версий и честный отказ без сети.
+
+Сеть подменена: тест не выходит наружу и не зависит от состояния GitHub.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import urllib.error
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import gd_update  # noqa: E402 — путь проекта добавлен выше
+
+
+class _Response:
+    """Минимальный ответ urlopen: контекстный менеджер и read()."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_parse_version_orders_numbers_not_text():
+    """3.10 новее 3.9 — сравнение строк дало бы обратное."""
+    assert gd_update.parse_version("v3.10") == (3, 10)
+    assert gd_update.parse_version("3.1.0-beta") == (3, 1, 0)
+    assert gd_update.parse_version("nightly") == ()
+
+
+def test_is_newer():
+    assert gd_update.is_newer("v3.10", "v3.9")
+    assert gd_update.is_newer("v3.2", "")
+    assert not gd_update.is_newer("v3.1", "v3.1")
+    assert not gd_update.is_newer("nightly", "v3.1"), "непонятный тег не должен пугать"
+
+
+def test_fetch_latest_parses_release(monkeypatch):
+    body = json.dumps({
+        "tag_name": "v9.9",
+        "name": "v9.9",
+        "html_url": "https://example.invalid/rel",
+        "published_at": "2026-02-03T04:05:06Z",
+    }).encode("utf-8")
+    monkeypatch.setattr(gd_update.urllib.request, "urlopen", lambda *a, **kw: _Response(body))
+
+    res = gd_update.fetch_latest(timeout=0.01)
+
+    assert res["ok"] and res["tag"] == "v9.9"
+    assert res["published"] == "2026-02-03"
+    assert res["url"] == "https://example.invalid/rel"
+
+
+def test_fetch_latest_speaks_human_without_network(monkeypatch):
+    """Отказ сети — это dict с текстом для человека, а не исключение."""
+
+    def boom(*a, **kw):
+        raise urllib.error.URLError("нет маршрута")
+
+    monkeypatch.setattr(gd_update.urllib.request, "urlopen", boom)
+    res = gd_update.fetch_latest(timeout=0.01)
+
+    assert not res["ok"] and "нет связи" in res["error"]
+
+
+def test_fetch_latest_reports_missing_tag(monkeypatch):
+    monkeypatch.setattr(gd_update.urllib.request, "urlopen",
+                        lambda *a, **kw: _Response(b'{"name": "release"}'))
+
+    res = gd_update.fetch_latest(timeout=0.01)
+
+    assert not res["ok"] and "тег" in res["error"]

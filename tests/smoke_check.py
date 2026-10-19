@@ -318,6 +318,30 @@ try:
 finally:
     gd_dns.current_state = _real_dns_state
 
+# --- вкладка «Утилиты»: карточка обновлений ---
+try:
+    win.tabs.setCurrentIndex(win._key_to_index["tab.utils"])
+    pump(700)
+    utils = getattr(win, "_utils_page", None)
+    check("утилиты: вкладка собралась", utils is not None, "нет _utils_page")
+    check("утилиты: карточка обновлений на месте",
+          utils is not None and hasattr(utils, "chk_updates") and hasattr(utils, "btn_updates"),
+          "нет chk_updates/btn_updates")
+    check("утилиты: проверка обновлений выключена по умолчанию (обещание «без облака»)",
+          gd_main.DEFAULT_CONFIG["settings"]["check_updates"] is False,
+          repr(gd_main.DEFAULT_CONFIG["settings"].get("check_updates")))
+    expected = bool((win.config.get("settings") or {}).get("check_updates", False))
+    check("утилиты: галочка обновлений показывает конфиг, а не саму себя",
+          utils is not None and utils.chk_updates.isChecked() == expected,
+          f"галочка={utils.chk_updates.isChecked() if utils else None}, конфиг={expected}")
+    utils.set_update_status("проверка связи", ok=True, url="https://example.invalid/release")
+    check("утилиты: подпись обновлений принимает результат и ссылку",
+          "example.invalid" in utils.lbl_updates.text(), utils.lbl_updates.text()[:90])
+    win.tabs.setCurrentIndex(win._key_to_index["tab.gamma"])
+    pump(300)
+except Exception as exc:  # noqa: BLE001
+    check("утилиты: вкладка открылась без исключения", False, f"{type(exc).__name__}: {exc}")
+
 check("гамма: сторож запущен с заданным интервалом",
       win.gamma_watch_timer.isActive()
       and win.gamma_watch_timer.interval() == gd_main.GAMMA_WATCH_INTERVAL_MS,

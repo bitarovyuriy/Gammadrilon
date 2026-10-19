@@ -74,6 +74,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "tray.rules": "Правила",
         "tray.memory": "Очистка ОЗУ",
         "tray.theme_light": "Светлая тема",
+        "tray.reset_all": "Вернуть всё как было",
         "tray.quit": "Выход",
         # палитра команд
         "pal.open_cpu": "Открыть вкладку «Питание CPU»",
@@ -138,6 +139,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "toast.quiet_none": "Тихий час: ни ЭКО, ни яркость применить не удалось",
         "toast.quiet_keep_dim": "Тихий час завершён, но яркость не возвращена",
         "toast.zapret_gone": "Обход DPI остановился: winws.exe завершился вне Gammadrilon",
+        "toast.update_available": "Обновление: доступна версия {v0}",
         # журнал
         "journal.title": "Журнал изменений — что произошло",
         # обход DPI (zapret)
@@ -318,6 +320,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "tray.rules": "Rules",
         "tray.memory": "RAM cleanup",
         "tray.theme_light": "Light theme",
+        "tray.reset_all": "Revert everything",
         "tray.quit": "Quit",
         # command palette
         "pal.open_cpu": "Open tab “CPU power”",
@@ -382,6 +385,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "toast.quiet_none": "Quiet hour: neither ECO nor brightness could be applied",
         "toast.quiet_keep_dim": "Quiet hour ended, but brightness was not restored",
         "toast.zapret_gone": "DPI bypass stopped: winws.exe exited outside Gammadrilon",
+        "toast.update_available": "Update: version {v0} is available",
         # journal
         "journal.title": "Change log — what happened",
         # DPI bypass (zapret)
@@ -1349,4 +1353,47 @@ DIRECT: dict[str, str] = {
     "нет": "none",
     "Лог падений": "Crash log",
     "Gammadrilon уже запущен — окно живёт в трее (рядом с часами).": "Gammadrilon is already running — the window lives in the tray (next to the clock).",
+    # --- перенос настроек (экспорт/импорт) ---
+    "в файле нет настроек": "the file has no settings",
+    "не удалось записать файл настроек": "could not write the settings file",
+    "не удалось прочитать текущие настройки: {v0}": "could not read the current settings: {v0}",
+    "Перенесено: настройки и пресеты гаммы ({v0}).": "Transferred: settings and gamma presets ({v0}).",
+    "Пресетов пропущено (битые записи): {v0}.": "Presets skipped (broken records): {v0}.",
+    "Незнакомые ключи пропущены: {v0}.": "Unknown keys skipped: {v0}.",
+    "Копия прежних настроек: {v0}.": "Backup of the previous settings: {v0}.",
+    "Настройки вступят в силу после перезапуска Gammadrilon.": "The settings take effect after Gammadrilon restarts.",
+    "Настройки приложения и пресеты гаммы — внутри.": "App settings and gamma presets are inside.",
+    "Настройки приложения в файле есть, но перенос идёт без окна: применяю только профили.":
+        "The file contains app settings, but the import runs without the window: applying profiles only.",
+    "настройки приложения применить не удалось: {v0}": "could not apply app settings: {v0}",
+    "настройки приложения применить не удалось": "could not apply app settings",
+    "настройки приложения": "app settings",
+    "НАСТРОЙКИ И ПРОФИЛИ — ЭКСПОРТ / ИМПОРТ": "SETTINGS AND PROFILES — EXPORT / IMPORT",
+    "Одним файлом переносятся настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистка; "
+    "профили CPU/GPU встроенные. Настройки приложения вступят в силу после перезапуска.":
+        "One file carries app settings, gamma presets, rules, quiet hour and RAM auto-cleanup; "
+        "CPU/GPU profiles are built in. App settings take effect after a restart.",
+    # --- проверка обновлений ---
+    "ОБНОВЛЕНИЯ": "UPDATES",
+    "Проверять при запуске": "Check at startup",
+    "Проверить сейчас": "Check now",
+    "Запрос уходит на api.github.com и не несёт ничего, кроме самого запроса: ни версии приложения, "
+    "ни идентификаторов, ни счётчиков. GitHub при этом видит IP — поэтому галочка выключена, "
+    "пока её не поставить.":
+        "The request goes to api.github.com and carries nothing but the request itself: no app version, "
+        "no identifiers, no counters. GitHub still sees the IP — that is why the checkbox stays off "
+        "until you turn it on.",
+    "Обновления не проверялись.": "Updates have not been checked yet.",
+    "Спрашиваю GitHub…": "Asking GitHub…",
+    "Проверка обновлений не удалась: {v0}": "Update check failed: {v0}",
+    "неизвестная причина": "unknown reason",
+    "Доступна новая версия {v0} (установлена {v1}).": "New version {v0} is available (installed: {v1}).",
+    "Установлена последняя версия ({v0}).": "The latest version is installed ({v0}).",
+    "Доступна новая версия": "A new version is available",
+    "Проверка обновлений": "Update check",
+    "скачать": "download",
+    "Включено: проверю при следующем запуске.": "On: will check on the next start.",
+    "Выключено: приложение в сеть не ходит.": "Off: the app does not touch the network.",
+    "Проверка обновлений доступна из главного окна.": "Update check is available from the main window.",
+    "Галочка не сохранена: {v0}": "The checkbox was not saved: {v0}",
 }

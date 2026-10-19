@@ -24,6 +24,8 @@ out/
 
 # User/local config
 presets.json
+# копия, которую делает импорт настроек (см. «Утилиты» → экспорт/импорт)
+presets.before-import.json
 
 # IDE/editor files
 .vscode/

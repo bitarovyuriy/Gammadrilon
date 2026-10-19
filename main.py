@@ -91,6 +91,7 @@ import gd_icons  # noqa: E402
 import gd_agent  # noqa: E402
 import gd_perf  # noqa: E402
 import gd_display  # noqa: E402
+import gd_update  # noqa: E402
 
 SLIDER_GROOVE_HEIGHT = 6
 SLIDER_HANDLE_SIZE = 22
@@ -283,6 +284,50 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
+def merge_known_into(defaults: dict, incoming: dict, skipped: list[str], prefix: str = "") -> None:
+    """Слить ``incoming`` в ``defaults``, не выходя за структуру умолчаний.
+
+    Настройки приезжают из чужого файла: незнакомые ключи и значения чужого типа
+    отбрасываем — они не должны ломать приложение (например, строкой там, где
+    ждут число). Пропущенное копится в ``skipped``: импорт обязан сказать, что
+    именно он не взял, а не сделать вид, что перенёс всё.
+    """
+    for key, value in incoming.items():
+        name = prefix + str(key)
+        if key not in defaults:
+            skipped.append(name)
+            continue
+        ref = defaults[key]
+        if isinstance(ref, dict):
+            if isinstance(value, dict):
+                merge_known_into(ref, value, skipped, name + ".")
+            else:
+                skipped.append(name)
+        elif isinstance(ref, list):
+            if isinstance(value, list):
+                defaults[key] = value
+            else:
+                skipped.append(name)
+        elif ref is None:
+            if value is None or isinstance(value, (str, int, float, bool)):
+                defaults[key] = value
+            else:
+                skipped.append(name)
+        elif isinstance(ref, bool) or isinstance(value, bool):
+            # bool — подкласс int: True вместо числа здесь означал бы «1», и
+            # проверка типов ниже пропустила бы такую подмену молча
+            if isinstance(ref, bool) and isinstance(value, bool):
+                defaults[key] = value
+            else:
+                skipped.append(name)
+        elif isinstance(value, (int, float)) and isinstance(ref, (int, float)):
+            defaults[key] = value
+        elif isinstance(ref, str) and isinstance(value, str):
+            defaults[key] = value
+        else:
+            skipped.append(name)
+
+
 def safe_float(value, fallback: float) -> float:
     """float без исключения: конфиг правит и пользователь, а не только код."""
     try:
@@ -364,6 +409,9 @@ DEFAULT_CONFIG = {
         # «применять при запуске» (приложение вернёт план после перезагрузки)
         "gpu_auto_pl": None,
         "gpu_apply_on_start": False,
+        # проверка обновлений ходит в сеть — по умолчанию выключена (обещание
+        # «без облака и телеметрии» остаётся в силе, пока галочку не поставят)
+        "check_updates": False,
     },
     "presets": [
         {
@@ -392,6 +440,22 @@ DEFAULT_CONFIG = {
         },
     ],
 }
+
+#: Настройки, которые приложение пишет в конфиг уже по ходу работы: в
+#: DEFAULT_CONFIG их нет (свежий конфиг не должен притворяться настроенным), но
+#: перенос настроек обязан знать их в лицо — иначе язык, тема, путь zapret и
+#: локальный API объявлялись бы «незнакомыми ключами». Значения здесь — ровно
+#: то, что подставляет код, когда ключа нет (``.get(key, ...)``).
+RUNTIME_SETTINGS: dict = {
+    "language": None,          # None — язык по системе (см. i18n.detect)
+    "theme": "dark",
+    "agent_api": False,
+    "zapret_path": "",
+}
+
+#: Ключи, которые переносить нельзя: это состояние этой машины и этого
+#: человека, а не настройка («первый запуск пройден здесь» — и должен остаться).
+SETTINGS_NOT_TRANSFERABLE = ("first_run_done",)
 
 
 def save_config(data: dict) -> bool:
@@ -2627,6 +2691,7 @@ class MainWindow(QMainWindow):
         self.tray.rulesRequested.connect(self.open_rules_tab)
         self.tray.utilsRequested.connect(self.open_utils_tab)
         self.tray.themeRequested.connect(self._tray_theme)
+        self.tray.resetEverythingRequested.connect(self._tray_reset_everything)
         self.tray.quitRequested.connect(self.quit_app)
         # галка переключателя производительности — из конфига (переживает запуск)
         try:
@@ -4233,6 +4298,170 @@ class MainWindow(QMainWindow):
                         else i18n.t("Автозапуск выключен"))
         return ""
 
+    # -- перенос настроек и проверка обновлений (вкладка «Утилиты») ---------
+
+    def import_app_settings(self, imported: dict) -> tuple[bool, str]:
+        """Применить настройки приложения из файла переноса.
+
+        Переносятся только знакомые разделы — «settings» и пресеты гаммы: окно,
+        геометрия и служебные метки на другой машине смысла не имеют, а чужие
+        ключи в конфиге — источник тихих поломок. Прежний файл сохраняется рядом
+        как ``presets.before-import.json``: импорт должен быть отменяемым.
+
+        Возврат ``(применено, текст для человека)`` — текст показывает панель
+        «Утилиты», поэтому он же говорит и про перезапуск.
+        """
+        if not isinstance(imported, dict) or not imported:
+            return False, i18n.t("в файле нет настроек")
+
+        skipped: list[str] = []
+        # Опорная структура: умолчания + рантайм-настройки, а поверх — то, что
+        # уже стоит в конфиге: импорт не должен сбрасывать ключи, которых в
+        # файле нет (язык этой машины, её путь zapret и т.п.).
+        target = json.loads(json.dumps(DEFAULT_CONFIG["settings"]))
+        for key, value in RUNTIME_SETTINGS.items():
+            target.setdefault(key, json.loads(json.dumps(value)))
+        for key, value in (self.config.get("settings") or {}).items():
+            try:
+                target[key] = json.loads(json.dumps(value))
+            except (TypeError, ValueError):
+                target[key] = value        # не JSON-значение — оставляем как есть
+        incoming = {key: value for key, value in (imported.get("settings") or {}).items()
+                    if key not in SETTINGS_NOT_TRANSFERABLE}
+        merge_known_into(target, incoming, skipped)
+        presets, dropped = self._sanitize_presets(imported.get("presets"))
+
+        backup: Path | None = None
+        source = config_path()
+        try:
+            if source.exists():
+                import shutil
+
+                backup = source.with_name("presets.before-import.json")
+                shutil.copyfile(source, backup)
+        except OSError:
+            backup = None
+
+        # Пишем копию, а не живой конфиг: если запись не удалась, состояние в
+        # памяти остаётся прежним — иначе окно показывало бы одно, а на диске
+        # лежало другое.
+        try:
+            candidate = json.loads(json.dumps(self.config))
+        except (TypeError, ValueError) as exc:   # в конфиг попало не-JSON-значение
+            return False, i18n.t("не удалось прочитать текущие настройки: {v0}", v0=exc)
+        candidate["settings"] = target
+        if presets is not None:
+            candidate["presets"] = presets
+        if not save_config(candidate):
+            return False, i18n.t("не удалось записать файл настроек")
+        self.config.clear()
+        self.config.update(candidate)      # тот же dict: на него смотрят другие модули
+
+        note = i18n.t("Перенесено: настройки и пресеты гаммы ({v0}).",
+                      v0=len(candidate.get("presets") or []))
+        if dropped:
+            note += " " + i18n.t("Пресетов пропущено (битые записи): {v0}.", v0=dropped)
+        if skipped:
+            head = ", ".join(skipped[:4]) + ("…" if len(skipped) > 4 else "")
+            note += " " + i18n.t("Незнакомые ключи пропущены: {v0}.", v0=head)
+        if backup is not None:
+            note += " " + i18n.t("Копия прежних настроек: {v0}.", v0=backup.name)
+        note += " " + i18n.t("Настройки вступят в силу после перезапуска Gammadrilon.")
+        try:
+            import gd_journal
+
+            gd_journal.record("settings", i18n.t("Импорт настроек"), None, note,
+                              source=i18n.t("Утилиты"))
+        except Exception:  # noqa: BLE001 — журнал не должен ронять импорт
+            pass
+        return True, note
+
+    @staticmethod
+    def _sanitize_presets(raw) -> tuple[list[dict] | None, int]:
+        """Пресеты гаммы из чужого файла: понятные чиним, мусор считаем и отбрасываем."""
+        if not isinstance(raw, list):
+            return None, 0
+        clean: list[dict] = []
+        dropped = 0
+        for item in raw:
+            if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                dropped += 1
+                continue
+            preset = {"name": str(item["name"]).strip()[:40]}
+            for key in ("brightness", "contrast", "gamma"):
+                preset[key] = clamp(safe_float(item.get(key), 1.0), 0.2, 3.0)
+            preset["temperature"] = int(clamp(safe_float(item.get("temperature"), 6500), 3000, 10000))
+            hotkey = item.get("hotkey")
+            preset["hotkey"] = hotkey.strip() if isinstance(hotkey, str) else ""
+            clean.append(preset)
+        return (clean or None), dropped
+
+    def set_check_updates(self, on: bool) -> None:
+        """Галочка «проверять обновления при запуске»: по умолчанию выключена."""
+        self.config.setdefault("settings", {})["check_updates"] = bool(on)
+        self._save_config()
+
+    def check_updates(self, silent: bool = False) -> None:
+        """Спросить GitHub о последнем релизе — в фоне, и только по галочке.
+
+        ``silent`` (проверка при запуске) молчит, когда новостей нет: человек не
+        просил отчёт, он просил не пропустить новый релиз.
+        """
+        import gd_bg
+
+        if gd_bg.is_running(getattr(self, "_updates_worker", None)):
+            return
+        utils = getattr(self, "_utils_page", None)
+        if utils is not None:
+            utils.set_update_status(i18n.t("Спрашиваю GitHub…"))
+        self._updates_worker = gd_bg.submit(
+            gd_update.fetch_latest, lambda res: self._updates_done(res, silent), parent=self)
+
+    def _updates_done(self, res, silent: bool) -> None:
+        """Результат проверки обновлений пришёл в GUI-поток: показать честно."""
+        import gd_toast
+
+        utils = getattr(self, "_utils_page", None)
+        if not isinstance(res, dict) or not res.get("ok"):
+            error = (res or {}).get("error") if isinstance(res, dict) else str(res)
+            text = i18n.t("Проверка обновлений не удалась: {v0}",
+                          v0=error or i18n.t("неизвестная причина"))
+            if utils is not None:
+                utils.set_update_status(text, ok=False)
+            if not silent:
+                gd_toast.show_toast(text, "warn")
+            return
+        tag = str(res.get("tag") or "")
+        if gd_update.is_newer(tag, APP_VERSION):
+            text = i18n.t("Доступна новая версия {v0} (установлена {v1}).", v0=tag, v1=APP_VERSION)
+            if utils is not None:
+                utils.set_update_status(text, ok=True, url=str(res.get("url") or ""))
+            gd_toast.show_toast(i18n.t("toast.update_available", v0=tag), "info")
+            try:
+                import gd_journal
+
+                gd_journal.record("update", i18n.t("Доступна новая версия"), None, tag,
+                                  source=i18n.t("Проверка обновлений"))
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            text = i18n.t("Установлена последняя версия ({v0}).", v0=APP_VERSION)
+            if utils is not None:
+                utils.set_update_status(text, ok=True)
+            if not silent:
+                gd_toast.show_toast(text, "ok")
+
+    def _tray_reset_everything(self) -> None:
+        """«Вернуть всё как было» из трея — с тем же вопросом, что и в «Утилитах»."""
+        answer = QMessageBox.question(
+            None, i18n.t("Сбросить все изменения"),
+            i18n.t("Вернуть питание CPU/GPU, DNS, правила, автоочистку, таймер и гамму "
+                   "к состоянию системы по умолчанию?"),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        self.reset_everything()
+
     # -- видимость окна и темп фоновой телеметрии --------------------------
 
     def _sync_metrics_activity(self) -> None:
@@ -5333,6 +5562,10 @@ def main():
 
     window = MainWindow()
     window.show()
+
+    if window.config.get("settings", {}).get("check_updates", False):
+        # тихая проверка: человек просил не пропустить новый релиз, а не отчёт
+        window.check_updates(silent=True)
 
     if window.config.get("settings", {}).get("start_with_windows", False):
         try:
