@@ -37,6 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import gd_gpu  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
+import gd_paths  # noqa: E402
 import gd_proc  # noqa: E402
 
 i18n.init_for_process()      # компаньон — отдельный процесс: язык берём из presets.json
@@ -98,10 +99,7 @@ def _state_path():
     значение знал только этот процесс. Файл переживает перезапуск — следующая
     сессия всё ещё может вернуть исходный лимит, а не «текущий».
     """
-    from pathlib import Path
-
-    base = os.environ.get("ProgramData", r"C:\ProgramData")
-    return Path(base) / "Gammadrilon" / "gpu_state.json"
+    return gd_paths.data_dir() / "gpu_state.json"
 
 
 def _read_keep_setting() -> bool:
@@ -114,14 +112,8 @@ def _read_keep_setting() -> bool:
     """
     try:
         import json
-        import sys
-        from pathlib import Path
 
-        if getattr(sys, "frozen", False):
-            base = Path(sys.executable).resolve().parent
-        else:
-            base = Path(__file__).resolve().parent
-        data = json.loads((base / "presets.json").read_text(encoding="utf-8"))
+        data = json.loads((gd_paths.app_dir() / "presets.json").read_text(encoding="utf-8"))
         return bool((data.get("settings") or {}).get("gpu_keep_on_exit", True))
     except Exception:  # noqa: BLE001
         return True

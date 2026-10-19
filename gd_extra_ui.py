@@ -38,6 +38,7 @@ import gd_bg  # noqa: E402
 import gd_dialog  # noqa: E402
 import gd_extra  # noqa: E402
 import gd_journal  # noqa: E402
+import gd_paths  # noqa: E402
 import gd_profiles  # noqa: E402
 import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
@@ -155,6 +156,12 @@ class ExtraPanel(QWidget):
         self.lbl_prof.setObjectName("Hint")
         self.lbl_prof.setWordWrap(True)
         c4.addWidget(self.lbl_prof)
+        # где лежат данные и как перейти в портативный режим — рядом с экспортом,
+        # потому что переносят обычно «всё сразу»: настройки и рабочие файлы
+        self.lbl_paths = QLabel("")
+        self.lbl_paths.setObjectName("Hint")
+        self.lbl_paths.setWordWrap(True)
+        c4.addWidget(self.lbl_paths)
         lay.addWidget(card4)
 
         # --- тихий час ------------------------------------------------------
@@ -189,6 +196,7 @@ class ExtraPanel(QWidget):
     def refresh(self):
         ms = gd_extra.timer_ms()
         self.lbl_timer.setText(i18n.t("сейчас: {v0} мс", v0=ms) if ms else i18n.t("н/д"))
+        self.lbl_paths.setText(gd_paths.mode_note())
         q = gd_profiles.load_quiet()
         self.chk_quiet.blockSignals(True)
         self.ed_start.blockSignals(True)

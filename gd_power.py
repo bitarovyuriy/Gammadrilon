@@ -27,6 +27,7 @@ from ctypes import POINTER, byref, wintypes
 from typing import Optional
 
 import gd_i18n as i18n
+import gd_paths
 
 # --------------------------------------------------------------------------
 # GUID'ы (подтверждены на живой системе, см. шапку файла)
@@ -313,7 +314,7 @@ def cleanup_clones() -> dict:
 # Состояние (файл для отката; пишет тот, кто применяет профиль — компаньон)
 # --------------------------------------------------------------------------
 
-STATE_DIR = os.path.join(os.environ.get("PROGRAMDATA", r"C:\ProgramData"), "Gammadrilon")
+STATE_DIR = str(gd_paths.data_dir())
 STATE_FILE = os.path.join(STATE_DIR, "power_state.json")
 
 

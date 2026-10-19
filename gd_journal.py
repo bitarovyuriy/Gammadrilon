@@ -2,7 +2,8 @@
 """Журнал изменений (ТЗ 5.5).
 
 Отвечает на вопрос «что произошло»: было → стало, чем вызвано, можно ли откатить.
-Пишется в %ProgramData%\\Gammadrilon\\journal.jsonl (по строке JSON на событие).
+Пишется в %ProgramData%\\Gammadrilon\\journal.jsonl (по строке JSON на событие);
+в портативном режиме (маркер рядом с exe) — рядом с приложением, см. gd_paths.
 
 Журнал — обещание «история не теряется», поэтому отказ записи здесь не глушится:
 `record` запоминает причину (`write_error`), один раз за сессию говорит о мёртвом
@@ -12,12 +13,12 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from datetime import datetime
 from pathlib import Path
 
 import gd_i18n as i18n
+import gd_paths
 import gd_state
 
 MAX_LINES = 800        # хвост, который держим на диске
@@ -32,8 +33,7 @@ def write_error() -> str:
 
 
 def journal_path() -> Path:
-    base = os.environ.get("ProgramData", r"C:\ProgramData")
-    return Path(base) / "Gammadrilon" / "journal.jsonl"
+    return gd_paths.data_dir() / "journal.jsonl"
 
 
 def record(

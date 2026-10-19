@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import gd_i18n as i18n
+import gd_paths
 import gd_state
 
 PROTOCOL = 1
@@ -46,8 +47,12 @@ MAX_BODY = 64 * 1024      # больше тела запроса агенту и
 
 
 def base_dir() -> str:
-    """Папка данных Gammadrilon в профиле пользователя."""
-    return os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Gammadrilon")
+    """Папка данных Gammadrilon в профиле пользователя.
+
+    Портативный режим (маркер рядом с приложением) кладёт токен, адрес и
+    аудит рядом с exe: папку можно унести целиком.
+    """
+    return str(gd_paths.log_dir())
 
 
 def token_path() -> str:

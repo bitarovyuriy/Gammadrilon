@@ -24,12 +24,13 @@ import time
 from pathlib import Path
 
 import gd_i18n as i18n
+import gd_paths
 import gd_proc
 import gd_state
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "Gammadrilon"
+_DATA_DIR = gd_paths.log_dir()
 #: состояние процесса, запущенного Gammadrilon (pid, стратегия, argv)
 STATE_FILE = _DATA_DIR / "zapret_state.json"
 #: кэш argv по стратегиям, с подписью версии папки

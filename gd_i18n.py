@@ -477,14 +477,10 @@ def init_for_process() -> str:
     """
     try:
         import json
-        import sys
-        from pathlib import Path
 
-        if getattr(sys, "frozen", False):
-            base = Path(sys.executable).resolve().parent
-        else:
-            base = Path(__file__).resolve().parent
-        data = json.loads((base / "presets.json").read_text(encoding="utf-8"))
+        import gd_paths
+
+        data = json.loads((gd_paths.app_dir() / "presets.json").read_text(encoding="utf-8"))
         lang = (data.get("settings") or {}).get("language")
         if lang in LANGS:
             return set_language(lang)
@@ -542,6 +538,10 @@ DIRECT: dict[str, str] = {
     "Следующий пресет": "Next preset",
     "Предыдущий пресет": "Previous preset",
     "Аварийный сброс": "Emergency reset",
+    # стоп-кран и портативный режим (gd_paths)
+    "Вернуть всё как было (стоп-кран)": "Return everything as it was (stop-crane)",
+    "Портативный режим: данные и логи рядом с приложением — {v0}.": "Portable mode: data and logs live next to the app — {v0}.",
+    "Данные: {v0} · логи: {v1}. Портативный режим — файл {v2} рядом с приложением.": "Data: {v0} · logs: {v1}. Portable mode: a file named {v2} next to the app turns it on.",
     "например: ctrl+alt+1": "example: ctrl+alt+1",
     "Примеры: page up, page down, scroll lock, ctrl+alt+z, ctrl+shift+1.": "Examples: page up, page down, scroll lock, ctrl+alt+z, ctrl+shift+1.",
     "Сохранить пресет": "Save preset",

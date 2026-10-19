@@ -21,15 +21,15 @@ import time
 from multiprocessing.connection import Client
 
 import gd_i18n as i18n
+import gd_paths
 import gd_proc
 
 TCP_HOST = "127.0.0.1"
 TCP_PORT = 47318
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_SESSION_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Gammadrilon"
-)
+#: портативный режим (маркер рядом с приложением) кладёт сессию и лог рядом с exe
+_SESSION_DIR = str(gd_paths.log_dir())
 SESSION_FILE = os.path.join(_SESSION_DIR, "gpu_session.json")
 #: журнал хелпера: в windowed-сборке stdout нет — диагностика идёт только в файл
 LOG_FILE = os.path.join(_SESSION_DIR, "gpu_service.log")

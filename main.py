@@ -8,6 +8,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 import gd_boot
+import gd_paths
 import gd_proc
 
 
@@ -73,7 +74,7 @@ from PyQt5.QtWidgets import (
 )
 
 
-APP_NAME = "Gammadrilon"
+APP_NAME = gd_paths.APP_NAME
 APP_VERSION = "v3.1"
 CONFIG_FILE = "presets.json"
 ICON_FILE = "icon.ico"
@@ -126,8 +127,7 @@ _INSTANCE_MUTEX = []   # хендл мьютекса «один экземпля
 
 
 def _crash_log_path() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / APP_NAME
-    base.mkdir(parents=True, exist_ok=True)
+    base = gd_paths.ensure(gd_paths.log_dir())
     return base / "gammadrilon.log"
 
 
@@ -262,11 +262,8 @@ def _warn_already_running() -> None:
 
 
 def app_dir() -> Path:
-
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-
-    return Path(__file__).resolve().parent
+    # путь к приложению живёт в gd_paths: там же решается портативный режим
+    return gd_paths.app_dir()
 
 
 def resource_path(relative: str) -> Path:

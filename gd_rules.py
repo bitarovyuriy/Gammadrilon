@@ -21,10 +21,10 @@ from __future__ import annotations
 import gd_i18n as i18n
 
 import gd_dns
+import gd_paths
 import gd_state
 
 import json
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -78,8 +78,8 @@ DNS_PROFILES = tuple((r["key"], r["label"]) for r in gd_dns.RESOLVERS if r["key"
 
 
 def _base_dir() -> Path:
-    base = os.environ.get("ProgramData", r"C:\ProgramData")
-    return Path(base) / "Gammadrilon"
+    # портативный режим (маркер рядом с приложением) кладёт данные рядом с exe
+    return gd_paths.data_dir()
 
 
 def rules_path() -> Path:

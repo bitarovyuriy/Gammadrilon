@@ -55,6 +55,7 @@ if HERE not in sys.path:
 import gd_bg  # noqa: E402
 import gd_gpu  # noqa: E402
 import gd_agent  # noqa: E402
+import gd_paths  # noqa: E402
 import gd_state  # noqa: E402
 import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
@@ -69,8 +70,7 @@ def _presets_path() -> str:
     Нужен только standalone-окну: вкладка внутри main.py получает config и
     save_fn от приложения и файл не трогает.
     """
-    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else HERE
-    return os.path.join(base, "presets.json")
+    return str(gd_paths.app_dir() / "presets.json")
 
 
 def _read_setting_file(key: str, default=None):

@@ -13,10 +13,10 @@
 from __future__ import annotations
 
 import gd_i18n as i18n
+import gd_paths
 import gd_proc
 import gd_state
 
-import os
 import random
 import re
 import socket
@@ -45,8 +45,8 @@ PROBE_NAME = "example.com"
 
 
 def _base_dir() -> Path:
-    base = os.environ.get("ProgramData", r"C:\ProgramData")
-    return Path(base) / "Gammadrilon"
+    # портативный режим (маркер рядом с приложением) кладёт состояние рядом с exe
+    return gd_paths.data_dir()
 
 
 def state_path() -> Path:
