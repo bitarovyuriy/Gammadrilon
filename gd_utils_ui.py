@@ -170,6 +170,7 @@ class UtilsWidget(QWidget):
         self._before = None
         self._worker = None       # фоновая очистка standby
         self._ws_worker = None    # фоновое сжатие рабочих наборов
+        self._init_worker = None  # фоновое создание сенсоров/GpuClient (первый вход)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(*th.PAGE_MARGINS)
@@ -357,12 +358,23 @@ class UtilsWidget(QWidget):
 
     # -- жизненный цикл вкладки -------------------------------------------
     def activate(self):
-        self._refresh()
+        if self._sensors is None:
+            # Первый вход: сенсоры PDH ждут 150 мс между сборами, а GpuClient
+            # разово дёргает nvidia-smi — вместе это >0.2 с прямо в клик.
+            # Создаём их в фоне; метки дозаполнит _init_done.
+            if not gd_bg.is_running(self._init_worker):
+                self._init_worker = gd_bg.submit(self._ensure, self._init_done, parent=self)
+        else:
+            self._refresh()
         self._sync_startup()
         self._timer.start(2000)
         extra = getattr(self, "extra", None)
         if extra is not None:
             extra.refresh()
+
+    def _init_done(self, _res=None):
+        self._init_worker = None
+        self._refresh()
 
     def deactivate(self):
         self._timer.stop()
@@ -386,6 +398,8 @@ class UtilsWidget(QWidget):
         self.lbl_admin.setText(i18n.t("нужны права администратора — действия идут через хелпер"))
 
     def _tick(self):
+        if gd_bg.is_running(self._init_worker):
+            return
         self._refresh()
 
     def _auto_check(self, snap):
@@ -405,7 +419,7 @@ class UtilsWidget(QWidget):
     # -- действия ----------------------------------------------------------
     def _purge(self, auto: bool = False):
         # запуск хелпера (UAC) и сама операция долгие — уводим в фон, GUI не мерзнет
-        if gd_bg.is_running(self._worker):
+        if gd_bg.is_running(self._worker) or gd_bg.is_running(self._init_worker):
             return
         self._ensure()
         before = self._sensors.sample()
@@ -450,7 +464,7 @@ class UtilsWidget(QWidget):
             gd_toast.show_toast(i18n.t("toast.purge", mb=freed), "ok")
 
     def _pick_and_empty(self):
-        if gd_bg.is_running(self._ws_worker):
+        if gd_bg.is_running(self._ws_worker) or gd_bg.is_running(self._init_worker):
             return
         dlg = ProcessPicker(self)
         if dlg.exec_() != QDialog.Accepted:
