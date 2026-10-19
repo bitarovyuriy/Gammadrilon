@@ -113,6 +113,9 @@ def test_silent_check_is_throttled_by_stamp(monkeypatch):
         def __init__(self, stamp):
             self.config = {"settings": {"check_updates": True, "updates_last_check": stamp}}
 
+        def _set_update_status(self, *args, **kwargs):
+            pass
+
     class Bg:
         @staticmethod
         def is_running(worker):

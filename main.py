@@ -2382,18 +2382,23 @@ class MainWindow(QMainWindow):
         try:
             alive = bool(page is not None and page.service_alive())
             profile = page.current_profile() if page is not None else None
+            orphan = bool(page is not None and page.active_is_clone())
         except Exception:  # noqa: BLE001
             return
-        if (alive, profile) == self._foot_state:
+        if (alive, profile, orphan) == self._foot_state:
             return
-        self._foot_state = (alive, profile)
+        self._foot_state = (alive, profile, orphan)
 
         if alive:
             names = {"eco": i18n.t("ЭКО"), "normal": i18n.t("НОРМАЛ"), "boost": i18n.t("БУСТ")}
             text = i18n.t("Служба питания активна")
             tip = i18n.t("Компаньон питания работает: профили применяются через него.")
-            tip += (" " + i18n.t("Профиль: {v0}.", v0=names.get(profile, str(profile).upper()))
-                    if profile else " " + i18n.t("Активна исходная схема."))
+            if profile:
+                tip += " " + i18n.t("Профиль: {v0}.", v0=names.get(profile, str(profile).upper()))
+            elif orphan:
+                tip += " " + i18n.t("Активна наша копия схемы без профиля.")
+            else:
+                tip += " " + i18n.t("Активна исходная схема.")
         else:
             text = i18n.t("Служба питания не запущена")
             tip = i18n.t("Компаньон поднимется, когда применишь профиль CPU.")
@@ -2459,6 +2464,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("PageTitle")
         sub = QLabel(i18n.t(f"{key}.sub"))
         sub.setObjectName("PageSub")
+        sub.setWordWrap(True)       # длинное имя схемы не обрезается о край окна
         head_lay.addWidget(title)
         head_lay.addWidget(sub)
         outer.addWidget(head)
@@ -2524,6 +2530,11 @@ class MainWindow(QMainWindow):
         from gd_utils_ui import UtilsWidget
 
         self._utils_page = UtilsWidget(standalone=False, host=self)
+        pending = getattr(self, "_updates_pending_status", None)
+        if pending:
+            # проверка обновлений стартовала до сборки ленивой вкладки:
+            # не теряем её статус, когда страница наконец открылась
+            self._utils_page.set_update_status(*pending)
         utils_scroll = QScrollArea()
         utils_scroll.setWidgetResizable(True)
         utils_scroll.setFrameShape(QScrollArea.NoFrame)
@@ -2636,7 +2647,13 @@ class MainWindow(QMainWindow):
                 cache = (scheme, now)
                 self._scheme_cache = cache
             if cache[0]:
-                parts.append(f"{i18n.t('схема')} «{cache[0]}»")
+                # наша копия могла накопить метку от старых версий: в шапке
+                # показываем имя схемы без повторяющегося «Gammadrilon — …»
+                scheme = gd_power.display_scheme_name(cache[0])
+                scheme = scheme or i18n.t("наша копия")
+                if len(scheme) > 60:
+                    scheme = scheme[:59].rstrip() + "…"
+                parts.append(f"{i18n.t('схема')} «{scheme}»")
         except Exception:  # noqa: BLE001
             pass
         return " · ".join(parts)
@@ -3106,7 +3123,9 @@ class MainWindow(QMainWindow):
         if server is not None:
             server.stop()
         try:
-            self._agent_page.set_stopped()
+            page = getattr(self, "_agent_page", None)
+            if page is not None:
+                page.set_stopped()
         except Exception:  # noqa: BLE001
             pass
         if remember:
@@ -4533,6 +4552,17 @@ class MainWindow(QMainWindow):
         self.config.setdefault("settings", {})["check_updates"] = bool(on)
         self._save_config()
 
+    def _set_update_status(self, text: str, ok: bool = True, url: str = "") -> None:
+        """Статус проверки обновлений: в карточку или в отложенный слот.
+
+        Вкладка «Утилиты» ленивая: тихая проверка при запуске может начаться
+        раньше, чем страница собрана. Раньше статус в этом случае терялся.
+        """
+        self._updates_pending_status = (text, ok, url)
+        utils = getattr(self, "_utils_page", None)
+        if utils is not None:
+            utils.set_update_status(text, ok=ok, url=url)
+
     def check_updates(self, silent: bool = False) -> None:
         """Спросить GitHub о последнем релизе — в фоне, и только по галочке.
 
@@ -4549,9 +4579,7 @@ class MainWindow(QMainWindow):
             return
         if gd_bg.is_running(getattr(self, "_updates_worker", None)):
             return
-        utils = getattr(self, "_utils_page", None)
-        if utils is not None:
-            utils.set_update_status(i18n.t("Спрашиваю GitHub…"))
+        self._set_update_status(i18n.t("Спрашиваю GitHub…"))
         self._updates_worker = gd_bg.submit(
             gd_update.fetch_latest, lambda res: self._updates_done(res, silent), parent=self)
 
@@ -4567,21 +4595,18 @@ class MainWindow(QMainWindow):
         # карточка обновлений живёт на ленивой вкладке «Утилиты»: результат
         # проверки попадает в неё так же, как до ленивой сборки
         self._ensure_page("tab.utils")
-        utils = getattr(self, "_utils_page", None)
         if not isinstance(res, dict) or not res.get("ok"):
             error = (res or {}).get("error") if isinstance(res, dict) else str(res)
             text = i18n.t("Проверка обновлений не удалась: {v0}",
                           v0=error or i18n.t("неизвестная причина"))
-            if utils is not None:
-                utils.set_update_status(text, ok=False)
+            self._set_update_status(text, ok=False)
             if not silent:
                 gd_toast.show_toast(text, "warn")
             return
         tag = str(res.get("tag") or "")
         if gd_update.is_newer(tag, APP_VERSION):
             text = i18n.t("Доступна новая версия {v0} (установлена {v1}).", v0=tag, v1=APP_VERSION)
-            if utils is not None:
-                utils.set_update_status(text, ok=True, url=str(res.get("url") or ""))
+            self._set_update_status(text, ok=True, url=str(res.get("url") or ""))
             gd_toast.show_toast(i18n.t("toast.update_available", v0=tag), "info")
             try:
                 import gd_journal
@@ -4592,8 +4617,7 @@ class MainWindow(QMainWindow):
                 pass
         else:
             text = i18n.t("Установлена последняя версия ({v0}).", v0=APP_VERSION)
-            if utils is not None:
-                utils.set_update_status(text, ok=True)
+            self._set_update_status(text, ok=True)
             if not silent:
                 gd_toast.show_toast(text, "ok")
 
