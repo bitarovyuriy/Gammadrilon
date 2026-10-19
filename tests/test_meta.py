@@ -28,13 +28,35 @@ def test_version_has_single_source():
     """Своих «vX.Y» в модулях быть не должно: версия живёт в APP_VERSION.
 
     Так уже было: сайдбар показывал v1.0.1, титлбар — v3.1, и никто не замечал.
+    Документы и сборка тоже под контролем: номер версии в README, чеклисте,
+    spec, CI или скрипте сборки разошёлся бы с приложением молча.
     """
     version = _app_version()
     pattern = re.compile(r'"v\d+(?:\.\d+)+"')
+
+    # Документы и сборка: здесь версия пишется без кавычек (в тексте и YAML)
+    doc_pattern = re.compile(r"\bv\d+(?:\.\d+)+\b")
+    docs = [
+        ROOT / "README.md",
+        ROOT / "RELEASE_CHECKLIST.md",
+        ROOT / "build_release.ps1",
+        ROOT / ".github" / "workflows" / "ci.yml",
+        *sorted(ROOT.glob("*.spec")),
+    ]
+
     offenders = []
     for path in [MAIN, *GD_MODULES]:
+        if not path.exists():
+            continue
         for found in pattern.findall(path.read_text(encoding="utf-8", errors="replace")):
             if found != f'"{version}"':
+                offenders.append(f"{path.name}: {found}")
+    for path in docs:
+        if not path.exists():
+            offenders.append(f"{path.name}: файл пропал")
+            continue
+        for found in doc_pattern.findall(path.read_text(encoding="utf-8", errors="replace")):
+            if found != version:
                 offenders.append(f"{path.name}: {found}")
     assert not offenders, "версия вписана мимо APP_VERSION — " + ", ".join(offenders)
 
