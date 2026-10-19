@@ -62,7 +62,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -87,6 +86,7 @@ CONFIG_RECOVERY: str | None = None
 # --- палитра (из gd_theme: тёмная/светлая, ТЗ 5) -------------------------------
 import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
+import gd_dialog  # noqa: E402
 import gd_icons  # noqa: E402
 import gd_agent  # noqa: E402
 import gd_perf  # noqa: E402
@@ -157,7 +157,8 @@ def install_crash_handlers() -> None:
     До этого исключение в фоновом потоке или падение нативного кода завершали
     процесс молча: пользователь видел только «приложение закрылось». Теперь
     faulthandler пишет стек всех потоков, а sys/threading.excepthook —
-    Python-исключения (и показывает их в QMessageBox, если GUI ещё жив).
+    Python-исключения (и показывает их в монохромном диалоге gd_dialog,
+    если GUI ещё жив).
     """
     import faulthandler
     import threading
@@ -185,7 +186,9 @@ def install_crash_handlers() -> None:
                 pass
         try:
             if QApplication.instance() is not None:
-                QMessageBox.critical(
+                import gd_dialog
+
+                gd_dialog.notify(
                     None,
                     APP_NAME,
                     f"{i18n.t('Непредвиденная ошибка')}:\n{exc}\n\n"
@@ -938,7 +941,7 @@ class TickScale(QWidget):
             return
 
         font = QFont("Bahnschrift")
-        font.setPixelSize(10)
+        font.setPixelSize(th.TINY_PX)
         painter.setFont(font)
 
         span = max(1, self.maximum - self.minimum)
@@ -1096,21 +1099,20 @@ class HotkeySettingsDialog(QDialog):
         self.perf_inputs = {}
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 22, 22, 22)
-        root.setSpacing(14)
+        root.setContentsMargins(*th.DIALOG_MARGINS)
+        root.setSpacing(th.DIALOG_SPACING)
 
         title = QLabel(i18n.t("Глобальные клавиши"))
         title.setObjectName("DialogTitle")
         root.addWidget(title)
 
         form = QGridLayout()
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(10)
+        form.setHorizontalSpacing(th.SPACE_M)
+        form.setVerticalSpacing(th.SPACE_S)
         root.addLayout(form)
 
         items = [
-            ("next_preset", i18n.t("Следующий пресет")),
-            ("prev_preset", i18n.t("Предыдущий пресет")),
+            ("next_preset", i18n.t("Следующий пресет")),            ("prev_preset", i18n.t("Предыдущий пресет")),
             ("reset", i18n.t("Аварийный сброс")),
             ("cat_vision", i18n.t("Кошачье зрение")),
             ("perf_toggle", i18n.t("Переключить производительность")),
@@ -1150,8 +1152,8 @@ class HotkeySettingsDialog(QDialog):
         root.addWidget(perf_hint)
 
         perf_form = QGridLayout()
-        perf_form.setHorizontalSpacing(12)
-        perf_form.setVerticalSpacing(10)
+        perf_form.setHorizontalSpacing(th.SPACE_M)
+        perf_form.setVerticalSpacing(th.SPACE_S)
         root.addLayout(perf_form)
 
         cpu_choices = [
@@ -1272,8 +1274,8 @@ class NavItem(QWidget):
         self.setProperty("active", False)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 0, 10, 0)
-        lay.setSpacing(10)
+        lay.setContentsMargins(th.SPACE_M, 0, th.SPACE_M, 0)
+        lay.setSpacing(th.SPACE_S)
 
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(15, 15)
@@ -1535,8 +1537,8 @@ class MainWindow(QMainWindow):
         frame.setObjectName("Card")
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(*th.CARD_MARGINS)
+        layout.setSpacing(th.CARD_SPACING)
 
         return frame, layout
 
@@ -1550,7 +1552,8 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def set_value_text(label: QLabel, value, suffix: str, big: bool = False):
-        number_size, unit_size = (30, 14) if big else (17, 11)
+        number_size = th.VALUE_PX if big else th.VALUE_S_PX
+        unit_size = th.VALUE_UNIT_PX if big else th.VALUE_S_UNIT_PX
 
         label.setTextFormat(Qt.RichText)
         label.setText(
@@ -1571,11 +1574,11 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(th.SPACE_XS)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(10)
+        top.setSpacing(th.SPACE_S)
 
         label = QLabel()
         self.bind_text(label, title)
@@ -1613,8 +1616,8 @@ class MainWindow(QMainWindow):
         self.side.setObjectName("Sidebar")
         self.side.setFixedWidth(226)
         self._side_layout = QVBoxLayout(self.side)
-        self._side_layout.setContentsMargins(10, 12, 10, 12)
-        self._side_layout.setSpacing(2)
+        self._side_layout.setContentsMargins(th.SPACE_M, th.SPACE_M, th.SPACE_M, th.SPACE_M)
+        self._side_layout.setSpacing(th.SPACE_XS)
         self._nav_items: dict = {}
         self._key_to_index: dict[str, int] = {}
         self._page_widgets: dict = {}
@@ -1632,8 +1635,8 @@ class MainWindow(QMainWindow):
         gamma_page.setObjectName("Root")
 
         main_layout = QHBoxLayout(gamma_page)
-        main_layout.setContentsMargins(16, 16, 16, 14)
-        main_layout.setSpacing(14)
+        main_layout.setContentsMargins(*th.PAGE_MARGINS)
+        main_layout.setSpacing(th.PAGE_SPACING)
 
         # ---------- левая (основная) панель ----------
         self.left_panel = QWidget()
@@ -1642,13 +1645,13 @@ class MainWindow(QMainWindow):
 
         left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(14)
+        left_layout.setSpacing(th.PAGE_SPACING)
 
         # шапка
         header = QWidget()
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(11)
+        header_layout.setSpacing(th.SPACE_M)
 
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(34, 34)
@@ -1668,7 +1671,7 @@ class MainWindow(QMainWindow):
 
         title_block = QVBoxLayout()
         title_block.setContentsMargins(0, 0, 0, 0)
-        title_block.setSpacing(1)
+        title_block.setSpacing(0)
 
         title = QLabel(APP_NAME)
         title.setObjectName("AppTitle")
@@ -1688,7 +1691,7 @@ class MainWindow(QMainWindow):
 
         status_block = QHBoxLayout()
         status_block.setContentsMargins(0, 0, 0, 0)
-        status_block.setSpacing(6)
+        status_block.setSpacing(th.SPACE_XS)
         status_block.addWidget(self.status_dot, 0, Qt.AlignVCenter)
         status_block.addWidget(self.status_label, 0, Qt.AlignVCenter)
 
@@ -1731,7 +1734,7 @@ class MainWindow(QMainWindow):
 
         preset_row = QHBoxLayout()
         preset_row.setContentsMargins(0, 0, 0, 0)
-        preset_row.setSpacing(10)
+        preset_row.setSpacing(th.SPACE_S)
 
         self.preset_combo = AppComboBox()
         self.preset_combo.setMinimumHeight(42)
@@ -1816,11 +1819,11 @@ class MainWindow(QMainWindow):
 
         temp_layout = QVBoxLayout(temp_block)
         temp_layout.setContentsMargins(0, 0, 0, 0)
-        temp_layout.setSpacing(6)
+        temp_layout.setSpacing(th.SPACE_XS)
 
         temp_top = QHBoxLayout()
         temp_top.setContentsMargins(0, 0, 0, 0)
-        temp_top.setSpacing(10)
+        temp_top.setSpacing(th.SPACE_S)
 
         temp_label = QLabel()
         self.bind_text(temp_label, "Цветовая температура")
@@ -1900,7 +1903,7 @@ class MainWindow(QMainWindow):
         # переключатели
         options_layout = QVBoxLayout()
         options_layout.setContentsMargins(0, 0, 0, 0)
-        options_layout.setSpacing(10)
+        options_layout.setSpacing(th.SPACE_S)
 
         # автозапуск с Windows живёт во вкладке «Утилиты» (галочка + честный
         # откат при отказе); здесь остаётся только выход по закрытию окна.
@@ -2221,8 +2224,8 @@ class MainWindow(QMainWindow):
         bar.setObjectName("TitleBar")
         bar.setFixedHeight(42)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(14, 0, 8, 0)
-        lay.setSpacing(10)
+        lay.setContentsMargins(th.SPACE_M, 0, th.SPACE_S, 0)
+        lay.setSpacing(th.SPACE_S)
 
         icon_path = resource_path(ICON_FILE)
         if icon_path.exists():
@@ -2299,7 +2302,7 @@ class MainWindow(QMainWindow):
         box.setObjectName("SideTools")
         lay = QVBoxLayout(box)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(2)
+        lay.setSpacing(th.SPACE_XS)
 
         head = QLabel()
         head.setObjectName("SideToolsHead")
@@ -2335,8 +2338,8 @@ class MainWindow(QMainWindow):
         foot = QWidget()
         foot.setObjectName("SideFoot")
         lay = QHBoxLayout(foot)
-        lay.setContentsMargins(12, 10, 12, 10)
-        lay.setSpacing(8)
+        lay.setContentsMargins(th.SPACE_M, th.SPACE_S, th.SPACE_M, th.SPACE_S)
+        lay.setSpacing(th.SPACE_S)
         self._foot_led = QFrame()
         self._foot_led.setObjectName("FootLed")
         self._foot_led.setFixedSize(7, 7)
@@ -2429,8 +2432,8 @@ class MainWindow(QMainWindow):
         head = QWidget()
         head.setObjectName("PageHead")
         head_lay = QVBoxLayout(head)
-        head_lay.setContentsMargins(22, 16, 22, 6)
-        head_lay.setSpacing(2)
+        head_lay.setContentsMargins(*th.HEAD_MARGINS)
+        head_lay.setSpacing(th.HEAD_SPACING)
         title = QLabel(i18n.t(f"{key}.title"))
         title.setObjectName("PageTitle")
         sub = QLabel(i18n.t(f"{key}.sub"))
@@ -2550,8 +2553,8 @@ class MainWindow(QMainWindow):
         bar.setObjectName("StatusBar")
         bar.setFixedHeight(34)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(16, 0, 16, 0)
-        lay.setSpacing(14)
+        lay.setContentsMargins(th.SPACE_L, 0, th.SPACE_L, 0)
+        lay.setSpacing(th.SPACE_M)
         self._sb_cpu = QLabel("CPU —")
         self._sb_gpu = QLabel("GPU —")
         self._sb_ram = QLabel("RAM —")
@@ -3275,17 +3278,11 @@ class MainWindow(QMainWindow):
         if settings.get("theme") != name:
             settings["theme"] = name
             self._save_config()
+        # один стиль на всё приложение: страницы больше не носят своих копий QSS,
+        # иначе их правила перекрывали общие и расходились (см. gd_theme)
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(APP_STYLESHEET)
-        for page in (getattr(self, "_power_page", None), getattr(self, "_gpu_page", None),
-                     getattr(self, "_rules_page", None), getattr(self, "_utils_page", None),
-                     getattr(self, "_dns_page", None), getattr(self, "_agent_page", None)):
-            if page is not None:
-                try:
-                    page.setStyleSheet(th.STYLESHEET)
-                except Exception:  # noqa: BLE001
-                    pass
         try:
             self.setStyleSheet(APP_STYLESHEET)
             self.update()
@@ -3924,7 +3921,7 @@ class MainWindow(QMainWindow):
             return
 
         if len(self.config["presets"]) <= 1:
-            QMessageBox.warning(
+            gd_dialog.notify(
                 self,
                 i18n.t("Невозможно удалить"),
                 i18n.t("Нельзя удалить последний пресет."),
@@ -3933,15 +3930,15 @@ class MainWindow(QMainWindow):
 
         name = self.config["presets"][index].get("name", "Unnamed")
 
-        answer = QMessageBox.question(
+        answer = gd_dialog.confirm(
             self,
             i18n.t("Удалить пресет"),
             i18n.t("Удалить пресет «{v0}»?", v0=name),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            confirm_text=i18n.t("Удалить"),
+            destructive=True,
         )
 
-        if answer != QMessageBox.Yes:
+        if not answer:
             return
 
         del self.config["presets"][index]
@@ -4453,12 +4450,12 @@ class MainWindow(QMainWindow):
 
     def _tray_reset_everything(self) -> None:
         """«Вернуть всё как было» из трея — с тем же вопросом, что и в «Утилитах»."""
-        answer = QMessageBox.question(
+        answer = gd_dialog.confirm(
             None, i18n.t("Сбросить все изменения"),
             i18n.t("Вернуть питание CPU/GPU, DNS, правила, автоочистку, таймер и гамму "
                    "к состоянию системы по умолчанию?"),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if answer != QMessageBox.Yes:
+            confirm_text=i18n.t("Сбросить всё"), destructive=True)
+        if not answer:
             return
         self.reset_everything()
 
@@ -4574,953 +4571,13 @@ class MainWindow(QMainWindow):
 
         QApplication.quit()
 
-_APP_QSS = """
-/* --- каркас «Пульт»: титлбар, сайдбар, статусбар (вариант A, монохром) --- */
-QWidget#Central {
-    background: @PAPER@;
-}
-
-QStackedWidget#Pages,
-QWidget#PanelRoot {
-    background: @PAPER@;
-}
-
-QWidget#TitleBar {
-    background: @SURFACE@;
-    border-bottom: 1px solid @RULE@;
-}
-
-QFrame#BrandDot {
-    background: @ACCENT@;
-    border-radius: 4px;
-}
-
-QLabel#BrandLogo {
-    background: transparent;
-}
-
-QLabel#Brand {
-    color: @INK@;
-    font-size: 12.5px;
-    font-weight: 600;
-}
-
-QLabel#BrandVer {
-    color: @MUTED@;
-    font-size: 10px;
-}
-
-QPushButton#ModeChip {
-    background: @PRESSED@;
-    border: 1px solid @TRACK@;
-    border-radius: @RADIUS@;
-    padding: 0 10px;
-    color: @INK2@;
-    font-size: 11.5px;
-    min-height: 26px;
-}
-
-QPushButton#ModeChip:hover {
-    border-color: @MUTED@;
-    color: @INK@;
-}
-
-QPushButton#TitleBtn {
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-}
-
-QPushButton#TitleBtn:hover {
-    background: @PRESSED@;
-    border-color: @RULE@;
-}
-
-QPushButton#WinMin,
-QPushButton#WinMax {
-    background: transparent;
-    border: none;
-    color: @MUTED@;
-    font-size: 12px;
-}
-
-QPushButton#WinMin:hover,
-QPushButton#WinMax:hover {
-    background: @PRESSED@;
-    color: @INK@;
-}
-
-QPushButton#WinClose {
-    background: transparent;
-    border: none;
-    color: @MUTED@;
-    font-size: 12px;
-}
-
-QPushButton#WinClose:hover {
-    background: @ACCENT@;
-    color: @ON_ACCENT@;
-}
-
-QWidget#SidebarWrap {
-    background: @SURFACE@;
-    border-right: 1px solid @RULE@;
-}
-
-QWidget#Sidebar {
-    background: @SURFACE@;
-}
-
-QLabel#SideGroup {
-    color: @MUTED@;
-    font-size: 10.5px;
-    font-weight: 600;
-    padding: 14px 6px 6px 6px;
-}
-
-QWidget#NavItem {
-    border-radius: 8px;
-    border: 1px solid transparent;
-}
-
-QWidget#NavItem:hover {
-    background: @PRESSED@;
-}
-
-QWidget#NavItem:focus {
-    background: @PRESSED@;
-    border: 1px solid @ACCENT@;
-}
-
-QWidget#NavItem[active="true"] {
-    background: @PRESSED@;
-    border: 1px solid @RULE@;
-    border-left: 3px solid @ACCENT@;
-}
-
-QLabel#NavText {
-    color: @INK2@;
-    font-size: 12.5px;
-    background: transparent;
-}
-
-QWidget#NavItem[active="true"] QLabel#NavText {
-    color: @INK@;
-}
-
-QLabel#NavBadge {
-    color: @MUTED@;
-    font-size: 10.5px;
-    border: 1px solid @RULE@;
-    border-radius: 5px;
-    padding: 1px 6px;
-    background: transparent;
-}
-
-QWidget#SideTools {
-    background: @SURFACE@;
-    border-top: 1px solid @RULE@;
-}
-
-/* заголовок блока компактнее обычной группы: сайдбар должен влезать в минимальное
-   окно (720×560) вместе с пунктами меню и полосой службы питания */
-QLabel#SideToolsHead {
-    color: @MUTED@;
-    font-size: 10.5px;
-    font-weight: 600;
-    padding: 4px 6px 0 6px;
-}
-
-QPushButton#SideToolBtn {
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    color: @INK2@;
-    font-size: 12px;
-    text-align: left;
-    padding: 0 10px;
-}
-
-QPushButton#SideToolBtn:hover {
-    background: @PRESSED@;
-    border-color: @RULE@;
-    color: @INK@;
-}
-
-QPushButton#SideToolBtn:focus {
-    border-color: @ACCENT@;
-}
-
-QWidget#SideFoot {
-    background: @SURFACE@;
-    border-top: 1px solid @RULE@;
-}
-
-QFrame#FootLed {
-    background: @ACCENT@;
-    border-radius: 3px;
-}
-
-/* компаньон питания не поднят: LED не горит — состояние честное (см. _sync_foot) */
-QFrame#FootLed[state="off"] {
-    background: @MUTED@;
-}
-
-QLabel#FootText {
-    color: @MUTED@;
-    font-size: 11px;
-}
-
-QWidget#StatusBar {
-    background: @SURFACE@;
-    border-top: 1px solid @RULE@;
-}
-
-QWidget#PageHead {
-    background: @PAPER@;
-}
-
-QScrollArea#PageScroll {
-    background: @PAPER@;
-    border: none;
-}
-
-QScrollArea#PageScroll > QWidget > QWidget {
-    background: @PAPER@;
-}
-
-QLabel#PageTitle {
-    color: @INK@;
-    font-size: 20px;
-    font-weight: 600;
-}
-
-QLabel#PageSub {
-    color: @MUTED@;
-    font-size: 12px;
-}
-
-QLabel#Value {
-    color: @INK@;
-    font-size: 26px;
-    font-weight: 600;
-}
-
-QLabel#BigValue {
-    color: @INK@;
-    font-size: 26px;
-    font-weight: 600;
-}
-
-QLabel#StatusItem {
-    color: @MUTED@;
-    font-size: 12px;
-}
-
-QLabel#StatusHint {
-    color: @MUTED@;
-    font-size: 11.5px;
-}
-
-QFrame#StatusSep {
-    color: @RULE@;
-    background: @RULE@;
-    border: none;
-    max-width: 1px;
-}
-
-QScrollArea#UtilitiesScrollArea {
-    background: @PAPER@;
-    border: none;
-}
-
-QWidget#Root {
-    background: @PAPER@;
-    color: @INK2@;
-    font-family: "Segoe UI Variable Text", "Segoe UI", Arial;
-    font-size: 13px;
-}
-
-QStackedWidget {
-    background: @PAPER@;
-}
-
-QDialog {
-    background: @PAPER@;
-    color: @INK2@;
-    font-family: "Segoe UI Variable Text", "Segoe UI", Arial;
-    font-size: 13px;
-}
-
-QLabel {
-    color: @INK2@;
-    background: transparent;
-}
-
-QLabel#AppTitle {
-    font-family: "Bahnschrift", "Segoe UI", Arial;
-    font-size: 17px;
-    font-weight: 600;
-    color: @INK@;
-}
-
-QLabel#Version {
-    color: @MUTED@;
-    font-size: 10px;
-}
-
-QLabel#Status {
-    color: @INK@;
-    font-size: 11px;
-    background: @SURFACE@;
-    border: 1px solid @RULE@;
-    border-radius: 8px;
-    padding: 4px 8px;
-}
-
-QLabel#StatusDot {
-    color: @ACCENT@;
-    font-size: 10px;
-}
-
-QLabel#FallbackIcon {
-    color: @INK@;
-    font-size: 22px;
-}
-
-QLabel#SectionTitle {
-    font-family: "Bahnschrift", "Segoe UI", Arial;
-    font-size: 14px;
-    font-weight: 600;
-    color: @INK@;
-}
-
-QLabel#CardLabel {
-    color: @MUTED@;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-QLabel#BigValue,
-QLabel#RowValue {
-    font-family: "Bahnschrift", "Segoe UI", Arial;
-    color: @INK@;
-}
-
-QLabel#Hint {
-    color: @MUTED@;
-    font-size: 11px;
-}
-
-/* «i» в кружке у заголовка карточки: подсказка без зависимости от глифа ⓘ */
-QLabel#CardInfo {
-    color: @MUTED@;
-    border: 1px solid @RULE@;
-    border-radius: @RADIUS@;
-    min-width: 14px;
-    max-width: 14px;
-    min-height: 14px;
-    max-height: 14px;
-    font-family: "Segoe UI Variable Text", "Segoe UI", Arial;
-    font-size: 10px;
-}
-
-QLabel#Metric {
-    font-family: "Bahnschrift", "Segoe UI", Arial;
-    font-size: 14px;
-    font-weight: 600;
-    color: @INK@;
-}
-
-QPushButton#DangerButton {
-    background: @DANGER_BG@;
-    color: @DANGER@;
-    border: 1px solid @DANGER_BORDER@;
-    border-radius: 6px;
-    padding: 7px 14px;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-QPushButton#DangerButton:hover {
-    background: @DANGER_HOVER@;
-    border-color: @DANGER_BORDER2@;
-}
-
-QLabel#DialogTitle {
-    font-family: "Bahnschrift", "Segoe UI", Arial;
-    font-size: 16px;
-    font-weight: 600;
-    color: @INK@;
-}
-
-QFrame#Card {
-    background: @SURFACE@;
-    border: 1px solid @RULE@;
-    border-radius: @RADIUS@;
-}
-
-/* --- таблицы (макет A) --- */
-QTableWidget {
-    background: @SURFACE@;
-    border: 1px solid @RULE@;
-    border-radius: 8px;
-    gridline-color: transparent;
-    font-size: 12.5px;
-    color: @INK2@;
-    selection-background-color: @PRESSED@;
-    selection-color: @INK@;
-    outline: none;
-}
-
-QTableWidget::item {
-    padding: 9px 10px;
-    border-bottom: 1px solid @RULE@;
-}
-
-QTableWidget::item:hover {
-    background: @PRESSED@;
-}
-
-QTableWidget::item:selected {
-    background: @PRESSED@;
-    color: @INK@;
-    border-left: 2px solid @ACCENT@;
-}
-
-/* фон хедера: иначе пустая часть строки заголовка остаётся системно-светлой */
-QHeaderView {
-    background: @SURFACE@;
-    border: none;
-}
-
-QHeaderView::section {
-    background: @SURFACE@;
-    color: @MUTED@;
-    font-size: 10.5px;
-    font-weight: 600;
-    padding: 8px 10px;
-    border: none;
-    border-bottom: 1px solid @RULE@;
-}
-
-QTableCornerButton::section {
-    background: @SURFACE@;
-    border: none;
-}
-
-/* --- чекбоксы --- */
-QCheckBox {
-    color: @INK2@;
-    font-size: 12.5px;
-    spacing: 8px;
-}
-
-QCheckBox::indicator {
-    width: 15px;
-    height: 15px;
-    border: 1px solid @TRACK@;
-    border-radius: 4px;
-    background: @SURFACE@;
-}
-
-QCheckBox::indicator:hover {
-    border-color: @MUTED@;
-}
-
-QCheckBox::indicator:checked {
-    background: @ACCENT@;
-    border-color: @ACCENT@;
-}
-
-QSlider::groove:horizontal {
-    height: 6px;
-    border-radius: 3px;
-    background: @RULE@;
-}
-
-QSlider::sub-page:horizontal {
-    background: @ACCENT@;
-    border-radius: 3px;
-}
-
-QSlider::add-page:horizontal {
-    background: @RULE@;
-    border-radius: 3px;
-}
-
-QSlider::handle:horizontal {
-    width: 16px;
-    height: 16px;
-    margin: -8px 0;
-    border-radius: @RADIUS@;
-    background: @ACCENT@;
-    border: 3px solid @PAPER@;
-}
-
-QSlider::handle:horizontal:hover {
-    background: @INK@;
-}
-
-QSlider#TempSlider::groove:horizontal {
-    height: 6px;
-    background: transparent;
-}
-
-QSlider#TempSlider::sub-page:horizontal,
-QSlider#TempSlider::add-page:horizontal {
-    background: transparent;
-}
-
-QSlider#TempSlider::handle:horizontal {
-    width: 16px;
-    height: 12px;
-    margin: -6px 0;
-    border-radius: 5px;
-    background: @ACCENT@;
-    border: 3px solid @PAPER@;
-}
-
-QPushButton {
-    background: @SURFACE@;
-    color: @INK2@;
-    border: 1px solid @RULE@;
-    border-radius: 8px;
-    padding: 0 12px;
-    font-size: 13px;
-}
-
-QPushButton:hover {
-    background: @PRESSED@;
-    border-color: @ACCENT@;
-    color: @INK@;
-}
-
-QPushButton:pressed {
-    background: @PRESSED@;
-}
-
-QPushButton#PrimaryButton {
-    background: @NAVY@;
-    border-color: @NAVY@;
-    color: @ON_ACCENT@;
-    font-weight: 600;
-}
-
-QPushButton#PrimaryButton:hover {
-    background: @NAVY_HOVER@;
-    border-color: @NAVY_HOVER@;
-}
-
-QPushButton#PrimaryButton:pressed {
-    background: @NAVY_PRESSED@;
-}
-
-QPushButton#GhostButton {
-    border-color: transparent;
-    color: @MUTED@;
-}
-
-QPushButton#GhostButton:hover {
-    border-color: @RULE@;
-    color: @INK@;
-}
-
-QPushButton#ToggleButton {
-    border-color: @ACCENT@;
-    color: @ACCENT@;
-}
-
-QPushButton#ToggleButton:hover {
-    background: @MID@;
-}
-
-QPushButton#ToggleButton:checked {
-    background: @ACCENT@;
-    border-color: @ACCENT@;
-    color: @PAPER@;
-    font-weight: 600;
-}
-
-QPushButton#WideButton {
-    color: @INK@;
-    font-weight: 600;
-    font-size: 13px;
-}
-
-QPushButton#SmallButton {
-    font-size: 11.5px;
-    color: @INK2@;
-}
-
-QComboBox {
-    background: @SURFACE@;
-    color: @INK@;
-    border: 1px solid @RULE@;
-    border-radius: 8px;
-    padding: 0 11px;
-    font-size: 13px;
-}
-
-QComboBox:hover {
-    border-color: @ACCENT@;
-}
-
-QComboBox::drop-down {
-    border: none;
-    width: 36px;
-}
-
-QComboBox::down-arrow {
-    image: none;
-    width: 0;
-    height: 0;
-}
-
-QComboBox QAbstractItemView {
-    background: @SURFACE@;
-    color: @INK@;
-    border: 1px solid @RULE@;
-    border-radius: @RADIUS@;
-    padding: 4px;
-    outline: none;
-    selection-background-color: @NAVY@;
-    selection-color: @ON_ACCENT@;
-}
-
-QCheckBox {
-    color: @INK2@;
-    font-size: 13px;
-    spacing: 9px;
-    background: transparent;
-}
-
-QCheckBox:hover {
-    color: @INK@;
-}
-
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-    border: 1px solid @RULE@;
-    background: transparent;
-}
-
-QCheckBox::indicator:hover {
-    border-color: @ACCENT@;
-}
-
-QCheckBox::indicator:checked {
-    background: @ACCENT@;
-    border: 1px solid @ACCENT@;
-}
-
-QCheckBox:disabled {
-    color: @MUTED@;
-}
-
-QPushButton:disabled {
-    color: @MUTED@;
-    background: @PRESSED@;
-    border-color: @RULE@;
-}
-
-QLineEdit {
-    background: @SURFACE@;
-    color: @INK@;
-    border: 1px solid @RULE@;
-    border-radius: 8px;
-    padding: 8px 10px;
-    selection-background-color: @NAVY@;
-}
-
-QLineEdit:focus {
-    border-color: @ACCENT@;
-}
-
-QLineEdit:disabled,
-QComboBox:disabled {
-    color: @MUTED@;
-    background: @PRESSED@;
-}
-
-QSpinBox,
-QDoubleSpinBox {
-    background: @SURFACE@;
-    color: @INK@;
-    border: 1px solid @RULE@;
-    border-radius: @RADIUS@;
-    padding: 6px 8px;
-}
-
-QSpinBox:focus,
-QDoubleSpinBox:focus {
-    border-color: @ACCENT@;
-}
-
-/* спиновые кнопки: без них системный стиль рисует светлые стрелки в тёмной теме */
-QSpinBox::up-button,
-QDoubleSpinBox::up-button,
-QSpinBox::down-button,
-QDoubleSpinBox::down-button {
-    subcontrol-origin: border;
-    width: 18px;
-    background: @SURFACE@;
-    border: none;
-    border-left: 1px solid @RULE@;
-}
-
-QSpinBox::up-button,
-QDoubleSpinBox::up-button {
-    subcontrol-position: top right;
-    border-top-right-radius: @RADIUS@;
-}
-
-QSpinBox::down-button,
-QDoubleSpinBox::down-button {
-    subcontrol-position: bottom right;
-    border-bottom-right-radius: @RADIUS@;
-}
-
-QSpinBox::up-button:hover,
-QDoubleSpinBox::up-button:hover,
-QSpinBox::down-button:hover,
-QDoubleSpinBox::down-button:hover {
-    background: @PRESSED@;
-}
-
-QSpinBox::up-arrow,
-QDoubleSpinBox::up-arrow {
-    image: none;
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid @MUTED@;
-}
-
-QSpinBox::down-arrow,
-QDoubleSpinBox::down-arrow {
-    image: none;
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid @MUTED@;
-}
-
-QTableWidget,
-QListWidget {
-    background: @DEEP@;
-    color: @INK2@;
-    border: 1px solid @RULE@;
-    border-radius: 8px;
-    gridline-color: @RULE@;
-    selection-background-color: @NAVY@;
-    selection-color: @ON_ACCENT@;
-}
-
-QHeaderView::section {
-    background: @SURFACE@;
-    color: @MUTED@;
-    border: none;
-    border-bottom: 1px solid @RULE@;
-    padding: 7px 8px;
-}
-
-QAbstractScrollArea::viewport {
-    background: transparent;
-}
-
-QScrollArea::viewport {
-    background: @PAPER@;
-}
-
-QLineEdit#PaletteInput {
-    font-size: 15px;
-    padding: 12px;
-}
-
-QListWidget {
-    background: @DEEP@;
-    color: @INK2@;
-    border: 1px solid @RULE@;
-    border-radius: @RADIUS@;
-    padding: 4px;
-    outline: 0;
-}
-
-/* отметки в списках (выбор процессов и т.п.): своим стилем, иначе их не видно */
-QListWidget::indicator {
-    width: 14px;
-    height: 14px;
-    border: 1px solid @MUTED@;
-    border-radius: @RADIUS_SMALL@;
-    background: @SURFACE@;
-}
-
-QListWidget::indicator:hover {
-    border-color: @ACCENT@;
-}
-
-QListWidget::indicator:checked {
-    background: @ACCENT@;
-    border-color: @ACCENT@;
-}
-
-QListWidget::item {
-    padding: 7px 8px;
-    border-radius: 6px;
-}
-
-QListWidget::item:selected {
-    background: @NAVY@;
-    color: @ON_ACCENT@;
-}
-
-QListWidget#PaletteList::item {
-    padding: 9px 10px;
-    font-size: 13px;
-}
-
-/* подсказки (ⓘ и title-атрибуты): без правил они системно-светлые в тёмной теме */
-QToolTip {
-    background: @SURFACE@;
-    color: @INK2@;
-    border: 1px solid @RULE@;
-    padding: 6px 8px;
-    font-size: 12px;
-}
-
-QMenu {
-    background: @SURFACE@;
-    color: @INK2@;
-    border: 1px solid @RULE@;
-    padding: 4px;
-}
-
-QMenu::item {
-    padding: 6px 18px;
-    border-radius: 6px;
-}
-
-QMenu::item:selected {
-    background: @NAVY@;
-    color: @ON_ACCENT@;
-}
-
-QMenu::separator {
-    height: 1px;
-    background: @RULE@;
-    margin: 4px 8px;
-}
-
-QScrollBar:vertical {
-    width: 10px;
-    background: @PAPER@;
-    margin: 2px;
-}
-
-QScrollBar::handle:vertical {
-    min-height: 28px;
-    border-radius: @RADIUS_SMALL@;
-    background: @TRACK@;
-}
-
-QScrollBar::handle:vertical:hover {
-    background: @ACCENT@;
-}
-
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical,
-QScrollBar::add-page:vertical,
-QScrollBar::sub-page:vertical {
-    height: 0;
-    background: transparent;
-}
-
-/* горизонтальная полоса: нужна таблицам, спискам и журналу при узком окне */
-QScrollBar:horizontal {
-    height: 10px;
-    background: @PAPER@;
-    margin: 2px;
-}
-
-QScrollBar::handle:horizontal {
-    min-width: 28px;
-    border-radius: @RADIUS_SMALL@;
-    background: @TRACK@;
-}
-
-QScrollBar::handle:horizontal:hover {
-    background: @ACCENT@;
-}
-
-QScrollBar::add-line:horizontal,
-QScrollBar::sub-line:horizontal,
-QScrollBar::add-page:horizontal,
-QScrollBar::sub-page:horizontal {
-    width: 0;
-    background: transparent;
-}
-
-/* --- доступность: видимый фокус для клавиатурной навигации (ТЗ 5) --- */
-QPushButton:focus,
-QPushButton:default {
-    border: 1px solid @ACCENT@;
-}
-
-QPushButton#PrimaryButton:focus,
-QPushButton#DangerButton:focus {
-    border: 2px solid @ACCENT@;
-}
-
-QPushButton#Segment:focus {
-    border: 1px solid @ACCENT@;
-}
-
-QCheckBox:focus {
-    color: @INK@;
-}
-
-QCheckBox:focus::indicator {
-    border-color: @ACCENT@;
-}
-
-QComboBox:focus {
-    border-color: @ACCENT@;
-}
-
-QLineEdit:focus {
-    border-color: @ACCENT@;
-}
-
-QSlider:focus {
-    border: 1px solid @ACCENT@;
-    border-radius: 4px;
-}
-
-QTableWidget:focus,
-QListWidget:focus {
-    border: 1px solid @ACCENT@;
-}
-
-QTabBar::tab:focus {
-    color: @INK@;
-    border-bottom: 2px solid @ACCENT@;
-}
-"""
-
-
+# Единый стиль приложения живёт в gd_theme (токены + QSS): раньше здесь и в
+# gd_theme.py лежали два похожих шаблона, и правила в них расходились (размеры
+# чекбоксов, вылет ползунков, фон таблиц). Теперь источник один — правка стиля
+# в одном месте видна и в главном окне, и на страницах, и в диалогах.
 def build_app_stylesheet() -> str:
-    """QSS главного окна из активной палитры и токенов геометрии (плейсхолдеры @KEY@)."""
-    qss = _APP_QSS
-    for key, value in th.active().items():
-        qss = qss.replace(f"@{key}@", value)
-    for key, value in th.GEOMETRY.items():
-        qss = qss.replace(f"@{key}@", value)
-    return qss
+    """QSS приложения из активной палитры и токенов (см. gd_theme)."""
+    return th.build_stylesheet()
 
 
 APP_STYLESHEET = build_app_stylesheet()

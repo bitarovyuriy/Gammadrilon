@@ -29,46 +29,32 @@ if HERE not in sys.path:
 import gd_theme as th  # noqa: E402
 
 LIFETIME_MS = 3500
-MARGIN = 18
+MARGIN = 16
 GAP = 8
-
-COLORS = {
-    "ok": th.GOOD,
-    "warn": th.WARN,
-    "error": "#E08B7A",
-    "info": th.ACCENT,
-}
 
 
 class Toast(QWidget):
+    """Плашка подтверждения: тёмная/светлая по теме, вид — по свойству ``kind``.
+
+    Оформление живёт в общем QSS (``QWidget#Toast``): «получилось» — сплошная
+    рамка с отметкой слева, «не получилось» — пунктирная (условность проекта
+    вместо красного: цвет не должен быть единственным носителем смысла).
+    """
+
     def __init__(self, text: str, kind: str = "ok"):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.setStyleSheet(f"""
-            QWidget {{ background: {th.SURFACE}; border: 1px solid {th.RULE};
-                       border-radius: 8px; }}
-            QLabel {{ color: {th.INK}; font-family: "Bahnschrift", "Segoe UI", Arial;
-                      font-size: 11px; }}
-        """)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setObjectName("Toast")
+        self.setProperty("kind", kind if kind in ("ok", "info", "warn", "error") else "ok")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 9, 14, 9)
+        lay.setContentsMargins(th.SPACE_XL, th.SPACE_M, th.SPACE_L, th.SPACE_M)
         label = QLabel(text)
         label.setWordWrap(True)
         label.setMaximumWidth(360)
         lay.addWidget(label)
         self._label = label
-        self._color = COLORS.get(kind, th.ACCENT)
-
-    def paintEvent(self, event):  # noqa: N802
-        super().paintEvent(event)
-        from PyQt5.QtGui import QColor, QPainter
-
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QColor(self._color))
-        p.setPen(Qt.NoPen)
-        p.drawEllipse(14, 13, 7, 7)
 
 
 _stack: list[Toast] = []
