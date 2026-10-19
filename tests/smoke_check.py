@@ -883,6 +883,41 @@ check("палитра: команда стоп-крана ведёт к подт
 _pal.close()
 _pal.deleteLater()
 
+# поиск по настройкам: команда открывает вкладку и ставит фокус в поле
+_pal_g = gd_palette.CommandPalette(win)
+_pal_g.input.setText("яркость")
+_pal_g._run_current()
+pump(400)
+check("палитра: «яркость» открывает гамму и ставит фокус на слайдер яркости",
+      win._key_for_widget(win.tabs.currentWidget()) == "tab.gamma"
+      and win.focusWidget() is win.brightness_slider,
+      f"вкладка={win._key_for_widget(win.tabs.currentWidget())!r}, "
+      f"фокус={win.focusWidget() is win.brightness_slider}")
+_pal_g.deleteLater()
+check("вкладки: последняя вкладка запомнена в настройках",
+      win.config["settings"].get("last_page") == "tab.gamma",
+      repr(win.config["settings"].get("last_page")))
+
+# --- 4.3.2 журнал: путь и записи копируются без перепечатки ------------------
+from gd_journal_ui import JournalDialog  # noqa: E402
+
+_jd = JournalDialog(win)
+_jd_path = _jd._copy_path()
+check("журнал: путь к файлу скопирован в буфер обмена и назван в строке состояния",
+      QApplication.clipboard().text() == str(gd_journal.journal_path())
+      and str(gd_journal.journal_path()) in _jd.lbl_status.text(),
+      f"буфер={QApplication.clipboard().text()!r}")
+if _jd.list.count():
+    _jd_item = _jd.list.item(0)
+    _jd._copy_entry(_jd_item)
+    check("журнал: запись копируется как строка списка",
+          QApplication.clipboard().text() == _jd_item.text() and _jd_item.text(),
+          QApplication.clipboard().text()[:70])
+else:
+    check("журнал: записей нет — копирование строки пропущено, окно не упало", True)
+_jd.close()
+_jd.deleteLater()
+
 
 
 win.hide()

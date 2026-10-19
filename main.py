@@ -453,6 +453,8 @@ RUNTIME_SETTINGS: dict = {
     "theme": "dark",
     "agent_api": False,
     "zapret_path": "",
+    # последняя открытая вкладка (ключ пункта сайдбара): окно возвращается сюда
+    "last_page": "",
 }
 
 #: Ключи, которые переносить нельзя: это состояние этой машины и этого
@@ -1482,6 +1484,10 @@ class MainWindow(QMainWindow):
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
+        # намерение «открыться на прежней вкладке» снимаем до сборки UI: первый
+        # _on_tab_changed запишет текущую (нулевую) вкладку и затрёт прежнюю
+        last_page_key = str(self.config.get("settings", {}).get("last_page") or "")
+
         self.build_ui()
         self.build_tray()
         gd_boot.mark("init:tray")
@@ -1524,6 +1530,14 @@ class MainWindow(QMainWindow):
             pass
         self.bind_hotkeys()
         self._fix_tab_order()
+
+        # последняя вкладка: приложение открывается там, где человек закончил.
+        # Ключ пишется на каждой смене вкладки (см. _on_tab_changed), но запись
+        # файла не запускается отдельно — он уйдёт со следующим сохранением или
+        # при выходе, поэтому переключение вкладок диск не трогает.
+        last_idx = self._key_to_index.get(last_page_key)
+        if last_idx is not None and last_idx != self.tabs.currentIndex():
+            self.tabs.setCurrentIndex(last_idx)
 
         # автолимит GPU: после старта вернуть лимит по настройке (фон, один раз)
         QTimer.singleShot(1500, self._gpu_autostart_check)
@@ -3339,6 +3353,11 @@ class MainWindow(QMainWindow):
         if key:
             # ленивая вкладка собирается ровно в момент первого открытия
             self._ensure_page(key)
+            # запоминаем последнюю вкладку: при следующем старте окно откроется
+            # здесь. Флаг pending — без запуска записи: диск потревожит только
+            # ближайшее обычное сохранение или выход (см. __init__).
+            self.config.setdefault("settings", {})["last_page"] = key
+            self._config_pending = True
         page = self._page_widgets.get(key)
         power = getattr(self, "_power_page", None)
         gpu = getattr(self, "_gpu_page", None)

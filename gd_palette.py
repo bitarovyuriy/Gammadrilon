@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QScrollArea,
     QVBoxLayout,
 )
 
@@ -146,6 +147,27 @@ class CommandPalette(QDialog):
              lambda: mw.reset_all()),
             (i18n.t("pal.stop_crane"), "stop crane reset everything сброс стоп кран вернуть всё как было откат",
              lambda: mw.stop_crane()),
+            # поиск по настройкам: команда открывает вкладку и ставит фокус в поле
+            (i18n.t("pal.goto_brightness"), "setting настройка яркость brightness гамма",
+             lambda: self._goto("tab.gamma", "brightness_slider")),
+            (i18n.t("pal.goto_contrast"), "setting настройка контраст contrast гамма",
+             lambda: self._goto("tab.gamma", "contrast_slider")),
+            (i18n.t("pal.goto_temperature"), "setting настройка температура цвет color temperature гамма",
+             lambda: self._goto("tab.gamma", "temperature_slider")),
+            (i18n.t("pal.goto_preset"), "setting настройка пресет preset гамма",
+             lambda: self._goto("tab.gamma", "preset_combo")),
+            (i18n.t("pal.goto_cpu_max"), "setting настройка предел частота cpu частота percent",
+             lambda: self._goto("tab.cpu", "sl_max")),
+            (i18n.t("pal.goto_gpu_pl"), "setting настройка лимит мощность gpu watts ватт",
+             lambda: self._goto("tab.gpu", "sl_pl")),
+            (i18n.t("pal.goto_dns"), "setting настройка dns серверы резолвер таблица",
+             lambda: self._goto("tab.dns", "table")),
+            (i18n.t("pal.goto_autoclean"), "setting настройка автоочистка озу память autoclean standby",
+             lambda: self._goto("tab.utils", "chk_auto")),
+            (i18n.t("pal.goto_startup"), "setting настройка автозапуск windows startup",
+             lambda: self._goto("tab.utils", "chk_startup")),
+            (i18n.t("pal.goto_updates"), "setting настройка обновления github updates",
+             lambda: self._goto("tab.utils", "chk_updates")),
             (i18n.t("pal.quit"), "quit exit выход закрыть",
              lambda: mw.quit_app()),
         ]
@@ -206,6 +228,33 @@ class CommandPalette(QDialog):
     def _open_tab(self, index: int):
         self.mw.tabs.setCurrentIndex(index)
         self.mw.show_window()
+
+    def _goto(self, page_key: str, attr: str = ""):
+        """Поиск по настройкам: открыть страницу и поставить фокус в поле.
+
+        Так палитра отвечает на «где яркость» делом, а не только открытием
+        вкладки: человек сразу видит, что крутить. Страница собирается лениво
+        тем же ``_ensure_page``, что и при клике по пункту меню.
+        """
+        mw = self.mw
+        idx = mw._key_to_index.get(page_key)
+        if idx is None:
+            return
+        mw.tabs.setCurrentIndex(idx)
+        mw.show_window()
+        if not attr:
+            return
+        page = mw._ensure_page(page_key)
+        target = getattr(page, attr, None) if page is not None else None
+        if target is None and isinstance(page, QScrollArea):
+            # «Утилиты» живут внутри своей обёртки прокрутки: поле — у виджета,
+            # а не у прокрутки снаружи
+            target = getattr(page.widget(), attr, None)
+        if target is None:
+            # слайдеры гаммы живут в самом окне, а не на странице-виджете
+            target = getattr(mw, attr, None)
+        if target is not None:
+            target.setFocus(Qt.OtherFocusReason)
 
     # -- фильтр ------------------------------------------------------------
     def _refilter(self, text):
