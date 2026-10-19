@@ -16,7 +16,6 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -32,7 +31,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import gd_journal  # noqa: E402
-import gd_theme as th
+import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 
 

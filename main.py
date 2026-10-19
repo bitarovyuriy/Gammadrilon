@@ -4,7 +4,6 @@ import math
 import os
 import sys
 import time
-import winreg
 from ctypes import wintypes
 from pathlib import Path
 
@@ -39,7 +38,6 @@ from PyQt5.QtCore import (
     QRectF,
     QPointF,
     pyqtSignal,
-    QEasingCurve,
     QUrl,
 )
 from PyQt5.QtGui import (
@@ -51,7 +49,6 @@ from PyQt5.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
-    QPixmap,
 )
 from PyQt5.QtWidgets import (
     QAbstractScrollArea,
@@ -65,16 +62,12 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
     QSlider,
     QSystemTrayIcon,
-    QTabWidget,
     QScrollArea,
-    QListWidget,
-    QListWidgetItem,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -128,12 +121,33 @@ SIDE_ICONS = {
 
 # --- устойчивость: лог падений и глобальные обработчики -----------------------
 _CRASH_KEEP = []   # держим файл-дескриптор живым: faulthandler пишет в него
+_CRASH_LOG_MAX_BYTES = 512 * 1024   # лог не растёт бесконечно: обрезаем при старте
+_INSTANCE_MUTEX = []   # хендл мьютекса «один экземпляр»: держим живым
 
 
 def _crash_log_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / APP_NAME
     base.mkdir(parents=True, exist_ok=True)
     return base / "gammadrilon.log"
+
+
+def _trim_crash_log(path: Path) -> None:
+    """Оставить последние ~512 КБ лога падений.
+
+    Лог открывается на дозапись и живёт до конца процесса, поэтому чистить его
+    раньше было некому: у пользователя, который ловит редкий краш месяцами,
+    файл рос без предела. Обрезаем при старте — историю последних падений
+    сохраняем, хвост прошлых запусков теряем (он и так не нужен).
+    """
+    try:
+        if path.stat().st_size <= _CRASH_LOG_MAX_BYTES:
+            return
+        with path.open("rb") as fh:
+            fh.seek(-_CRASH_LOG_MAX_BYTES // 2, os.SEEK_END)
+            tail = fh.read()
+        path.write_bytes(tail)
+    except OSError:
+        pass
 
 
 def install_crash_handlers() -> None:
@@ -150,7 +164,9 @@ def install_crash_handlers() -> None:
 
     log = None
     try:
-        log = open(_crash_log_path(), "a", encoding="utf-8")
+        _path = _crash_log_path()
+        _trim_crash_log(_path)
+        log = open(_path, "a", encoding="utf-8")
         log.write(f"\n=== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")  # i18n: skip (лог-файл)
         log.flush()
         faulthandler.enable(file=log, all_threads=True)
@@ -169,7 +185,10 @@ def install_crash_handlers() -> None:
         try:
             if QApplication.instance() is not None:
                 QMessageBox.critical(
-                    None, APP_NAME, f"{i18n.t('Непредвиденная ошибка')}:\n{exc}"
+                    None,
+                    APP_NAME,
+                    f"{i18n.t('Непредвиденная ошибка')}:\n{exc}\n\n"
+                    f"{i18n.t('Лог падений')}: {_crash_log_path()}",
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -193,18 +212,50 @@ DIGIT_FONT = '"Bahnschrift", "Segoe UI", Arial'
 SUPPORT_URL = "https://boosty.to/bonzeros/donate"
 SECOND_URL = "https://github.com/bonzeros/Gammadrilon"
 
-def is_another_instance_running():
-    mutex_name = f"Global\\{APP_NAME}_mutex"
+def is_another_instance_running() -> bool:
+    """Второй экземпляр уже запущен?
+
+    Мьютекс живёт в ``Local\\`` — в пространстве сессии пользователя. ``Global\\``
+    требует привилегии ``SeCreateGlobalPrivilege`` (её нет у обычной учётки),
+    создание там молча падало, и приложение стартовало вторым окном. Хендл
+    сохраняем в модульном списке: пока он открыт, мьютекс существует (закрытие
+    или сборка мусором сняли бы защиту).
+
+    Если мьютекс не создался вообще, запуск не блокируем: не пустить человека в
+    приложение из-за неудачной проверки хуже, чем допустить второе окно.
+    """
     kernel32 = ctypes.windll.kernel32
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
     kernel32.CreateMutexW.restype = wintypes.HANDLE
 
-    handle = kernel32.CreateMutexW(None, False, mutex_name)
+    handle = kernel32.CreateMutexW(None, False, f"Local\\{APP_NAME}_mutex")
+    if not handle:
+        return False
 
-    if kernel32.GetLastError() == 183:
-        return True
+    _INSTANCE_MUTEX.append(handle)
+    return kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
 
-    return False
+
+def _warn_already_running() -> None:
+    """Сказать «Gammadrilon уже запущен» и не оставить человека в недоумении.
+
+    Второй экземпляр выходил молча: с точки зрения пользователя двойной клик по
+    ярлыку «ничего не делал». Qt здесь ещё не поднят, поэтому говорим нативным
+    MessageBox — он не требует QApplication.
+    """
+    text = i18n.t("Gammadrilon уже запущен — окно живёт в трее (рядом с часами).")
+    try:
+        user32 = ctypes.windll.user32
+        user32.MessageBoxW.argtypes = [
+            wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT,
+        ]
+        user32.MessageBoxW.restype = ctypes.c_int
+        # 0x40 = MB_ICONINFORMATION, 0x10000 = MB_SETFOREGROUND (показать поверх)
+        user32.MessageBoxW(None, text, f"{APP_NAME} {APP_VERSION}", 0x40 | 0x10000)
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    print(f"{APP_NAME} {APP_VERSION}: {text}")
 
 
 def app_dir() -> Path:
@@ -1080,9 +1131,25 @@ class HotkeySettingsDialog(QDialog):
             perf_form.addWidget(cpu_combo, row, 1)
             perf_form.addWidget(gpu_combo, row, 2)
 
+        # Звук переключателя: галка «вкл/выкл» плюс прослушивание обоих мотивов —
+        # характер слышен сразу, без реального переключения профилей (и без прав).
+        sound_row = QHBoxLayout()
         self.chk_sound = QCheckBox(i18n.t("Звук при переключении"))
         self.chk_sound.setChecked(bool(sound))
-        root.addWidget(self.chk_sound)
+        self.chk_sound.setToolTip(i18n.t("Звук отклика на переключение профилей."))
+        sound_row.addWidget(self.chk_sound)
+        sound_row.addStretch()
+
+        self.btn_sound_limited = QPushButton(i18n.t("▶ Ограничение"))
+        self.btn_sound_limited.setToolTip(i18n.t("Прослушать звук включения ограничений"))
+        self.btn_sound_limited.clicked.connect(lambda: self._preview_sound(True))
+        sound_row.addWidget(self.btn_sound_limited)
+
+        self.btn_sound_boost = QPushButton(i18n.t("▶ Производительность"))
+        self.btn_sound_boost.setToolTip(i18n.t("Прослушать звук снятия ограничений"))
+        self.btn_sound_boost.clicked.connect(lambda: self._preview_sound(False))
+        sound_row.addWidget(self.btn_sound_boost)
+        root.addLayout(sound_row)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
@@ -1112,6 +1179,14 @@ class HotkeySettingsDialog(QDialog):
 
     def result_sound(self) -> bool:
         return bool(self.chk_sound.isChecked())
+
+    def _preview_sound(self, limited: bool) -> None:
+        """Прослушать мотив переключателя — независимо от галки звука.
+
+        Галка выключает отклик на реальное переключение, а не прослушивание:
+        иначе проверить, что звук слышно, было бы нечем.
+        """
+        gd_perf.play_sound(limited)
 
 
 class NavItem(QWidget):
@@ -1200,6 +1275,85 @@ class AgentBridge(QObject):
     """
 
     request = pyqtSignal(object)
+
+
+class TitleBar(QWidget):
+    """Шапка окна, которую можно тянуть мышью.
+
+    Окно без рамки, системного заголовка нет — сдвинуть окно мышью было нечем.
+    Сначала пробуем нативный перетаск (`QWindow.startSystemMove`): он даёт прилипание
+    к краям экрана и корректный выход из развёрнутого состояния. Если платформа его не
+    поддерживает (offscreen-прогоны, нестандартные сборки Qt), тянем окно сами: смещение
+    считается от точки нажатия, поэтому под курсором окно не прыгает. Нажатия на кнопки
+    шапки сюда не доходят — кнопки забирают событие себе.
+    """
+
+    def __init__(self, win):
+        super().__init__()
+        self._win = win
+        self._grab_global = None      # точка нажатия в экранных координатах
+        self._grab_win = None         # левый верхний угол окна в тот момент
+
+    def _start_system_move(self) -> bool:
+        """Нативный перетаск средствами ОС; False — платформа не умеет."""
+        if self._win.isFullScreen():
+            return False
+        handle = self._win.windowHandle()
+        if handle is None:
+            return False
+        try:
+            return bool(handle.startSystemMove())
+        except (AttributeError, TypeError):   # Qt < 5.15: метода нет
+            return False
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() != Qt.LeftButton or self._start_system_move():
+            super().mousePressEvent(event)
+            return
+        self._grab_global = event.globalPos()
+        self._grab_win = self._win.frameGeometry().topLeft()
+        self._restore_from_max()
+        event.accept()
+
+    def _restore_from_max(self) -> None:
+        """Развёрнутое окно тянем как системное: сначала прежний размер, затем сдвиг.
+
+        Курсор остаётся на том же месте по горизонтали (окно не улетает от руки) и на
+        шапке по вертикали.
+        """
+        if not self._win.isMaximized():
+            return
+        normal = self._win.normalGeometry()
+        full = self._win.frameGeometry()
+        ratio = (self._grab_global.x() - full.left()) / max(1, full.width())
+        self._win.showNormal()
+        self._win.move(self._grab_global.x() - int(normal.width() * ratio),
+                       max(0, self._grab_global.y() - self.height() // 2))
+        self._grab_win = self._win.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        if self._grab_global is None or not (event.buttons() & Qt.LeftButton):
+            super().mouseMoveEvent(event)
+            return
+        delta = event.globalPos() - self._grab_global
+        if not delta.isNull():
+            self._win.move(self._grab_win + delta)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        self._grab_global = None
+        self._grab_win = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        """Двойной клик по шапке — развернуть/восстановить, как в системном окне."""
+        if event.button() == Qt.LeftButton:
+            self._grab_global = None
+            self._grab_win = None
+            self._win._toggle_max()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -1402,6 +1556,10 @@ class MainWindow(QMainWindow):
         self._page_widgets: dict = {}
         self._page_heads: dict = {}
 
+        # кнопки настройки горячих клавиш живут в низу сайдбара (см. `_build_side_tools`):
+        # блок создаётся один раз, `_rebuild_sidebar` только переставляет его в конец
+        self._side_tools = self._build_side_tools()
+
         self.tabs = QStackedWidget()
         self.tabs.setObjectName("Pages")
 
@@ -1451,7 +1609,7 @@ class MainWindow(QMainWindow):
         title = QLabel(APP_NAME)
         title.setObjectName("AppTitle")
 
-        self.version_label = QLabel("v1.0.1")
+        self.version_label = QLabel(APP_VERSION)
         self.version_label.setObjectName("Version")
 
         title_block.addWidget(title)
@@ -1680,13 +1838,8 @@ class MainWindow(QMainWindow):
         options_layout.setContentsMargins(0, 0, 0, 0)
         options_layout.setSpacing(10)
 
-        self.start_with_windows_checkbox = QCheckBox()
-        self.bind_text(self.start_with_windows_checkbox, "Запускать вместе с Windows")
-        self.start_with_windows_checkbox.setChecked(
-            bool(self.config.get("settings", {}).get("start_with_windows", False))
-        )
-        self.start_with_windows_checkbox.stateChanged.connect(self.on_start_with_windows_changed)
-
+        # автозапуск с Windows живёт во вкладке «Утилиты» (галочка + честный
+        # откат при отказе); здесь остаётся только выход по закрытию окна.
         self.close_on_x_checkbox = QCheckBox()
         self.bind_text(
             self.close_on_x_checkbox,
@@ -1701,33 +1854,12 @@ class MainWindow(QMainWindow):
         )
         self.close_on_x_checkbox.stateChanged.connect(self.on_close_on_x_changed)
 
-        options_layout.addWidget(self.start_with_windows_checkbox)
         options_layout.addWidget(self.close_on_x_checkbox)
 
         advanced_layout.addLayout(options_layout)
 
-        # горячие клавиши
-        self.preset_hotkey_button = QPushButton()
-        self.bind_text(self.preset_hotkey_button, "Клавиша пресета")
-        self.preset_hotkey_button.setObjectName("SmallButton")
-        self.preset_hotkey_button.setMinimumHeight(32)
-        self.preset_hotkey_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.preset_hotkey_button.clicked.connect(self.set_current_preset_hotkey)
-
-        self.global_hotkeys_button = QPushButton()
-        self.bind_text(self.global_hotkeys_button, "Глобальные клавиши")
-        self.global_hotkeys_button.setObjectName("SmallButton")
-        self.global_hotkeys_button.setMinimumHeight(32)
-        self.global_hotkeys_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.global_hotkeys_button.clicked.connect(self.edit_global_hotkeys)
-
-        hotkey_row = QHBoxLayout()
-        hotkey_row.setContentsMargins(0, 0, 0, 0)
-        hotkey_row.setSpacing(8)
-        hotkey_row.addWidget(self.global_hotkeys_button)
-        hotkey_row.addWidget(self.preset_hotkey_button)
-
-        advanced_layout.addLayout(hotkey_row)
+        # горячие клавиши переехали в сайдбар (см. `_build_side_tools`): в карточке
+        # «Точная настройка» кнопки терялись среди слайдеров и уезжали под сгиб
 
         advanced_layout.addStretch()
 
@@ -1854,10 +1986,13 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_side_layout"):
             return
         current_key = self._key_for_widget(self.tabs.currentWidget())
+        # блок горячих клавиш — постоянный жилец низа сайдбара: пересборка списка
+        # пунктов не должна его удалять (иначе кнопки исчезнут после смены языка)
+        tools = getattr(self, "_side_tools", None)
         while self._side_layout.count():
             entry = self._side_layout.takeAt(0)
             w = entry.widget()
-            if w is not None:
+            if w is not None and w is not tools:
                 w.deleteLater()
         self._nav_items = {}
         layout = (
@@ -1879,6 +2014,9 @@ class MainWindow(QMainWindow):
             self._side_layout.addWidget(item)
             self._nav_items[key] = item
         self._side_layout.addStretch(1)
+        if tools is not None:
+            # под пунктами меню, над индикатором службы питания
+            self._side_layout.addWidget(tools)
         # бейдж GPU берётся из общего кэша: даём фоновому сборщику прогреться
         QTimer.singleShot(1500, self._refresh_gpu_badge)
 
@@ -2011,8 +2149,11 @@ class MainWindow(QMainWindow):
         return QPixmap.fromImage(image)
 
     def _build_titlebar(self):
-        """Кастомный титлбар: бренд, чип режима, быстрые кнопки, кнопки окна."""
-        bar = QWidget()
+        """Кастомный титлбар: бренд, чип режима, быстрые кнопки, кнопки окна.
+
+        Сам виджет — `TitleBar`: за пустые места шапки окно тянется мышью.
+        """
+        bar = TitleBar(self)
         bar.setObjectName("TitleBar")
         bar.setFixedHeight(42)
         lay = QHBoxLayout(bar)
@@ -2082,6 +2223,42 @@ class MainWindow(QMainWindow):
         lay.addWidget(controls)
         self._update_mode_chip()
         return bar
+
+    def _build_side_tools(self):
+        """Низ сайдбара: настройка горячих клавиш.
+
+        Кнопки раньше лежали в карточке «Точная настройка» и терялись среди слайдеров
+        (плюс уезжали под сгиб на низких окнах), хотя настройка нужна редко и вразброс
+        по разным разделам. Здесь они прижаты к низу меню и доступны с любой страницы.
+        """
+        box = QWidget()
+        box.setObjectName("SideTools")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        head = QLabel()
+        head.setObjectName("SideToolsHead")
+        self.bind_text(head, "Горячие клавиши")
+        lay.addWidget(head)
+
+        for attr, title, tip, slot in (
+            ("global_hotkeys_button", "Глобальные клавиши",
+             "Переключение пресета ПК, привязка профилей и аварийный сброс", self.edit_global_hotkeys),
+            ("preset_hotkey_button", "Клавиша пресета",
+             "Горячая клавиша, включающая текущий пресет гаммы", self.set_current_preset_hotkey),
+        ):
+            btn = QPushButton()
+            btn.setObjectName("SideToolBtn")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(26)
+            self.bind_text(btn, title)
+            self.bind_tooltip(btn, tip)
+            btn.clicked.connect(slot)
+            setattr(self, attr, btn)
+            lay.addWidget(btn)
+
+        return box
 
     def _build_side_foot(self):
         """Низ сайдбара: честный индикатор службы питания.
@@ -2249,7 +2426,13 @@ class MainWindow(QMainWindow):
         # фокуса перестраивается целиком (пара (окно, первый пункт) у Qt не
         # срабатывает — верхний уровень не переставляется).
         anchor = stops[0]
-        for target in (*nav, *page, *tail):
+        # кнопки настройки горячих клавиш стоят в сайдбаре сразу после пунктов меню:
+        # иначе Qt держит их там, где они были созданы (до пунктов меню), и Tab
+        # уходит в них раньше навигации
+        tools = [x for x in (getattr(self, "global_hotkeys_button", None),
+                             getattr(self, "preset_hotkey_button", None))
+                 if x is not None and x in stops]
+        for target in (*nav, *tools, *page, *tail):
             if target is anchor:
                 continue
             QWidget.setTabOrder(anchor, target)
@@ -2373,6 +2556,61 @@ class MainWindow(QMainWindow):
             self._sb_dns.setText(text)
 
         self._sync_foot()       # индикатор службы питания — на этом же тике
+        self._check_power_service()   # смерть компаньона питания — тоже новость
+        self._check_dpi_bypass()   # смерть нашего winws — тоже новость, а не деталь
+        self._check_gpu_drift()    # слетевший лимит GPU из-за сна/драйвера — тоже
+
+    def _check_power_service(self) -> None:
+        """Не пропал ли компаньон питания прямо сейчас?
+
+        Он единственный сторож отката профиля CPU: пока окно свёрнуто, его смерть
+        была видна только в футе сайдбара (которого свёрнутое окно не показывает),
+        а применённый профиль оставался в системе навсегда. Проверка O(1) — это
+        состояние своего же процесса, поэтому живёт на тике статусбара.
+        """
+        page = getattr(self, "_power_page", None)
+        if page is None or self.is_quitting:
+            return              # выход сам просит компаньон уйти с откатом
+        try:
+            page.check_service_gone()
+        except Exception:  # noqa: BLE001 — доклад о службе не должен ломать тик
+            pass
+
+    def _check_gpu_drift(self) -> None:
+        """Не вернула ли система свой лимит мощности, пока окно свёрнуто?
+
+        Чтение состояния GPU живёт в общем кэше метрик и стоит ноль, а вот
+        сверку «что применено» с «что на карте» раньше делал только старт:
+        сон, TDR и сброс драйвера возвращали номинал молча, и применённый
+        профиль в трее выглядел рабочим. Тик тот же — двухсекундный.
+        """
+        if self.is_quitting:
+            return              # на выходе приложение само решает судьбу лимита
+        page = getattr(self, "_gpu_page", None)
+        if page is None:
+            return
+        try:
+            page.check_drift()
+        except Exception:  # noqa: BLE001 — доклад о лимите не должен ломать тик
+            pass
+
+    def _check_dpi_bypass(self) -> None:
+        """Не умер ли наш winws, пока окно свёрнуто? Спросить вкладку обхода.
+
+        Опрос вкладки живёт только на открытой вкладке (экономия холостого
+        расхода), а обход включают и уходят в трей: тогда о смерти процесса
+        никто бы не сказал. Проверка дешёвая — файл состояния и один процесс,
+        поэтому живёт на том же двухсекундном тике, что и статусбар.
+        """
+        if self.is_quitting:
+            return              # выход сам останавливает winws: тост был бы ложным
+        page = getattr(self, "_zapret_page", None)
+        if page is None:
+            return
+        try:
+            page.check_vanished()
+        except Exception:  # noqa: BLE001 — сообщение об обходе не должно ломать тик
+            pass
 
     def build_tray(self):
         from gd_tray import TrayAssistant
@@ -2488,6 +2726,22 @@ class MainWindow(QMainWindow):
         if page is not None:
             page._reload_log()
 
+    def _report_failure(self, status: str, detail: str | None = None) -> None:
+        """Отказ фонового или внешнего действия: статус окна + тревожный тост.
+
+        Успех правил, профилей и «тихого часа» виден тостом, а отказы жили только в
+        статусбаре и логе вкладки — а окно в этот момент обычно свёрнуто в трей
+        (правило сработало само, профиль пришёл из трея, сработал тихий час).
+        Тост повторяет формулировку, которая уходит в лог: одна причина — один текст.
+        """
+        self.set_status(status, ok=False)
+        try:
+            import gd_toast
+
+            gd_toast.show_toast(detail or status, "warn")
+        except Exception:  # noqa: BLE001
+            pass
+
     def _rule_client(self):
         """Клиент хелпера для фоновых действий правил (один на приложение).
 
@@ -2531,8 +2785,14 @@ class MainWindow(QMainWindow):
                 self._rule_set_dns(rule)
                 return None
         except Exception as exc:  # noqa: BLE001
-            return i18n.t("«{v0}»: ошибка — {v1}", v0=name, v1=exc)
-        return i18n.t("«{v0}»: действие недоступно", v0=name)
+            detail = i18n.t("«{v0}»: ошибка — {v1}", v0=name, v1=exc)
+            self._report_failure(
+                i18n.t("Правило «{v0}»: действие не выполнено.", v0=name), detail)
+            return detail
+        detail = i18n.t("«{v0}»: действие недоступно", v0=name)
+        self._report_failure(
+            i18n.t("Правило «{v0}»: действие недоступно.", v0=name), detail)
+        return detail
 
     def _rule_purge(self, rule: dict) -> None:
         """Очистка standby list по правилу: в фоне и через уже запущенный хелпер.
@@ -2550,9 +2810,11 @@ class MainWindow(QMainWindow):
         def done(resp):
             resp = resp if isinstance(resp, dict) else {}
             if not resp.get("ok"):
-                self._log_rule_result(rule, i18n.t("«{v0}»: очистка не выполнена — {v1}",
-                                                   v0=name, v1=resp.get("error") or "?"))
-                self.set_status(i18n.t("Правило «{v0}»: очистка ОЗУ не выполнена.", v0=name))
+                detail = i18n.t("«{v0}»: очистка не выполнена — {v1}",
+                                v0=name, v1=resp.get("error") or "?")
+                self._log_rule_result(rule, detail)
+                self._report_failure(
+                    i18n.t("Правило «{v0}»: очистка ОЗУ не выполнена.", v0=name), detail)
                 return
             data = resp.get("data") or {}
             freed = (((data.get("after") or {}).get("Free") or 0)
@@ -2588,9 +2850,10 @@ class MainWindow(QMainWindow):
         servers = gd_rules.dns_servers(key)
         label = dict(gd_rules.DNS_PROFILES).get(key, key or "?")
         if not servers:
-            self._log_rule_result(
-                rule, i18n.t("«{v0}»: у резолвера нет адресов — пропущено", v0=name)
-            )
+            detail = i18n.t("«{v0}»: у резолвера нет адресов — пропущено", v0=name)
+            self._log_rule_result(rule, detail)
+            self._report_failure(
+                i18n.t("Правило «{v0}»: DNS не изменён.", v0=name), detail)
             return
         client = self._rule_client()
 
@@ -2605,9 +2868,11 @@ class MainWindow(QMainWindow):
         def done(resp):
             resp = resp if isinstance(resp, dict) else {}
             if not resp.get("ok"):
-                self._log_rule_result(rule, i18n.t("«{v0}»: DNS не изменён — {v1}",
-                                                   v0=name, v1=resp.get("error") or "?"))
-                self.set_status(i18n.t("Правило «{v0}»: DNS не изменён.", v0=name))
+                detail = i18n.t("«{v0}»: DNS не изменён — {v1}",
+                                v0=name, v1=resp.get("error") or "?")
+                self._log_rule_result(rule, detail)
+                self._report_failure(
+                    i18n.t("Правило «{v0}»: DNS не изменён.", v0=name), detail)
                 return
             remembered = bool(resp.get("remembered", True))
             self._log_rule_result(
@@ -2634,13 +2899,13 @@ class MainWindow(QMainWindow):
         try:
             self._power_page.apply_profile(pid, source="трей")
         except Exception as exc:  # noqa: BLE001
-            self.set_status(i18n.t("Профиль не применён: {v0}", v0=exc))
+            self._report_failure(i18n.t("Профиль не применён: {v0}", v0=exc))
 
     def on_gpu_profile(self, name):
         try:
             self._gpu_page.apply_profile(name, source="трей")
         except Exception as exc:  # noqa: BLE001
-            self.set_status(i18n.t("Профиль GPU не применён: {v0}", v0=exc))
+            self._report_failure(i18n.t("Профиль GPU не применён: {v0}", v0=exc))
 
     # -- локальный API для инструментов (ТЗ, этап 8) ------------------------
     def _agent_autostart(self):
@@ -2651,7 +2916,7 @@ class MainWindow(QMainWindow):
                 self._agent_page._show_warn(err)
             except Exception:  # noqa: BLE001
                 pass
-            self.set_status(i18n.t("Локальный API не запущен: {v0}", v0=err))
+            self.set_status(i18n.t("Локальный API не запущен: {v0}", v0=err), ok=False)
 
     def start_agent_api(self) -> tuple[bool, str]:
         """Включить локальный API: сервер, токен, аудит. → (ок, ошибка)."""
@@ -2848,24 +3113,16 @@ class MainWindow(QMainWindow):
                 "ok": bool(resp.get("ok")), "error": resp.get("error")}))
         return None            # итог придёт асинхронно через on_done
 
-    def _agent_gpu_note(self, resp) -> str:
-        """Честная приписка к ответу GPU: изменение ещё надо подтвердить во вкладке."""
-        if not resp.get("ok"):
-            return ""
-        return i18n.t("подтвердите изменение во вкладке «Питание GPU» в течение 12 с, иначе вернётся прежний лимит")
-
     def _agent_gpu_profile(self, params: dict, req):
         def done(resp):
-            self._agent_reply(req, {"ok": bool(resp.get("ok")), "error": resp.get("error"),
-                                    "note": self._agent_gpu_note(resp)})
+            self._agent_reply(req, {"ok": bool(resp.get("ok")), "error": resp.get("error")})
 
         self._gpu_page.apply_profile(params["profile"], source=i18n.t("агент"), on_done=done)
         return None
 
     def _agent_gpu_limit(self, params: dict, req):
         def done(resp):
-            self._agent_reply(req, {"ok": bool(resp.get("ok")), "error": resp.get("error"),
-                                    "note": self._agent_gpu_note(resp)})
+            self._agent_reply(req, {"ok": bool(resp.get("ok")), "error": resp.get("error")})
 
         self._gpu_page.apply_limit(int(params["watts"]), source=i18n.t("агент"), on_done=done)
         return None
@@ -3001,7 +3258,8 @@ class MainWindow(QMainWindow):
         was_ready = self.status_label.text() == i18n.t("Готово")
         name = i18n.set_language(name, self.config, save_config)
         if was_ready:
-            self.status_label.setText(i18n.t("Готово"))
+            # через set_status: он же снимает цвет тревоги, оставшийся от отказа
+            self.set_status(i18n.t("Готово"))
         for widget, key in self._text_bindings:
             widget.setText(i18n.t(key))
         for widget, key in self._tooltip_bindings:
@@ -3034,6 +3292,10 @@ class MainWindow(QMainWindow):
             hints.setText(i18n.t("status.hints"))
         self._foot_state = None          # подпись фута переводим заново
         self._sync_foot()
+        # пункты меню пересоздаются, а Qt кладёт новые виджеты в конец кольца фокуса:
+        # без перестройки Tab после смены языка уходил в конец меню (а кнопки
+        # горячих клавиш — в начало), порядок «меню → страница → шапка» ломался
+        self._fix_tab_order()
 
     def toggle_language(self):
         return self.set_language("en" if i18n.current() == "ru" else "ru")
@@ -3170,28 +3432,41 @@ class MainWindow(QMainWindow):
                             "contrast": getattr(gc, "contrast", 1.0),
                             "gamma": getattr(gc, "gamma", 1.0),
                             "temperature": getattr(gc, "temperature", 6500)}
+        dim_ok = False
         try:
             self.apply_values(0.5, self._quiet_prev["contrast"],
                               self._quiet_prev["gamma"],
                               self._quiet_prev["temperature"], save=False)
+            # apply_values ставит флаг факта: гамма может быть отклонена (HDR)
+            dim_ok = bool(getattr(self, "_gamma_applied_ok", False))
         except Exception:  # noqa: BLE001
-            pass
+            dim_ok = False
         power = getattr(self, "_power_page", None)
+        eco_ok = power is not None
         if power is not None:
             try:
                 power.apply_profile("eco", source=i18n.t("тихий час"))
             except Exception:  # noqa: BLE001
-                pass
+                eco_ok = False
+        # «активен» — значит попытка сделана: иначе тик будет пробовать каждые
+        # несколько секунд и засыплет тревожными тостами ту же причину
         q["applied"] = True
         if not gd_profiles.save_quiet(q):
             self.set_status(i18n.t(
-                "Тихий час: состояние не сохранено — файл quiet_hour.json недоступен для записи."))
-        try:
-            import gd_toast
+                "Тихий час: состояние не сохранено — файл quiet_hour.json недоступен для записи."),
+                ok=False)
+        if eco_ok and dim_ok:
+            try:
+                import gd_toast
 
-            gd_toast.show_toast(i18n.t("toast.quiet_on"), "info")
-        except Exception:  # noqa: BLE001
-            pass
+                gd_toast.show_toast(i18n.t("toast.quiet_on"), "info")
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            # не врём про успех: тост сказал бы «ЭКО включён», которого нет
+            self._report_failure(i18n.t(
+                "toast.quiet_none") if not (eco_ok or dim_ok)
+                else (i18n.t("toast.quiet_no_eco") if not eco_ok else i18n.t("toast.quiet_no_dim")))
         try:
             gd_journal.record("quiet_hour", f"{q.get('start')}–{q.get('end')}", None,
                               i18n.t("ЭКО CPU + минимум яркости"), why=i18n.t("тихий час"),
@@ -3205,11 +3480,13 @@ class MainWindow(QMainWindow):
 
         prev = self._quiet_prev or {"brightness": 1.0, "contrast": 1.0,
                                     "gamma": 1.0, "temperature": 6500}
+        restore_ok = False
         try:
             self.apply_values(prev["brightness"], prev["contrast"], prev["gamma"],
                               prev["temperature"], save=False)
+            restore_ok = bool(getattr(self, "_gamma_applied_ok", False))
         except Exception:  # noqa: BLE001
-            pass
+            restore_ok = False
         power = getattr(self, "_power_page", None)
         if power is not None and getattr(power, "client", None) is not None:
             try:
@@ -3219,14 +3496,19 @@ class MainWindow(QMainWindow):
         q["applied"] = False
         if not gd_profiles.save_quiet(q):
             self.set_status(i18n.t(
-                "Тихий час: состояние не сохранено — файл quiet_hour.json недоступен для записи."))
+                "Тихий час: состояние не сохранено — файл quiet_hour.json недоступен для записи."),
+                ok=False)
         self._quiet_prev = None
-        try:
-            import gd_toast
+        if restore_ok:
+            try:
+                import gd_toast
 
-            gd_toast.show_toast(i18n.t("toast.quiet_off"), "info")
-        except Exception:  # noqa: BLE001
-            pass
+                gd_toast.show_toast(i18n.t("toast.quiet_off"), "info")
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            # «состояние возвращено» — неправда, если яркость осталась сниженной
+            self._report_failure(i18n.t("toast.quiet_keep_dim"))
         try:
             gd_journal.record("quiet_hour", i18n.t("выход из окна"), i18n.t("ЭКО + минимум яркости"),
                               None, why=i18n.t("тихий час завершён"), source=i18n.t("утилиты"))
@@ -3298,12 +3580,15 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
         if not report["ok"]:
-            if report["errors"]:
-                self.set_status(i18n.t("Переключатель производительности: {v0}",
-                                       v0="; ".join(report["errors"])), ok=False)
-            else:
-                self.set_status(
-                    i18n.t("Переключатель производительности: профили не заданы"), ok=False)
+            fail_text = (i18n.t("Переключатель производительности: {v0}",
+                                v0="; ".join(report["errors"])) if report["errors"]
+                         else i18n.t("Переключатель производительности: профили не заданы"))
+            self.set_status(fail_text, ok=False)
+            # Тост: горячая клавиша и пункт трея срабатывают и при свёрнутом окне —
+            # без него отклик был бы только звуком (а его можно выключить).
+            import gd_toast
+
+            gd_toast.show_toast(fail_text, "warn")
             return
 
         self._save_config()
@@ -3315,7 +3600,11 @@ class MainWindow(QMainWindow):
         status = i18n.t("Переключатель производительности: {v0}", v0=state_text)
         if report["errors"]:
             status += " — " + "; ".join(report["errors"])
-        self.set_status(status, ok=not report["errors"])
+        partial = bool(report["errors"])
+        self.set_status(status, ok=not partial)
+        import gd_toast
+
+        gd_toast.show_toast(status, "warn" if partial else "ok")
 
         try:
             gd_journal.record(
@@ -3426,7 +3715,9 @@ class MainWindow(QMainWindow):
             self._save_config()
 
         if not ok:
-            self.set_status(self._gamma_failure_status())
+            # отказ подсвечиваем тревогой: тост здесь не нужен — гамму двигают
+            # слайдером, а он в момент отказа на экране (иначе спамил бы на каждый шаг)
+            self.set_status(self._gamma_failure_status(), ok=False)
 
     def _gamma_failure_status(self) -> str:
         """Честно объясняем отказ: чаще всего Windows не даёт менять гамму при HDR."""
@@ -3696,7 +3987,7 @@ class MainWindow(QMainWindow):
 
         brightness, contrast, gamma, temperature = self.values_from_ui()
 
-   
+
         cat_gamma = 2.2
 
         self.animate_to(
@@ -3849,8 +4140,15 @@ class MainWindow(QMainWindow):
             self.set_status(i18n.t("Гамма восстановлена после сброса системой."))
 
 
-    def set_status(self, text: str):
+    def set_status(self, text: str, ok: bool = True):
+        """Строка статуса в шапке окна. `ok=False` — честный отказ: цветом тревоги.
+
+        Раньше метод принимал только текст, а переключатель производительности
+        передавал `ok=`: при незаданных профилях вместо «профили не заданы» из
+        слота горячей клавиши летел необработанный TypeError.
+        """
         self.status_label.setText(text)
+        self.status_label.setStyleSheet("" if ok else f"color: {th.WARN};")
 
     def _config_recovery_note(self) -> None:
         """Честный старт: если конфиг пришлось заменить дефолтом — сказать об этом."""
@@ -3898,20 +4196,42 @@ class MainWindow(QMainWindow):
         else:
             self.set_status(i18n.t("Свернуть в трей при закрытии окна"))
 
-    def on_start_with_windows_changed(self, state):
-        enabled = state == Qt.Checked
-        self.config["settings"]["start_with_windows"] = enabled
-        self._save_config()
+    # -- автозапуск с Windows (галочка живёт на вкладке «Утилиты») -----------
 
+    def start_with_windows(self) -> bool:
+        """Автозапуск включён фактически: файл в «Автозагрузке» есть.
+
+        Смотрим на файл, а не на флаг в конфиге: ярлык могли удалить вручную
+        или записать не удалось. Тогда честнее показать галочку снятой.
+        """
         try:
-            if enabled:
+            return get_startup_shortcut_path().exists()
+        except Exception:  # noqa: BLE001
+            return False
+
+    def set_start_with_windows(self, on: bool) -> str:
+        """Включить/выключить автозапуск: файл автозагрузки + флаг в конфиге.
+
+        Возвращает текст ошибки или "" — вкладка «Утилиты» зовёт это из галочки.
+        Флаг пишется только при успехе: обещать автозапуск, который не встал,
+        нельзя.
+        """
+        on = bool(on)
+        try:
+            if on:
                 enable_startup()
-                self.set_status(i18n.t("Автозапуск включён"))
             else:
                 disable_startup()
-                self.set_status(i18n.t("Автозапуск выключен"))
-        except Exception as e:
-            QMessageBox.warning(self, i18n.t("Ошибка автозапуска"), str(e))
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
+            self.set_status(i18n.t("Автозапуск не изменён: {v0}", v0=err), ok=False)
+            return err
+
+        self.config.setdefault("settings", {})["start_with_windows"] = on
+        self._save_config()
+        self.set_status(i18n.t("Автозапуск включён") if on
+                        else i18n.t("Автозапуск выключен"))
+        return ""
 
     # -- видимость окна и темп фоновой телеметрии --------------------------
 
@@ -3981,7 +4301,9 @@ class MainWindow(QMainWindow):
         # откат профиля питания (если вкладка «Питание CPU» использовалась)
         try:
             if getattr(self, "_power_page", None) is not None:
-                self._power_page.client.shutdown_async(restore=True)
+                # через вкладку: она снимает сторожа смерти компаньона — после
+                # выхода «компаньона нет» не новость, а ожидаемый результат
+                self._power_page.shutdown_for_exit()
         except Exception:
             pass
 
@@ -4164,6 +4486,40 @@ QLabel#NavBadge {
     border-radius: 5px;
     padding: 1px 6px;
     background: transparent;
+}
+
+QWidget#SideTools {
+    background: @SURFACE@;
+    border-top: 1px solid @RULE@;
+}
+
+/* заголовок блока компактнее обычной группы: сайдбар должен влезать в минимальное
+   окно (720×560) вместе с пунктами меню и полосой службы питания */
+QLabel#SideToolsHead {
+    color: @MUTED@;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 4px 6px 0 6px;
+}
+
+QPushButton#SideToolBtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: @INK2@;
+    font-size: 12px;
+    text-align: left;
+    padding: 0 10px;
+}
+
+QPushButton#SideToolBtn:hover {
+    background: @PRESSED@;
+    border-color: @RULE@;
+    color: @INK@;
+}
+
+QPushButton#SideToolBtn:focus {
+    border-color: @ACCENT@;
 }
 
 QWidget#SideFoot {
@@ -4944,8 +5300,12 @@ def main():
     if sys.platform != "win32":
         print("This application works only on Windows.")
         return
-    
+
+    # язык нужен раньше окна: сообщение «уже запущено» тоже должно быть переведено
+    i18n.init_for_process()
+
     if is_another_instance_running():
+        _warn_already_running()
         return
 
     install_crash_handlers()
@@ -4989,7 +5349,7 @@ def main():
                                   i18n.t("не создан"), why=str(exc), reversible=False)
             except Exception:  # noqa: BLE001
                 pass
-        
+
     code = app.exec_()
 
     try:

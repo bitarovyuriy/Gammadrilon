@@ -1,0 +1,62 @@
+name: CI
+
+# Линтер и быстрые проверки — на каждый пуш и PR; полный смоук окна — вручную
+# (Run workflow), потому что ему нужен рабочий Qt и живое окружение Windows.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-and-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # у автора локально 3.14; PyQt5 приходит одним abi3-колесом
+          cache: pip
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Линтер (ruff)
+        run: ruff check .
+
+      - name: Быстрые проверки (pytest)
+        run: python -m pytest
+
+  smoke:
+    # Полный смоук окна (offscreen): включён вручную, потому что локально он идёт
+    # на машине с NVIDIA (RTX 2080 Ti), а на раннере GPU нет. Убедимся, что на
+    # windows-latest он зелёный — тогда можно будет повесить и на push.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Смоук-проверка окна (offscreen)
+        env:
+          GD_SMOKE: "1"
+        run: python -m pytest tests/test_smoke.py -v
+
+      - name: Отчёт смоука
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: build/shots/
+          if-no-files-found: ignore

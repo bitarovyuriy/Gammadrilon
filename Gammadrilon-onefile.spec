@@ -1,17 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Релизная сборка (onefile): dist/Gammadrilon.exe — единый файл для GitHub Releases."""
+"""Релизная сборка (onefile): dist/Gammadrilon.exe — единый файл для GitHub Releases.
 
-MODULES = [
-    "gd_proc", "gd_helper", "gd_bg", "gd_metrics",
-    "gd_icons", "gd_i18n", "gd_theme", "gd_toast", "gd_journal", "gd_journal_ui",
-    "gd_palette", "gd_tray", "gd_onboarding", "gd_profiles", "gd_sensors",
-    "gd_power", "gd_power_ui", "gd_power_service",
-    "gd_gpu", "gd_gpu_ui", "gd_gpu_service",
-    "gd_rules", "gd_rules_ui", "gd_memory", "gd_utils_ui",
-    "gd_dns", "gd_dns_ui", "gd_extra", "gd_extra_ui",
-    "gd_zapret", "gd_zapret_ui", "gd_agent", "gd_agent_ui",
-    "psutil",
-]
+Список модулей собирается сам из gd_*.py: раньше он был вписан руками и тихо
+устаревал — из исходников всё работало, а в exe падал импорт модуля, который
+забыли добавить сюда.
+"""
+
+from pathlib import Path
+
+SPEC_DIR = Path(SPECPATH)   # каталог spec-файла = корень проекта
+MODULES = sorted(p.stem for p in SPEC_DIR.glob("gd_*.py"))
+if len(MODULES) < 20 or "gd_agent" not in MODULES:
+    raise SystemExit(
+        f"gd_*.py не найдены в {SPEC_DIR}: spec должен лежать в корне проекта"
+    )
+MODULES.append("psutil")
 
 a = Analysis(
     ['main.py'],
@@ -39,7 +42,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX выключен: упаковка Qt-DLL — классическая причина ложных срабатываний
+    # антивирусов и лишних предупреждений SmartScreen. Экономия размера того не стоит.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

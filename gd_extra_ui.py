@@ -15,7 +15,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -38,7 +38,7 @@ import gd_bg  # noqa: E402
 import gd_extra  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_profiles  # noqa: E402
-import gd_theme as th
+import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
 

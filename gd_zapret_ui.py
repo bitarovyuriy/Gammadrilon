@@ -12,7 +12,6 @@ argv winws.exe → кэш) и дальше включаем/выключаем w
 from __future__ import annotations
 
 import os
-import sys
 
 import gd_bg
 
@@ -93,6 +92,9 @@ class ZapretWidget(QWidget):
         self._ignored = set()          # «оставить как есть» — до конца сессии
         self._worker = None            # фоновое действие (включить/выключить/…)
         self._gen = 0                  # поколение состояния: см. _snap_job/_on_snap
+        # прошлый запуск приложения мог закрыться вместе с winws — это не «он
+        # умер сам»: снимаем наследство молча, см. gd_zapret.forget_previous_run
+        gd_zapret.forget_previous_run()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
@@ -281,6 +283,47 @@ class ZapretWidget(QWidget):
     def deactivate(self):
         self._poll.stop()
 
+    @property
+    def busy(self) -> bool:
+        """Идёт ли фоновое действие (включить/выключить/переосвоить).
+
+        Пока оно идёт, состояние процесса распоряжается само действие — внешние
+        проверки («не умер ли наш winws») должны молчать, иначе собственный
+        перезапуск выглядел бы смертью со стороны.
+        """
+        return gd_bg.is_running(self._worker)
+
+    def check_vanished(self) -> None:
+        """Дешёвый внешний вопрос: не исчез ли наш winws? (зовёт главное окно).
+
+        Опрос вкладки (2 с, перебор процессов через psutil) живёт только на
+        открытой вкладке, а обход включают и сворачивают окно. Поэтому смерть
+        процесса проверяется ещё и тиком статусбара — файл состояния и один
+        процесс вместо полного снимка.
+        """
+        if self.busy:
+            return                 # действие само знает про процесс, см. busy
+        state = gd_zapret.take_vanished()
+        if state is not None:
+            self._report_vanished(state)
+
+    def _report_vanished(self, state: dict) -> None:
+        """Сказать, что наш winws исчез: строка вкладки, журнал и тост.
+
+        Тост — потому что окно может быть свёрнуто: тихая правка строки на
+        закрытой вкладке — это молчание, а не отчёт.
+        """
+        pid = state.get("pid")
+        self._set_status(i18n.t("winws.exe завершился вне Gammadrilon."), ok=False)
+        gd_journal.record("zapret", state.get("strategy") or i18n.t("обход"),
+                          before=i18n.t("работает (PID {v0})", v0=pid),
+                          after=i18n.t("завершился вне приложения"),
+                          why=i18n.t("посторонняя остановка"),
+                          reversible=False)
+        import gd_toast
+
+        gd_toast.show_toast(i18n.t("toast.zapret_gone"), "warn")
+
     # -- путь и конфиг -------------------------------------------------------
 
     def current_path(self) -> str:
@@ -357,9 +400,14 @@ class ZapretWidget(QWidget):
             return                     # снят до последней локальной записи — устарел
         self._snap = snap
         if snap.get("our_stale"):
-            # наш winws завершился вне Gammadrilon — состояние устарело
-            gd_zapret.clear_our_state()
-            self._set_status(i18n.t("winws.exe завершился вне Gammadrilon."))
+            # наш winws завершился вне Gammadrilon — состояние устарело.
+            # Уведомление одноразовое (gd_zapret.take_vanished): если о смерти уже
+            # сказал тик главного окна, здесь остаётся только строка вкладки.
+            state = gd_zapret.take_vanished()
+            if state is not None:
+                self._report_vanished(state)
+            else:
+                self._set_status(i18n.t("winws.exe завершился вне Gammadrilon."), ok=False)
             snap["our_stale"] = False
         if self.list.count() == 0:
             self._fill_strategies()

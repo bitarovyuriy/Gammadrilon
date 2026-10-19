@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from collections import deque
 from multiprocessing.connection import Client
@@ -70,8 +71,24 @@ class PowerClient:
         self.pipe = pipe
         self._conn = None
         self._proc = None
+        # Один запрос — один ответ, и всё это на одном соединении. Из окна
+        # запросы идут из разных фоновых потоков (применение профиля и опрос
+        # статуса каждые 5 с), и без замка ответы доставались не тем, кто
+        # спрашивал: опрос статуса получал ответ на ``apply``, где ``values`` —
+        # просто числа, и вкладка падала на ``.get()``
+        # (воспроизведение — _tmp_power_race.py).
+        self._lock = threading.RLock()
 
     def ensure(self) -> bool:
+        with self._lock:
+            return self._ensure_locked()
+
+    def _ensure_locked(self) -> bool:
+        """Подключиться к живому компаньону или поднять его (замок уже взят).
+
+        Отдельным методом — чтобы ``call()`` держал замок непрерывно от
+        соединения до ответа, а не отпускал его между шагами.
+        """
         if self._conn is not None:
             return True
         try:
@@ -106,30 +123,35 @@ class PowerClient:
         процесс до первого действия пользователя (см. :func:`read_status`).
         Нет живой сессии — честный отказ, без запуска и без UAC.
         """
-        if self._conn is None:
-            try:
-                self._conn = Client(address=self.pipe)
-            except OSError:
-                return {"ok": False, "error": i18n.t("компаньон не запущен")}
-        try:
-            self._conn.send(obj)
-            if not self._conn.poll(timeout):
-                self._conn = None
-                return {"ok": False, "error": i18n.t("таймаут ответа компаньона")}
-            return self._conn.recv()
-        except (OSError, EOFError):
-            self._conn = None
-            return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
+        with self._lock:
+            if self._conn is None:
+                try:
+                    self._conn = Client(address=self.pipe)
+                except OSError:
+                    return {"ok": False, "error": i18n.t("компаньон не запущен")}
+            return self._request_locked(obj, timeout)
 
     def call(self, obj: dict, timeout: float = 10.0) -> dict:
-        if not self.ensure():
-            return {"ok": False, "error": i18n.t("компаньон не запустился")}
+        with self._lock:
+            if not self._ensure_locked():
+                return {"ok": False, "error": i18n.t("компаньон не запустился")}
+            return self._request_locked(obj, timeout)
+
+    def _request_locked(self, obj: dict, timeout: float) -> dict:
+        """Отправка и приём ответа в одном соединении (замок уже взят).
+
+        Замок обязателен на всю пару «вопрос — ответ»: два потока, ждущих
+        ответа из одного пайпа, разбирают их в произвольном порядке. Ссылку на
+        соединение держим локально: выход приложения закрывает его из другого
+        потока (`shutdown_async`), не дожидаясь опроса.
+        """
+        conn = self._conn
         try:
-            self._conn.send(obj)
-            if not self._conn.poll(timeout):
+            conn.send(obj)
+            if not conn.poll(timeout):
                 self._conn = None
                 return {"ok": False, "error": i18n.t("таймаут ответа компаньона")}
-            return self._conn.recv()
+            return conn.recv()
         except (OSError, EOFError):
             self._conn = None
             return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
@@ -189,6 +211,20 @@ def read_status(client: PowerClient) -> dict:
         return {"ok": True, "data": gd_power.state_snapshot()}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def values_dict(raw) -> dict:
+    """Значения настроек схемы из ответа компаньона: ``{имя: {'ac':…, 'dc':…}}``.
+
+    Форма ответа зависит от команды: ``status`` отдаёт значения по каждому
+    питанию (AC/DC), а ``apply`` — плоские числа профиля. Вкладка работает
+    только с первой формой, и если в неё попадёт вторая (например, ответ
+    достался не тому запросу), падать на ``.get()`` она не должна —
+    непонятные блоки просто не обновляют контролы.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    return {name: block for name, block in raw.items() if isinstance(block, dict)}
 
 
 # --------------------------------------------------------------------------
@@ -275,6 +311,10 @@ class PowerWindow(QWidget):
 
         self._started = False
         self._apply_busy = False       # идёт apply/restore (фон) — блокирует кнопки
+        # Компаньон пропал в работе (его смерть = профиль без сторожа отката):
+        self._service_seen_alive = False    # был ли он жив в этой сессии
+        self._service_gone_reported = False  # о смерти уже сказано — не повторяемся
+        self._shutting_down = False          # выход приложения сам решает судьбу профиля
         self._leftover_checked = False  # смотрели ли профиль от прошлой сессии
         self._leftover_busy = False
         self._clones_checked = False    # искали ли свои копии схем в системе
@@ -537,7 +577,11 @@ class PowerWindow(QWidget):
             if self._sensor_timer.isActive():
                 QTimer.singleShot(4500, self._freq_reaction_check)
         else:
-            self._set_bottom_status(i18n.t("Ошибка: {v0}", v0=resp.get('error')), ok=False)
+            err = i18n.t("Ошибка: {v0}", v0=resp.get('error'))
+            self._set_bottom_status(err, ok=False)
+            # профиль мог быть применён из трея, палитры или правила — окно в этот
+            # момент свёрнуто, и статус карточки никто не увидит
+            self._notify_failure(i18n.t("Профиль не применён: {v0}", v0=resp.get('error')))
         gd_agent.finish(getattr(self, "_ext_done", None), resp.get("ok"), resp.get("error"))
         self._ext_done = None
 
@@ -560,8 +604,9 @@ class PowerWindow(QWidget):
             o = self._orig_values or {}
             if o.get("max_state", {}).get("ac") is not None:
                 before = i18n.t("макс {v0}%", v0=o['max_state']['ac'])
-            if isinstance(st, dict) and st.get("ok"):
-                v = (st["data"].get("values") or {}).get("max_state", {}).get("ac")
+            st_data = st.get("data") if isinstance(st, dict) else None
+            if isinstance(st_data, dict) and st.get("ok"):
+                v = values_dict(st_data.get("values")).get("max_state", {}).get("ac")
                 if v is not None:
                     after = i18n.t("макс {v0}%", v0=v)
             gd_journal.record(
@@ -608,7 +653,7 @@ class PowerWindow(QWidget):
         self._apply_busy = False
         self._set_busy(False)
         if resp.get("ok"):
-            self._active_profile = None
+            self._profile = None      # фут честен сразу, не ждёт фонового опроса
             self._set_bottom_status(i18n.t("Схема возвращена к исходной."), ok=True)
             self._refresh_status()
             try:
@@ -624,6 +669,7 @@ class PowerWindow(QWidget):
                 pass
         else:
             self._set_bottom_status(i18n.t("Ошибка отката: {v0}", v0=resp.get('error')), ok=False)
+            self._notify_failure(i18n.t("Ошибка отката: {v0}", v0=resp.get('error')))
         gd_agent.finish(getattr(self, "_ext_done", None), resp.get("ok"), resp.get("error"))
         self._ext_done = None
 
@@ -662,10 +708,88 @@ class PowerWindow(QWidget):
         """
         return self.client.alive()
 
+    def check_service_gone(self) -> None:
+        """Компаньон пропал в работе? Сказать честно и убрать остаток профиля.
+
+        Компаньон — единственный сторож отката: он возвращает исходную схему, если
+        окно умрёт. Пока окно свёрнуто, его смерть была видна только в футе
+        сайдбара, которого свёрнутое окно не показывает: пользователь не узнавал
+        ни о смерти службы, ни о том, что применённый профиль остался в системе
+        без присмотра. Проверка — O(1) (состояние своего же процесса, без пайпа),
+        поэтому живёт на двухсекундном тике статусбара (main._check_power_service_gone).
+
+        Ленивый старт — не смерть: «компаньона ещё не поднимали» отличается от
+        «компаньон был жив и пропал» (`_service_seen_alive`). Ошибка самой проверки
+        и своя операция (она сама расскажет) тоже молчат.
+        """
+        if self.client.alive():
+            self._service_seen_alive = True
+            self._service_gone_reported = False   # служба снова есть — новый слёт сообщим
+            return
+        if not self._service_seen_alive or self._service_gone_reported:
+            return
+        if self._shutting_down or self._apply_busy or self._leftover_busy:
+            return
+        self._service_gone_reported = True
+        try:
+            import gd_toast
+
+            gd_toast.show_toast(i18n.t("toast.power_service_gone"), "warn")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            import gd_journal
+
+            gd_journal.record(
+                "power_service", i18n.t("компаньон питания"),
+                why=i18n.t("служба питания остановилась вне приложения"),
+                source=i18n.t("автооткат"), reversible=False,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        if self._profile:
+            # сторожа отката больше нет: остаток профиля убираем сами (как при
+            # профиле от прошлой сессии) — иначе клон схемы живёт вечно
+            self._set_bottom_status(
+                i18n.t("Служба питания остановилась вне приложения. "
+                       "Остаток профиля откатываю сам — сторожа больше нет."),
+                ok=False,
+            )
+            self._rollback_leftover()
+        else:
+            self._set_bottom_status(
+                i18n.t("Служба питания остановилась вне приложения. "
+                       "Откатывать нечего — профиль не применён."),
+                ok=False,
+            )
+
+    def shutdown_for_exit(self) -> None:
+        """Выход приложения: попросить компаньон вернуть схему и уйти.
+
+        Снимаем сторожа до просьбы: после этого «компаньона нет» — ожидаемый
+        результат выхода, а не новость (иначе получатся ложные тосты при закрытии).
+        """
+        self._shutting_down = True
+        self.client.shutdown_async(restore=True)
+
     def _set_bottom_status(self, text: str, ok: bool = True):
         color = th.MUTED if ok else th.WARN
         self.bottom_status.setStyleSheet(f"color: {color};")
         self.bottom_status.setText(text)
+
+    def _notify_failure(self, text: str) -> None:
+        """Отказ профиля виден и при закрытом окне (трей, палитра, правило, API).
+
+        Успех профиля показывается тостом, а отказ раньше жил только в строке
+        статуса карточки — при свёрнутом окне он пропадал молча.
+        """
+        try:
+            self._set_bottom_status(text, ok=False)
+            import gd_toast
+
+            gd_toast.show_toast(text, "warn")
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- обновление --------------------------------------------------------
     def _refresh_status(self):
@@ -679,9 +803,11 @@ class PowerWindow(QWidget):
             self.status_name.setText(i18n.t("состояние питания недоступно"))
             return
         data = resp["data"]
+        if not isinstance(data, dict):      # чужой ответ — не рисуем вымысел
+            data = {}
         profile = data.get("profile")
         self._profile = profile
-        self._orig_values = data.get("original_values")
+        self._orig_values = values_dict(data.get("original_values")) or None
 
         # файл состояния есть, но непригоден: «профиль не применён» и «откатывать
         # нечем, а копия схемы может быть жива» — разные вещи, говорим один раз
@@ -721,7 +847,7 @@ class PowerWindow(QWidget):
             self.status_name.setText(i18n.t("исходная схема"))
 
         # значения слайдеров — из активной схемы
-        vals = data.get("values") or {}
+        vals = values_dict(data.get("values"))
         if not self._custom_mode:
             if vals.get("max_state", {}).get("ac") is not None:
                 self.sl_max.setValue(vals["max_state"]["ac"])
@@ -930,7 +1056,7 @@ class PowerWindow(QWidget):
         # Во встроенном режиме компаньон живёт вместе с главным приложением,
         # откат выполняется при его выходе (quit_app) или watchdog'ом.
         if self._standalone:
-            self.client.shutdown_async(restore=True)
+            self.shutdown_for_exit()
         super().closeEvent(event)
 
 

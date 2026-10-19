@@ -23,7 +23,20 @@ foreach ($extra in @("icon.ico", "README.md", "LICENSE")) {
 
 $zip = Join-Path $projectRoot "dist\Gammadrilon-portable.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path $portableDir -DestinationPath $zip -CompressionLevel Optimal
+
+# Пакуем tar.exe (bsdtar, есть в Windows 10 1803+), а не Compress-Archive:
+# тот падает, если антивирус или индексатор на секунду придержал свежескопированный
+# файл (см. README, раздел «Сборка»).
+$tar = Join-Path $env:SystemRoot "System32\tar.exe"
+if (-not (Test-Path $tar)) { throw "Не найден tar.exe: $tar (нужен Windows 10 1803+)" }
+
+& $tar -a -c -f $zip -C (Join-Path $projectRoot "dist") "Gammadrilon"
+if ($LASTEXITCODE -ne 0) { throw "Упаковка zip не удалась (tar exit $LASTEXITCODE)" }
+
+# Пустой или недособранный zip на релизе выглядел бы как «скачал и не работает».
+if (-not ((& $tar -tf $zip) -match 'Gammadrilon/Gammadrilon\.exe$')) {
+    throw "В zip нет Gammadrilon/Gammadrilon.exe - архив битый"
+}
 
 $exe = Join-Path $projectRoot "dist\Gammadrilon.exe"
 $portableExe = Join-Path $portableDir "Gammadrilon.exe"
@@ -33,8 +46,14 @@ if (-not (Test-Path $portableExe)) { throw "Не найден портативн
 $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 $zipMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 
+# Хэши — в текст релиза: пользователь может сверить скачанное, не гадая.
+$exeHash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+$zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+
 Write-Host ""
 Write-Host "Готово:" -ForegroundColor Green
 Write-Host "  портативная папка: $portableDir"
 Write-Host "  zip:               $zip ($zipMb МБ)"
 Write-Host "  релизный exe:      $exe ($sizeMb МБ)"
+Write-Host "  sha256 exe:        $exeHash"
+Write-Host "  sha256 zip:        $zipHash"

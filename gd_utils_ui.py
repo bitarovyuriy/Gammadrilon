@@ -46,7 +46,7 @@ import gd_bg  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_memory  # noqa: E402
 import gd_state  # noqa: E402
-import gd_theme as th
+import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
 
@@ -262,6 +262,34 @@ class UtilsWidget(QWidget):
         lay2.addWidget(self.lbl_auto)
         root.addWidget(card2)
 
+        # --- запуск вместе с Windows ---
+        # Факт (файл в «Автозагрузке»), а не флаг конфига: ярлык могли удалить
+        # вручную — тогда галочка честно снята.
+        self._startup_host = host if hasattr(host, "set_start_with_windows") else None
+
+        card_run, lay_run = make_card(i18n.t("ЗАПУСК ВМЕСТЕ С WINDOWS"))
+        self.chk_startup = QCheckBox(i18n.t("Запускать вместе с Windows"))
+        self.chk_startup.setChecked(self._startup_enabled())
+        self.chk_startup.setEnabled(self._startup_host is not None)
+        self.chk_startup.stateChanged.connect(self._startup_changed)
+        lay_run.addWidget(self.chk_startup)
+
+        run_note = QLabel(i18n.t(
+            "Файл автозапуска ложится в папку «Автозагрузка» текущего пользователя — "
+            "без окна и без запроса прав. Приложение стартует в трей, настройки экрана "
+            "применяются как обычно."))
+        run_note.setObjectName("Hint")
+        run_note.setWordWrap(True)
+        lay_run.addWidget(run_note)
+
+        self.lbl_startup = QLabel("")
+        self.lbl_startup.setObjectName("Hint")
+        self.lbl_startup.setWordWrap(True)
+        if self._startup_host is None:
+            self.lbl_startup.setText(i18n.t("Автозапуск настраивается из главного окна."))
+        lay_run.addWidget(self.lbl_startup)
+        root.addWidget(card_run)
+
         # --- прочие утилиты (ТЗ 6.3) ---
         try:
             from gd_extra_ui import ExtraPanel
@@ -290,6 +318,7 @@ class UtilsWidget(QWidget):
     # -- жизненный цикл вкладки -------------------------------------------
     def activate(self):
         self._refresh()
+        self._sync_startup()
         self._timer.start(2000)
         extra = getattr(self, "extra", None)
         if extra is not None:
@@ -438,6 +467,44 @@ class UtilsWidget(QWidget):
     def _set_status(self, text, ok=True):
         self.status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
         self.status.setText(text)
+
+    # -- автозапуск с Windows ----------------------------------------------
+    def _startup_enabled(self) -> bool:
+        """Автозапуск включён: файл в «Автозагрузке» есть (спрашиваем окно)."""
+        host = self._startup_host
+        if host is None:
+            return False
+        try:
+            return bool(host.start_with_windows())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _sync_startup(self) -> None:
+        """Галочка показывает факт — при открытии вкладки и после отказа."""
+        if self._startup_host is None:
+            return
+        self.chk_startup.blockSignals(True)
+        self.chk_startup.setChecked(self._startup_enabled())
+        self.chk_startup.blockSignals(False)
+
+    def _startup_changed(self, state) -> None:
+        """Галочка переключена: файл автозагрузки + флаг в presets.json."""
+        host = self._startup_host
+        if host is None:
+            return
+        on = state == Qt.Checked
+        try:
+            err = host.set_start_with_windows(on)
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
+        if err:
+            self.lbl_startup.setStyleSheet(f"color: {th.WARN};")
+            self.lbl_startup.setText(i18n.t("Автозапуск не изменён: {v0}", v0=err))
+            self._sync_startup()      # галочка возвращается к факту, а не к нажатию
+            return
+        self.lbl_startup.setStyleSheet(f"color: {th.MUTED};")
+        self.lbl_startup.setText(i18n.t("Автозапуск включён") if on
+                                 else i18n.t("Автозапуск выключен"))
 
     # -- автоочистка: настройки ---------------------------------------------
     def _auto_path(self):

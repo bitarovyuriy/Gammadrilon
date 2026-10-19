@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""ВРЕМЕННАЯ проверка правок сессии (offscreen): фут, темп метрик, DNS, трей, правила.
+"""Смоук-проверка приложения (offscreen): фут, темп метрик, DNS, трей, правила, GPU.
 
-Запуск:  .venv\\Scripts\\python.exe _tmp_verify.py
+Запуск из корня проекта:  .venv\\Scripts\\python.exe tests\\smoke_check.py
 
 Ничего не пишет в presets.json, не применяет профили, не поднимает компаньонов.
 Снимки фута в двух состояниях кладёт в build/shots/ (foot-off.png, foot-on.png).
+Код возврата: 0 — все проверки прошли, 1 — есть провалы (см. build/shots/verify.log).
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from pathlib import Path
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)   # скрипт лежит в tests/, проект — на уровень выше
 try:
     import sysconfig as _sysconfig
 
@@ -32,8 +34,8 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -48,7 +50,7 @@ import gd_metrics  # noqa: E402
 import gd_rules  # noqa: E402
 import main as gd_main  # noqa: E402
 
-OUT = os.path.join(HERE, "build", "shots")
+OUT = os.path.join(ROOT, "build", "shots")
 os.makedirs(OUT, exist_ok=True)
 
 app = QApplication([])
@@ -99,7 +101,7 @@ for _ in range(100):
 per_call = (time.perf_counter() - t0) / 100 * 1e6
 check("DNS: повторный вызов из кэша (≤50 мкс)", per_call <= 50.0, f"{per_call:.1f} мкс/вызов")
 
-src = open(os.path.join(HERE, "gd_dns.py"), encoding="utf-8").read()
+src = open(os.path.join(ROOT, "gd_dns.py"), encoding="utf-8").read()
 check("DNS: в чтении состояния не осталось powershell",
       src.count('"powershell", "-NoProfile", "-Command"') == 1,
       f"вызовов powershell в модуле: {src.count(chr(34) + 'powershell' + chr(34))} (ожидается 1 — только DoH)")
@@ -118,7 +120,7 @@ check("метрики: вкладка GPU → GPU 2 с", t_focus[1] == 2.0, str(
 check("метрики: трей → GPU 20 с, CPU 3 с",
       t_tray[0] == 3.0 and t_tray[1] == 20.0, str(t_tray))
 check("метрики: DNS-таймера в модуле не осталось",
-      "DNS_TTL" not in open(os.path.join(HERE, "gd_metrics.py"), encoding="utf-8").read())
+      "DNS_TTL" not in open(os.path.join(ROOT, "gd_metrics.py"), encoding="utf-8").read())
 
 # DNS сам не читается: даём циклу 2 с, чтобы ошибиться, и проверяем, что кэш пуст
 gd_metrics.start()
@@ -330,6 +332,45 @@ except Exception as exc:  # noqa: BLE001
     print("тик сторожа упал:", exc)
 check("гамма: тик сторожа не падает на живом окне", tick_ok)
 
+# GPU: лимит слетает и внутри сессии (сон, TDR, сброс драйвера) — вкладку о факте
+# спрашивает тот же двухсекундный тик статусбара, что и об обходе DPI.
+_drift = {"n": 0}
+_real_drift = win._gpu_page.check_drift
+win._gpu_page.check_drift = lambda: _drift.__setitem__("n", _drift["n"] + 1)
+win.is_quitting = False
+win._check_gpu_drift()
+check("GPU: тик статусбара спрашивает вкладку о слетевшем лимите", _drift["n"] == 1,
+      f"вызовов: {_drift['n']}")
+quitting_silent = True
+try:
+    win.is_quitting = True          # выход сам решает судьбу лимита — тост был бы ложным
+    win._check_gpu_drift()
+    quitting_silent = _drift["n"] == 1
+finally:
+    win.is_quitting = False
+    win._gpu_page.check_drift = _real_drift
+check("GPU: на выходе сверка молчит", quitting_silent, f"вызовов: {_drift['n']}")
+
+# Питание CPU: компаньон — единственный сторож отката профиля; его смерть в работе
+# ловит тот же тик статусбара (фут сайдбара виден только при открытом окне).
+_svc = {"n": 0}
+_real_svc = win._power_page.check_service_gone
+win._power_page.check_service_gone = lambda: _svc.__setitem__("n", _svc["n"] + 1)
+win.is_quitting = False
+win._check_power_service()
+check("CPU: тик статусбара спрашивает вкладку о смерти компаньона", _svc["n"] == 1,
+      f"вызовов: {_svc['n']}")
+quitting_svc = True
+try:
+    win.is_quitting = True          # выход сам просит компаньон уйти: тост был бы ложным
+    win._check_power_service()
+    quitting_svc = _svc["n"] == 1
+finally:
+    win.is_quitting = False
+    win._power_page.check_service_gone = _real_svc
+check("CPU: на выходе доклад о смерти компаньона молчит", quitting_svc,
+      f"вызовов: {_svc['n']}")
+
 check("QSS: правило для погашенного LED есть", '[state="off"]' in gd_main.build_app_stylesheet())
 
 foot_widget = win._foot_led.parentWidget()
@@ -510,9 +551,175 @@ try:
     check("правила: смена DNS по правилу обновила статусбар запросом (не таймером)",
           _records["dns_req"] == 1, str(_records))
     check("правила: смена DNS попала в журнал и тост",
-          _records["journal"] == 2 and _records["toast"] == 2, str(_records))
+          # тостов три: успешная очистка, отказ очистки (теперь тоже говорит) и DNS
+          _records["journal"] == 2 and _records["toast"] == 3, str(_records))
     check("правила: «как было» для DNS записано до смены",
           gd_dns.state_path().exists(), str(gd_dns.state_path()))
+
+    # --- 4.2.1 переключатель производительности: отказ и успех видны ------------
+    # Раньше set_status принимал только текст, а переключатель передавал ok=False:
+    # при незаданных профилях из слота горячей клавиши летел TypeError, и вместо
+    # честного «профили не заданы» пользователь не видел ничего.
+    import gd_perf  # noqa: E402
+    import gd_theme as th  # noqa: E402
+
+    _perf_settings = win.config["settings"]
+    _had_profiles = "perf_profiles" in _perf_settings
+    _perf_profiles = _perf_settings.get("perf_profiles")
+    _perf_toasts: list = []
+    gd_toast.show_toast = lambda text, kind="ok": _perf_toasts.append((text, kind))
+
+    _perf_settings["perf_profiles"] = {"limited": {"cpu": "", "gpu": ""},
+                                       "boost": {"cpu": "", "gpu": ""}}
+    _perf_crash = None
+    try:
+        win._on_perf_toggle()
+    except Exception as _exc:  # noqa: BLE001
+        _perf_crash = _exc
+    check("переключатель: незаданные профили не роняют слот горячей клавиши",
+          _perf_crash is None, repr(_perf_crash))
+    check("переключатель: отказ назван словами и подсвечен тревогой",
+          win.status_label.text() == i18n.t("Переключатель производительности: профили не заданы")
+          and th.WARN in win.status_label.styleSheet(),
+          f"{win.status_label.text()!r} / {win.status_label.styleSheet()!r}")
+    check("переключатель: отказ подтверждён warn-тостом",
+          bool(_perf_toasts) and _perf_toasts[-1][1] == "warn",
+          str(_perf_toasts[-1:] or None))
+
+    _real_toggle, _real_sound = gd_perf.toggle, gd_perf.play_sound
+    _save_before = win._save_config
+    _sounds: list = []
+    gd_perf.toggle = lambda cfg, power, gpu: {"ok": True, "state": "limited",
+                                              "limited": True, "cpu": "eco",
+                                              "gpu": "quiet", "errors": []}
+    gd_perf.play_sound = lambda limited: _sounds.append(limited)
+    win._save_config = lambda *a, **kw: None      # конфиг пользователя не трогаем
+    try:
+        win._on_perf_toggle()
+    finally:
+        gd_perf.toggle, gd_perf.play_sound = _real_toggle, _real_sound
+        win._save_config = _save_before
+        if _had_profiles:
+            _perf_settings["perf_profiles"] = _perf_profiles
+        else:
+            _perf_settings.pop("perf_profiles", None)
+    check("переключатель: успех сказан словами и обычным тостом",
+          win.status_label.text() == i18n.t("Переключатель производительности: {v0}",
+                                            v0=i18n.t("ограничение включено"))
+          and win.status_label.styleSheet() == ""
+          and bool(_perf_toasts) and _perf_toasts[-1][1] == "ok",
+          f"{win.status_label.text()!r} / {_perf_toasts[-1:] or None}")
+    check("переключатель: звук отклика — по факту (ограничение включено)",
+          _sounds == [True], str(_sounds))
+    gd_toast.show_toast = lambda *a, **kw: _records.__setitem__("toast", _records["toast"] + 1)
+
+    # --- 4.3 отказ внешних путей: не только в логе, но и в тосте ---------------
+    # Правило срабатывает само, профиль приходит из трея, «тихий час» — по часам:
+    # окно в этот момент свёрнуто в трей, и статусбар отказа никто не увидит.
+    # Успех этих путей тостом показывался, а отказ молчал — теперь наоборот тоже.
+    import gd_profiles  # noqa: E402
+
+    _fail_toasts: list = []
+    gd_toast.show_toast = lambda text, kind="ok": _fail_toasts.append((text, kind))
+
+    win._rule_client = lambda: _FakeHelper({"ok": False, "error": "нужны права администратора"})
+    win._run_rule_action({"name": "Чистить ОЗУ", "action": {"kind": "purge_standby"}})
+    pump(500)
+    check("правила: отказ очистки ОЗУ виден тревожным тостом с причиной",
+          bool(_fail_toasts) and _fail_toasts[-1][1] == "warn"
+          and "очистка не выполнена" in _fail_toasts[-1][0]
+          and "нужны права" in _fail_toasts[-1][0],
+          str(_fail_toasts[-1:] or None))
+    check("правила: тот же отказ подсвечен и в статусе окна",
+          win.status_label.text() == i18n.t("Правило «{v0}»: очистка ОЗУ не выполнена.",
+                                            v0="Чистить ОЗУ")
+          and th.WARN in win.status_label.styleSheet(),
+          f"{win.status_label.text()!r} / {win.status_label.styleSheet()!r}")
+
+    _real_cpu_apply = win._power_page.apply_profile
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("нет компаньона")
+
+    win._power_page.apply_profile = _boom
+    _fail_toasts.clear()
+    _res = win._run_rule_action({"name": "Сломать", "action": {"kind": "cpu_profile"}})
+    check("правила: исключение в действии названо и в логе, и в тосте",
+          "ошибка — нет компаньона" in _res
+          and bool(_fail_toasts) and _fail_toasts[-1][1] == "warn"
+          and "нет компаньона" in _fail_toasts[-1][0],
+          f"{_res!r} / {_fail_toasts[-1:] or None}")
+
+    _fail_toasts.clear()
+    _res = win._run_rule_action({"name": "Странное", "action": {"kind": "нет-такого"}})
+    win._power_page.apply_profile = _real_cpu_apply
+    check("правила: недоступное действие не молчит",
+          "действие недоступно" in _res
+          and bool(_fail_toasts) and _fail_toasts[-1][1] == "warn"
+          and "действие недоступно" in _fail_toasts[-1][0],
+          f"{_res!r} / {_fail_toasts[-1:] or None}")
+
+    _real_gpu_apply = win._gpu_page.apply_profile
+    win._gpu_page.apply_profile = _boom
+    _fail_toasts.clear()
+    win.on_gpu_profile("quiet")          # трей: отказ не должен пропасть молча
+    win._gpu_page.apply_profile = _real_gpu_apply
+    check("трей: отказ профиля GPU виден тревожным тостом",
+          bool(_fail_toasts) and _fail_toasts[-1][1] == "warn"
+          and "нет компаньона" in _fail_toasts[-1][0],
+          str(_fail_toasts[-1:] or None))
+
+    _fail_toasts.clear()
+    win._power_page._apply_done({"ok": False, "error": "нужны права администратора"},
+                                {"cmd": "apply", "profile": "eco"})
+    check("CPU: отказ профиля виден тостом, а не только в строке карточки",
+          bool(_fail_toasts) and _fail_toasts[-1][1] == "warn"
+          and "не применён" in _fail_toasts[-1][0],
+          str(_fail_toasts[-1:] or None))
+
+    # --- 4.4 «тихий час»: не выдавать попытку за успех -------------------------
+    _real_gamma_apply = win.gamma_controller.apply
+    _real_quiet_path = gd_profiles.quiet_path
+    _quiet_dir = Path(tempfile.mkdtemp(prefix="gd_quiet_"))
+    gd_profiles.quiet_path = lambda: _quiet_dir / "quiet_hour.json"
+    _power_calls: list = []
+    win._power_page.apply_profile = lambda *a, **kw: _power_calls.append(a[:1])
+
+    win.gamma_controller.apply = lambda *a, **kw: False
+    _fail_toasts.clear()
+    win.apply_values(0.9, 0.95, 1.15, 5500, save=False)
+    check("гамма: отказ подсвечен тревогой в статусе окна",
+          th.WARN in win.status_label.styleSheet(), repr(win.status_label.styleSheet()))
+
+    _fail_toasts.clear()
+    win._quiet_apply({"enabled": True, "start": "23:00", "end": "08:00"})
+    check("тихий час: отказ гаммы не выдаётся за «ЭКО включён»",
+          bool(_fail_toasts) and _fail_toasts[-1] == (i18n.t("toast.quiet_no_dim"), "warn"),
+          str(_fail_toasts[-1:] or None))
+    check("тихий час: ЭКО при этом всё равно запущен (яркость — не повод молчать)",
+          _power_calls[-1:] == [("eco",)], str(_power_calls[-1:]))
+    check("тихий час: состояние «применён» записано, чтобы тик не спамил тостами",
+          bool(gd_profiles.load_quiet().get("applied")))
+
+    win.gamma_controller.apply = lambda *a, **kw: True
+    _fail_toasts.clear()
+    win._quiet_apply({"enabled": True, "start": "23:00", "end": "08:00"})
+    check("тихий час: полный успех — прежний спокойный тост",
+          _fail_toasts[-1:] == [(i18n.t("toast.quiet_on"), "info")],
+          str(_fail_toasts[-1:] or None))
+
+    win.gamma_controller.apply = lambda *a, **kw: False
+    _fail_toasts.clear()
+    win._quiet_release({"enabled": True, "start": "23:00", "end": "08:00"})
+    check("тихий час: неудачный возврат яркости не выдаётся за успех",
+          bool(_fail_toasts) and _fail_toasts[-1] == (i18n.t("toast.quiet_keep_dim"), "warn"),
+          str(_fail_toasts[-1:] or None))
+
+    win.gamma_controller.apply = _real_gamma_apply
+    win._power_page.apply_profile = _real_cpu_apply
+    gd_profiles.quiet_path = _real_quiet_path
+    shutil.rmtree(_quiet_dir, ignore_errors=True)
+    gd_toast.show_toast = lambda *a, **kw: _records.__setitem__("toast", _records["toast"] + 1)
 
     _dlg = gd_rules_ui.RuleDialog({"name": "x", "trigger": {"type": "process_start", "process": "game.exe"},
                                    "condition": {}, "action": {"kind": "set_dns", "dns": "quad9"}})
@@ -678,7 +885,7 @@ _power.client._proc = None
 check("CPU: вкладка построена на старте, но процесса компаньона у неё нет",
       _power is not None and _power.service_alive() is False, str(_power.service_alive()))
 
-_pui_src = open(os.path.join(HERE, "gd_power_ui.py"), encoding="utf-8").read()
+_pui_src = open(os.path.join(ROOT, "gd_power_ui.py"), encoding="utf-8").read()
 check("CPU: статус опрашивается только честным путём (read_status, без спавна)",
       _pui_src.count("read_status(self.client)") == 2
       and 'self.client.call({"cmd": "status"})' not in _pui_src,

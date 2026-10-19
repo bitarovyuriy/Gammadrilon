@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from multiprocessing.connection import Client
 
@@ -61,6 +62,11 @@ class HelperClient:
         self.session_file = session_file
         self.service = service
         self.service_flag = service_flag
+        # Один запрос — один ответ на одно соединение. Спрашивают из разных
+        # фоновых потоков (вкладка, правила автоматизации), а TCP-клиент не
+        # различает, чей ответ пришёл: без замка ответы достались бы не тем,
+        # кто спрашивал (та же болячка, что в PowerClient — см. _tmp_power_race.py).
+        self._lock = threading.RLock()
 
     # -- сессия ------------------------------------------------------------
     def _load_session(self) -> dict | None:
@@ -105,6 +111,16 @@ class HelperClient:
 
     def ensure(self) -> bool:
         """Подключиться к живому хелперу или запустить его (UAC)."""
+        with self._lock:
+            return self._ensure_locked()
+
+    def _ensure_locked(self) -> bool:
+        """Подключение/запуск хелпера (замок уже взят).
+
+        Отдельным методом — чтобы ``call()`` держал замок непрерывно от
+        соединения до ответа: два потока не поднимут два хелпера и не разберут
+        чужие ответы.
+        """
         if self._conn is not None:
             return True
         sess = self._load_session()
@@ -142,24 +158,26 @@ class HelperClient:
         Позволяет спросить «права уже выданы?» и ничего не показать
         пользователю, если нет.
         """
-        if self._conn is not None:
-            return True
-        sess = self._load_session()
-        if not sess:
-            return False
-        try:
-            return self._connect(sess["port"], sess["token"])
-        except Exception:  # noqa: BLE001
-            return False
+        with self._lock:
+            if self._conn is not None:
+                return True
+            sess = self._load_session()
+            if not sess:
+                return False
+            try:
+                return self._connect(sess["port"], sess["token"])
+            except Exception:  # noqa: BLE001
+                return False
 
     def call(self, obj: dict, timeout: float = 15.0) -> dict:
         """Отправить команду, при необходимости запустив хелпер (UAC). Никогда не бросает."""
         try:
-            if not self.ensure():
-                return {"ok": False, "error": i18n.t("хелпер не запустился (нужны права администратора)")}
+            with self._lock:
+                if not self._ensure_locked():
+                    return {"ok": False, "error": i18n.t("хелпер не запустился (нужны права администратора)")}
+                return self._call_connected_locked(obj, timeout)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        return self._call_connected(obj, timeout)
 
     def call_existing(self, obj: dict, timeout: float = 15.0) -> dict:
         """Команда только в уже запущенный хелпер: UAC отсюда **не** поднимается.
@@ -173,16 +191,29 @@ class HelperClient:
             return {"ok": False, "error": i18n.t(
                 "нужны права администратора, а фоновое действие не поднимает UAC: "
                 "откройте вкладку «Утилиты» или «DNS» и разрешите один раз")}
-        return self._call_connected(obj, timeout)
+        with self._lock:
+            return self._call_connected_locked(obj, timeout)
 
     def _call_connected(self, obj: dict, timeout: float) -> dict:
         """Отправка в установленное соединение. Никогда не бросает исключение."""
+        with self._lock:
+            return self._call_connected_locked(obj, timeout)
+
+    def _call_connected_locked(self, obj: dict, timeout: float) -> dict:
+        """Отправка и приём ответа (замок уже взят). Никогда не бросает.
+
+        Замок держится на всю пару «вопрос — ответ»: ждать ответа из одного
+        соединения из двух потоков одновременно нельзя — ответы разберутся в
+        произвольном порядке, и вызывающий получит чужой. Ссылку на соединение
+        держим локально: `shutdown` закрывает его из другого потока.
+        """
+        conn = self._conn
         try:
-            self._conn.send(obj)
-            if not self._conn.poll(timeout):
+            conn.send(obj)
+            if not conn.poll(timeout):
                 self._conn = None
                 return {"ok": False, "error": i18n.t("таймаут ответа хелпера")}
-            return self._conn.recv()
+            return conn.recv()
         except (OSError, EOFError):
             self._conn = None
             return {"ok": False, "error": i18n.t("связь с хелпером потеряна")}

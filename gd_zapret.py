@@ -353,6 +353,63 @@ def clear_our_state() -> None:
         pass
 
 
+def _as_pid(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+#: PID, о пропаже которых уже сказали: иначе и таймер окна, и опрос вкладки
+#: сообщали бы об одной и той же смерти по очереди
+_vanished: set[int] = set()
+
+
+def forget_previous_run() -> None:
+    """Забыть состояние прошлого запуска приложения, не выдавая его за смерть.
+
+    Если приложение закрыли (или оно упало) вместе с побеждённым winws.exe,
+    файл состояния остаётся с мёртвым PID. Про такой процесс говорить «он
+    завершился сам» — враньё: его мог убить наш же выход. Поэтому при старте
+    окна такое состояние молча снимается, а живой наш процесс не трогается.
+    """
+    state = our_state()
+    if not state:
+        return
+    pid = _as_pid(state.get("pid"))
+    if pid is not None and pid_alive(pid):
+        return                     # наш winws жив с прошлого запуска — оставляем
+    if pid is not None:
+        _vanished.add(pid)
+    clear_our_state()
+
+
+def take_vanished() -> dict | None:
+    """Взять уведомление «наш winws исчез» — по одному разу на каждый запуск.
+
+    Проверка дёшева (файл состояния + имя одного процесса), поэтому её может
+    звать и таймер главного окна, и опрос вкладки: кто спросил первым — тот и
+    получает состояние, остальные получают ``None``. Молчать нельзя: обход
+    могли включить и свернуть окно, а смерть процесса — новость пользователя,
+    а не деталь строки на закрытой вкладке.
+    """
+    state = our_state()
+    if not state:
+        return None
+    pid = _as_pid(state.get("pid"))
+    if pid is None:
+        clear_our_state()
+        return None
+    if pid_alive(pid):
+        _vanished.discard(pid)     # PID переиспользован живым процессом
+        return None
+    clear_our_state()
+    if pid in _vanished:
+        return None
+    _vanished.add(pid)
+    return state
+
+
 def _signature(root: str) -> str:
     """Подпись версии папки: дата+размер winws.exe, service.bat и version.txt.
 

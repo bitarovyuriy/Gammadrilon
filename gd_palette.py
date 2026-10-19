@@ -151,7 +151,6 @@ class CommandPalette(QDialog):
         return cmds
 
     def _param_commands(self, value: int):
-        mw = self.mw
         cmds = [
             (i18n.t("pal.gpu_limit", value=value), f"gpu limit power watts {value}",
              lambda: self._set_gpu_watts(value)),

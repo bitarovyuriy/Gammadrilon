@@ -31,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import gd_theme as th
+import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 
 INTRO = (
