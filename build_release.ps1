@@ -8,6 +8,14 @@ if (-not (Test-Path $py)) {
     throw "Не найден venv: $py"
 }
 
+# Версия берётся из единственного источника — APP_VERSION в main.py.
+$mainSource = Get-Content (Join-Path $projectRoot "main.py") -Raw -Encoding UTF8
+if ($mainSource -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') {
+    throw "В main.py не найден APP_VERSION"
+}
+$appVersion = $Matches[1]
+Write-Host "Версия: $appVersion" -ForegroundColor Cyan
+
 Write-Host "== Портативная сборка (onedir) ==" -ForegroundColor Cyan
 & $py -m PyInstaller --clean --noconfirm Gammadrilon.spec
 if ($LASTEXITCODE -ne 0) { throw "Сборка onedir завершилась с ошибкой" }
@@ -50,10 +58,19 @@ $zipMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 $exeHash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 
+# Версионированные копии рядом с каноническими именами: удобно хранить
+# несколько релизов и не перепутать скачанный архив.
+$versionedExe = Join-Path $projectRoot "dist\Gammadrilon-$appVersion.exe"
+$versionedZip = Join-Path $projectRoot "dist\Gammadrilon-$appVersion-portable.zip"
+Copy-Item $exe $versionedExe -Force
+Copy-Item $zip $versionedZip -Force
+
 Write-Host ""
 Write-Host "Готово:" -ForegroundColor Green
 Write-Host "  портативная папка: $portableDir"
 Write-Host "  zip:               $zip ($zipMb МБ)"
+Write-Host "  zip с версией:     $versionedZip"
 Write-Host "  релизный exe:      $exe ($sizeMb МБ)"
+Write-Host "  exe с версией:     $versionedExe"
 Write-Host "  sha256 exe:        $exeHash"
 Write-Host "  sha256 zip:        $zipHash"
