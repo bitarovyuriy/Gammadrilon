@@ -1,0 +1,1519 @@
+{
+ "shots": [
+  [
+   "dark-gamma-window",
+   910,
+   700,
+   54397
+  ],
+  [
+   "dark-cpu-window",
+   910,
+   700,
+   61502
+  ],
+  [
+   "dark-cpu-full",
+   674,
+   701,
+   45229
+  ],
+  [
+   "dark-gpu-window",
+   910,
+   700,
+   69447
+  ],
+  [
+   "dark-gpu-full",
+   674,
+   650,
+   47542
+  ],
+  [
+   "dark-rules-window",
+   910,
+   700,
+   47655
+  ],
+  [
+   "dark-rules-full",
+   674,
+   593,
+   21678
+  ],
+  [
+   "dark-utils-window",
+   910,
+   700,
+   71881
+  ],
+  [
+   "dark-utils-full",
+   674,
+   1587,
+   125047
+  ],
+  [
+   "dark-dns-window",
+   910,
+   700,
+   61022
+  ],
+  [
+   "dark-dns-full",
+   684,
+   559,
+   36965
+  ],
+  [
+   "dark-zapret-window",
+   910,
+   700,
+   62906
+  ],
+  [
+   "dark-zapret-full",
+   764,
+   1068,
+   61825
+  ],
+  [
+   "dark-agent-window",
+   910,
+   700,
+   66188
+  ],
+  [
+   "dark-agent-full",
+   674,
+   827,
+   59933
+  ],
+  [
+   "light-gamma-window",
+   910,
+   700,
+   54267
+  ],
+  [
+   "light-cpu-window",
+   910,
+   700,
+   61430
+  ],
+  [
+   "light-cpu-full",
+   674,
+   701,
+   45166
+  ],
+  [
+   "light-gpu-window",
+   910,
+   700,
+   68586
+  ],
+  [
+   "light-gpu-full",
+   674,
+   650,
+   47185
+  ],
+  [
+   "light-rules-window",
+   910,
+   700,
+   47430
+  ],
+  [
+   "light-rules-full",
+   674,
+   593,
+   21824
+  ],
+  [
+   "light-utils-window",
+   910,
+   700,
+   71924
+  ],
+  [
+   "light-utils-full",
+   674,
+   1587,
+   125620
+  ],
+  [
+   "light-dns-window",
+   910,
+   700,
+   60909
+  ],
+  [
+   "light-dns-full",
+   684,
+   559,
+   37081
+  ],
+  [
+   "light-zapret-window",
+   910,
+   700,
+   62952
+  ],
+  [
+   "light-zapret-full",
+   764,
+   1068,
+   62088
+  ],
+  [
+   "light-agent-window",
+   910,
+   700,
+   65824
+  ],
+  [
+   "light-agent-full",
+   674,
+   827,
+   59945
+  ],
+  [
+   "dark-tray-menu",
+   264,
+   214,
+   6078
+  ],
+  [
+   "dark-dialog-onboarding",
+   524,
+   335,
+   22940
+  ],
+  [
+   "dark-dialog-journal",
+   620,
+   480,
+   37001
+  ],
+  [
+   "dark-dialog-palette",
+   560,
+   380,
+   18695
+  ],
+  [
+   "dark-dialog-rule",
+   460,
+   332,
+   20010
+  ],
+  [
+   "dark-dialog-processpicker",
+   480,
+   520,
+   37050
+  ],
+  [
+   "dark-dialog-reset-confirm",
+   231,
+   181,
+   9259
+  ],
+  [
+   "dark-overlay-toast-ok",
+   207,
+   57,
+   2787
+  ],
+  [
+   "dark-overlay-toast-error",
+   207,
+   57,
+   2824
+  ]
+ ],
+ "colours": {
+  "dark-gamma-window": {
+   "theme": "dark",
+   "unique": 255,
+   "top": [
+    [
+     "#0B0B0B",
+     400583
+    ],
+    [
+     "#000000",
+     147432
+    ],
+    [
+     "#8A8A8A",
+     42424
+    ],
+    [
+     "#2E2E2E",
+     9945
+    ],
+    [
+     "#FFFFFF",
+     8053
+    ],
+    [
+     "#1F1F1F",
+     6669
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-cpu-window": {
+   "theme": "dark",
+   "unique": 256,
+   "top": [
+    [
+     "#0B0B0B",
+     430511
+    ],
+    [
+     "#000000",
+     142704
+    ],
+    [
+     "#8A8A8A",
+     14762
+    ],
+    [
+     "#1F1F1F",
+     9389
+    ],
+    [
+     "#FFFFFF",
+     8418
+    ],
+    [
+     "#2E2E2E",
+     4244
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-cpu-full": {
+   "theme": "dark",
+   "unique": 256,
+   "top": [
+    [
+     "#0B0B0B",
+     302744
+    ],
+    [
+     "#000000",
+     116347
+    ],
+    [
+     "#8A8A8A",
+     14095
+    ],
+    [
+     "#FFFFFF",
+     13476
+    ],
+    [
+     "#1F1F1F",
+     9175
+    ],
+    [
+     "#F5F5F5",
+     1862
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-gpu-window": {
+   "theme": "dark",
+   "unique": 256,
+   "top": [
+    [
+     "#0B0B0B",
+     424984
+    ],
+    [
+     "#000000",
+     136458
+    ],
+    [
+     "#FFFFFF",
+     21190
+    ],
+    [
+     "#8A8A8A",
+     9592
+    ],
+    [
+     "#1F1F1F",
+     6886
+    ],
+    [
+     "#2E2E2E",
+     5633
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-gpu-full": {
+   "theme": "dark",
+   "unique": 255,
+   "top": [
+    [
+     "#0B0B0B",
+     282194
+    ],
+    [
+     "#000000",
+     96470
+    ],
+    [
+     "#FFFFFF",
+     21161
+    ],
+    [
+     "#8A8A8A",
+     8957
+    ],
+    [
+     "#1F1F1F",
+     7244
+    ],
+    [
+     "#2E2E2E",
+     2514
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-rules-window": {
+   "theme": "dark",
+   "unique": 255,
+   "top": [
+    [
+     "#000000",
+     206757
+    ],
+    [
+     "#070707",
+     203490
+    ],
+    [
+     "#0B0B0B",
+     192559
+    ],
+    [
+     "#1F1F1F",
+     4966
+    ],
+    [
+     "#2E2E2E",
+     3426
+    ],
+    [
+     "#FFFFFF",
+     2900
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-rules-full": {
+   "theme": "dark",
+   "unique": 248,
+   "top": [
+    [
+     "#070707",
+     214328
+    ],
+    [
+     "#000000",
+     139501
+    ],
+    [
+     "#0B0B0B",
+     29236
+    ],
+    [
+     "#1F1F1F",
+     4065
+    ],
+    [
+     "#FFFFFF",
+     2865
+    ],
+    [
+     "#1A1A1A",
+     2101
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-utils-window": {
+   "theme": "dark",
+   "unique": 256,
+   "top": [
+    [
+     "#0B0B0B",
+     451932
+    ],
+    [
+     "#000000",
+     138351
+    ],
+    [
+     "#1F1F1F",
+     6442
+    ],
+    [
+     "#FFFFFF",
+     4884
+    ],
+    [
+     "#F5F5F5",
+     3022
+    ],
+    [
+     "#161616",
+     2756
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-utils-full": {
+   "theme": "dark",
+   "unique": 256,
+   "top": [
+    [
+     "#0B0B0B",
+     771720
+    ],
+    [
+     "#000000",
+     164426
+    ],
+    [
+     "#070707",
+     49080
+    ],
+    [
+     "#1F1F1F",
+     19267
+    ],
+    [
+     "#8A8A8A",
+     5070
+    ],
+    [
+     "#FFFFFF",
+     4847
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-dns-window": {
+   "theme": "dark",
+   "unique": 255,
+   "top": [
+    [
+     "#0B0B0B",
+     300233
+    ],
+    [
+     "#000000",
+     188817
+    ],
+    [
+     "#070707",
+     86861
+    ],
+    [
+     "#161616",
+     20062
+    ],
+    [
+     "#1F1F1F",
+     10038
+    ],
+    [
+     "#FFFFFF",
+     5414
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-dns-full": {
+   "theme": "dark",
+   "unique": 253,
+   "top": [
+    [
+     "#0B0B0B",
+     136922
+    ],
+    [
+     "#000000",
+     112119
+    ],
+    [
+     "#070707",
+     86852
+    ],
+    [
+     "#161616",
+     17429
+    ],
+    [
+     "#1F1F1F",
+     8490
+    ],
+    [
+     "#FFFFFF",
+     5366
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-zapret-window": {
+   "theme": "dark",
+   "unique": 247,
+   "top": [
+    [
+     "#0B0B0B",
+     390774
+    ],
+    [
+     "#000000",
+     115268
+    ],
+    [
+     "#070707",
+     57277
+    ],
+    [
+     "#161616",
+     27554
+    ],
+    [
+     "#1F1F1F",
+     9089
+    ],
+    [
+     "#2E2E2E",
+     7901
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-zapret-full": {
+   "theme": "dark",
+   "unique": 249,
+   "top": [
+    [
+     "#0B0B0B",
+     430312
+    ],
+    [
+     "#070707",
+     224188
+    ],
+    [
+     "#000000",
+     90038
+    ],
+    [
+     "#161616",
+     26370
+    ],
+    [
+     "#1F1F1F",
+     15950
+    ],
+    [
+     "#2E2E2E",
+     2758
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-agent-window": {
+   "theme": "dark",
+   "unique": 254,
+   "top": [
+    [
+     "#0B0B0B",
+     356227
+    ],
+    [
+     "#000000",
+     120066
+    ],
+    [
+     "#070707",
+     111424
+    ],
+    [
+     "#1F1F1F",
+     12336
+    ],
+    [
+     "#2E2E2E",
+     3478
+    ],
+    [
+     "#161616",
+     2715
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-agent-full": {
+   "theme": "dark",
+   "unique": 246,
+   "top": [
+    [
+     "#0B0B0B",
+     244871
+    ],
+    [
+     "#070707",
+     209974
+    ],
+    [
+     "#000000",
+     60135
+    ],
+    [
+     "#1F1F1F",
+     13220
+    ],
+    [
+     "#FFFFFF",
+     2541
+    ],
+    [
+     "#0D0D0D",
+     1214
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-gamma-window": {
+   "theme": "light",
+   "unique": 251,
+   "top": [
+    [
+     "#F7F7F7",
+     400584
+    ],
+    [
+     "#FFFFFF",
+     148004
+    ],
+    [
+     "#666666",
+     42285
+    ],
+    [
+     "#D8D8D8",
+     16434
+    ],
+    [
+     "#111111",
+     9908
+    ],
+    [
+     "#EAEAEA",
+     2743
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-cpu-window": {
+   "theme": "light",
+   "unique": 247,
+   "top": [
+    [
+     "#F7F7F7",
+     448115
+    ],
+    [
+     "#FFFFFF",
+     142963
+    ],
+    [
+     "#D8D8D8",
+     12211
+    ],
+    [
+     "#111111",
+     7444
+    ],
+    [
+     "#EAEAEA",
+     2775
+    ],
+    [
+     "#666666",
+     1336
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-cpu-full": {
+   "theme": "light",
+   "unique": 239,
+   "top": [
+    [
+     "#F7F7F7",
+     320294
+    ],
+    [
+     "#FFFFFF",
+     116097
+    ],
+    [
+     "#111111",
+     11541
+    ],
+    [
+     "#D8D8D8",
+     9161
+    ],
+    [
+     "#666666",
+     765
+    ],
+    [
+     "#F6F6F6",
+     371
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-gpu-window": {
+   "theme": "light",
+   "unique": 247,
+   "top": [
+    [
+     "#F7F7F7",
+     436229
+    ],
+    [
+     "#FFFFFF",
+     136283
+    ],
+    [
+     "#111111",
+     23795
+    ],
+    [
+     "#D8D8D8",
+     9928
+    ],
+    [
+     "#EAEAEA",
+     2795
+    ],
+    [
+     "#666666",
+     1557
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-gpu-full": {
+   "theme": "light",
+   "unique": 239,
+   "top": [
+    [
+     "#F7F7F7",
+     293522
+    ],
+    [
+     "#FFFFFF",
+     96322
+    ],
+    [
+     "#111111",
+     22760
+    ],
+    [
+     "#D8D8D8",
+     7229
+    ],
+    [
+     "#666666",
+     1001
+    ],
+    [
+     "#E7E7E7",
+     912
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-rules-window": {
+   "theme": "light",
+   "unique": 247,
+   "top": [
+    [
+     "#FFFFFF",
+     206729
+    ],
+    [
+     "#FBFBFB",
+     203462
+    ],
+    [
+     "#F7F7F7",
+     192657
+    ],
+    [
+     "#D8D8D8",
+     8300
+    ],
+    [
+     "#111111",
+     3434
+    ],
+    [
+     "#EAEAEA",
+     2696
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-rules-full": {
+   "theme": "light",
+   "unique": 234,
+   "top": [
+    [
+     "#FBFBFB",
+     214292
+    ],
+    [
+     "#FFFFFF",
+     139502
+    ],
+    [
+     "#F7F7F7",
+     29375
+    ],
+    [
+     "#D8D8D8",
+     4056
+    ],
+    [
+     "#111111",
+     2866
+    ],
+    [
+     "#F0F0F0",
+     2068
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-utils-window": {
+   "theme": "light",
+   "unique": 247,
+   "top": [
+    [
+     "#F7F7F7",
+     451795
+    ],
+    [
+     "#FFFFFF",
+     138325
+    ],
+    [
+     "#111111",
+     7952
+    ],
+    [
+     "#D8D8D8",
+     7834
+    ],
+    [
+     "#EAEAEA",
+     2809
+    ],
+    [
+     "#666666",
+     2052
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-utils-full": {
+   "theme": "light",
+   "unique": 239,
+   "top": [
+    [
+     "#F7F7F7",
+     771637
+    ],
+    [
+     "#FFFFFF",
+     164426
+    ],
+    [
+     "#FBFBFB",
+     49065
+    ],
+    [
+     "#D8D8D8",
+     19725
+    ],
+    [
+     "#111111",
+     7654
+    ],
+    [
+     "#666666",
+     5075
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-dns-window": {
+   "theme": "light",
+   "unique": 247,
+   "top": [
+    [
+     "#F7F7F7",
+     300156
+    ],
+    [
+     "#FFFFFF",
+     188809
+    ],
+    [
+     "#FBFBFB",
+     86852
+    ],
+    [
+     "#EAEAEA",
+     20052
+    ],
+    [
+     "#D8D8D8",
+     11379
+    ],
+    [
+     "#111111",
+     5818
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-dns-full": {
+   "theme": "light",
+   "unique": 239,
+   "top": [
+    [
+     "#F7F7F7",
+     136899
+    ],
+    [
+     "#FFFFFF",
+     112119
+    ],
+    [
+     "#FBFBFB",
+     86831
+    ],
+    [
+     "#EAEAEA",
+     17390
+    ],
+    [
+     "#D8D8D8",
+     9598
+    ],
+    [
+     "#111111",
+     5397
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-zapret-window": {
+   "theme": "light",
+   "unique": 247,
+   "top": [
+    [
+     "#F7F7F7",
+     390808
+    ],
+    [
+     "#FFFFFF",
+     115235
+    ],
+    [
+     "#FBFBFB",
+     57295
+    ],
+    [
+     "#EAEAEA",
+     27544
+    ],
+    [
+     "#D8D8D8",
+     16824
+    ],
+    [
+     "#111111",
+     3045
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-zapret-full": {
+   "theme": "light",
+   "unique": 237,
+   "top": [
+    [
+     "#F7F7F7",
+     430302
+    ],
+    [
+     "#FBFBFB",
+     224188
+    ],
+    [
+     "#FFFFFF",
+     90038
+    ],
+    [
+     "#EAEAEA",
+     26351
+    ],
+    [
+     "#D8D8D8",
+     18547
+    ],
+    [
+     "#111111",
+     2991
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-agent-window": {
+   "theme": "light",
+   "unique": 247,
+   "top": [
+    [
+     "#F7F7F7",
+     356249
+    ],
+    [
+     "#FFFFFF",
+     120053
+    ],
+    [
+     "#FBFBFB",
+     111446
+    ],
+    [
+     "#D8D8D8",
+     15614
+    ],
+    [
+     "#111111",
+     3603
+    ],
+    [
+     "#EAEAEA",
+     2780
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "light-agent-full": {
+   "theme": "light",
+   "unique": 235,
+   "top": [
+    [
+     "#F7F7F7",
+     244850
+    ],
+    [
+     "#FBFBFB",
+     209970
+    ],
+    [
+     "#FFFFFF",
+     60135
+    ],
+    [
+     "#D8D8D8",
+     14141
+    ],
+    [
+     "#111111",
+     2951
+    ],
+    [
+     "#F5F5F5",
+     1194
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-tray-menu": {
+   "theme": "dark",
+   "unique": 175,
+   "top": [
+    [
+     "#0B0B0B",
+     52339
+    ],
+    [
+     "#1F1F1F",
+     1379
+    ],
+    [
+     "#BCBCBC",
+     254
+    ],
+    [
+     "#C4C4C4",
+     254
+    ],
+    [
+     "#1C1C1C",
+     172
+    ],
+    [
+     "#ABABAB",
+     102
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-dialog-onboarding": {
+   "theme": "dark",
+   "unique": 244,
+   "top": [
+    [
+     "#000000",
+     155126
+    ],
+    [
+     "#FFFFFF",
+     4613
+    ],
+    [
+     "#0F0F0F",
+     1310
+    ],
+    [
+     "#8A8A8A",
+     828
+    ],
+    [
+     "#6A6A6A",
+     561
+    ],
+    [
+     "#F5F5F5",
+     506
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-dialog-journal": {
+   "theme": "dark",
+   "unique": 250,
+   "top": [
+    [
+     "#070707",
+     140994
+    ],
+    [
+     "#000000",
+     125285
+    ],
+    [
+     "#0B0B0B",
+     5851
+    ],
+    [
+     "#FFFFFF",
+     3885
+    ],
+    [
+     "#0D0D0D",
+     1257
+    ],
+    [
+     "#C4C4C4",
+     985
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-dialog-palette": {
+   "theme": "dark",
+   "unique": 210,
+   "top": [
+    [
+     "#070707",
+     127359
+    ],
+    [
+     "#000000",
+     37743
+    ],
+    [
+     "#0B0B0B",
+     18609
+    ],
+    [
+     "#161616",
+     17804
+    ],
+    [
+     "#1F1F1F",
+     2664
+    ],
+    [
+     "#FFFFFF",
+     1149
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-dialog-rule": {
+   "theme": "dark",
+   "unique": 245,
+   "top": [
+    [
+     "#000000",
+     79970
+    ],
+    [
+     "#0B0B0B",
+     61010
+    ],
+    [
+     "#1F1F1F",
+     3553
+    ],
+    [
+     "#FFFFFF",
+     632
+    ],
+    [
+     "#BCBCBC",
+     258
+    ],
+    [
+     "#8A8A8A",
+     233
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-dialog-processpicker": {
+   "theme": "dark",
+   "unique": 208,
+   "top": [
+    [
+     "#070707",
+     160385
+    ],
+    [
+     "#000000",
+     58580
+    ],
+    [
+     "#0B0B0B",
+     12890
+    ],
+    [
+     "#FFFFFF",
+     1616
+    ],
+    [
+     "#1F1F1F",
+     858
+    ],
+    [
+     "#2E2E2E",
+     669
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-dialog-reset-confirm": {
+   "theme": "dark",
+   "unique": 238,
+   "top": [
+    [
+     "#000000",
+     31880
+    ],
+    [
+     "#1A1A1A",
+     2895
+    ],
+    [
+     "#0B0B0B",
+     1846
+    ],
+    [
+     "#F5F5F5",
+     472
+    ],
+    [
+     "#BCBCBC",
+     270
+    ],
+    [
+     "#0D0D0D",
+     182
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-overlay-toast-ok": {
+   "theme": "dark",
+   "unique": 190,
+   "top": [
+    [
+     "#0B0B0B",
+     10195
+    ],
+    [
+     "#1F1F1F",
+     426
+    ],
+    [
+     "#FFFFFF",
+     194
+    ],
+    [
+     "#131313",
+     74
+    ],
+    [
+     "#E8E8E8",
+     52
+    ],
+    [
+     "#454545",
+     52
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  },
+  "dark-overlay-toast-error": {
+   "theme": "dark",
+   "unique": 192,
+   "top": [
+    [
+     "#0B0B0B",
+     10428
+    ],
+    [
+     "#8A8A8A",
+     198
+    ],
+    [
+     "#323232",
+     140
+    ],
+    [
+     "#333333",
+     84
+    ],
+    [
+     "#131313",
+     73
+    ],
+    [
+     "#E8E8E8",
+     52
+    ]
+   ],
+   "coloured": [],
+   "coloured_total": 0
+  }
+ },
+ "clip": [
+  [
+   "dark-cpu",
+   "QLabel",
+   "AMD Ryzen 5 5600 · схема «Gammadrilon — Gammadrilon — Gammad",
+   652,
+   662
+  ],
+  [
+   "dark-cpu [min]",
+   "QLabel",
+   "AMD Ryzen 5 5600 · схема «Gammadrilon — Gammadrilon — Gammad",
+   652,
+   662
+  ],
+  [
+   "light-cpu",
+   "QLabel",
+   "AMD Ryzen 5 5600 · схема «Gammadrilon — Gammadrilon — Gammad",
+   652,
+   662
+  ],
+  [
+   "light-cpu [min]",
+   "QLabel",
+   "AMD Ryzen 5 5600 · схема «Gammadrilon — Gammadrilon — Gammad",
+   652,
+   662
+  ]
+ ],
+ "small": []
+}
