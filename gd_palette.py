@@ -139,7 +139,7 @@ class CommandPalette(QDialog):
             (i18n.t("pal.onboarding"), "onboarding первый запуск знакомство",
              lambda: self.mw.show_first_run()),
             (i18n.t("pal.purge"), "memory standby ram память очистка озу кэш",
-             lambda: self.mw._utils_page._purge()),
+             lambda: self._purge_memory()),
             (i18n.t("pal.journal"), "journal log журнал история что произошло",
              lambda: mw.open_journal()),
             (i18n.t("pal.reset_gamma"), "reset gamma сброс гамма",
@@ -172,8 +172,17 @@ class CommandPalette(QDialog):
             return None
         return int(digits)
 
+    def _purge_memory(self):
+        """Очистка standby из палитры: ленивая вкладка «Утилиты» собирается под вызов."""
+        self.mw._ensure_page("tab.utils")
+        page = getattr(self.mw, "_utils_page", None)
+        if page is not None:
+            page._purge()
+
     def _set_gpu_watts(self, watts: int):
-        g = self.mw._gpu_page
+        g = self.mw._ensure_page("tab.gpu")
+        if g is None:
+            return
         lo = int(g.sl_pl.minimum())
         hi = int(g.sl_pl.maximum())
         value = max(lo, min(hi, watts))
@@ -182,7 +191,9 @@ class CommandPalette(QDialog):
         g._apply({"pl": value})
 
     def _set_cpu_percent(self, pct: int):
-        p = self.mw._power_page
+        p = self.mw._ensure_page("tab.cpu")
+        if p is None:
+            return
         value = max(5, min(100, pct))
         try:
             p.sl_max.setValue(value)

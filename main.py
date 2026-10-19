@@ -7,8 +7,7 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-import keyboard
-
+import gd_boot
 import gd_proc
 
 
@@ -871,6 +870,8 @@ class HotkeyManager(QObject):
         self.handles = []
 
     def clear(self):
+        import keyboard
+
         for handle in self.handles:
             try:
                 keyboard.remove_hotkey(handle)
@@ -880,6 +881,8 @@ class HotkeyManager(QObject):
         self.handles.clear()
 
     def register(self, config: dict):
+        import keyboard
+
         self.clear()
 
         hotkeys = config.get("settings", {}).get("hotkeys", {})
@@ -1475,8 +1478,10 @@ class MainWindow(QMainWindow):
 
         self.build_ui()
         self.build_tray()
+        gd_boot.mark("init:tray")
         self.start_rules()
         self.start_quiet_hour()
+        gd_boot.mark("init:rules")
         # локальный API для инструментов (ТЗ, этап 8): сервер и обработчики
         self._agent_server = None
         self._agent_confirm_open = False
@@ -1494,10 +1499,15 @@ class MainWindow(QMainWindow):
             "gpu_limit": self._agent_gpu_limit,
             "dns_set": self._agent_dns_set,
         }
-        try:
-            self.apply_theme(self.config.get("settings", {}).get("theme", "dark"))
-        except Exception:  # noqa: BLE001
-            pass
+        # тема уже применена до сборки окна (см. main()): страницы собраны со
+        # своим QSS. Повторно применяем, только если настройка разошлась с
+        # активной палитрой (правка файла между двумя чтениями — редкость).
+        want_theme = self.config.get("settings", {}).get("theme", "dark")
+        if th.active_name() != want_theme:
+            try:
+                self.apply_theme(want_theme)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             import gd_onboarding
 
@@ -1531,6 +1541,7 @@ class MainWindow(QMainWindow):
 
         # честный старт: если конфиг пришлось заменить дефолтом, об этом говорят
         self._config_recovery_note()
+        gd_boot.mark("init:done")
 
     def make_card(self) -> tuple[QFrame, QVBoxLayout]:
         frame = QFrame()
@@ -1610,6 +1621,7 @@ class MainWindow(QMainWindow):
 
     def build_ui(self):
         self.setStyleSheet(APP_STYLESHEET)
+        gd_boot.mark("ui:start")
 
         # каркас варианта A «Пульт» (монохром): сайдбар + стек страниц + статусбар
         self.side = QWidget()
@@ -1622,6 +1634,9 @@ class MainWindow(QMainWindow):
         self._key_to_index: dict[str, int] = {}
         self._page_widgets: dict = {}
         self._page_heads: dict = {}
+        self._page_factories: dict = {}
+        self._page_slots: dict = {}
+        self._page_layouts: dict = {}
 
         # кнопки настройки горячих клавиш живут в низу сайдбара (см. `_build_side_tools`):
         # блок создаётся один раз, `_rebuild_sidebar` только переставляет его в конец
@@ -1970,6 +1985,7 @@ class MainWindow(QMainWindow):
 
         # ---------- вкладки ----------
         self._add_page(gamma_page, "tab.gamma")
+        gd_boot.mark("page:gamma")
 
         if str(app_dir()) not in sys.path:
             sys.path.insert(0, str(app_dir()))
@@ -1977,49 +1993,28 @@ class MainWindow(QMainWindow):
 
         self._power_page = PowerWindow(standalone=False)
         self._add_page(self._power_page, "tab.cpu")
+        gd_boot.mark("page:cpu")
 
         from gd_gpu_ui import GpuWidget
 
         self._gpu_page = GpuWidget(standalone=False, config=self.config,
                                    save_fn=save_config)
         self._add_page(self._gpu_page, "tab.gpu")
+        gd_boot.mark("page:gpu")
 
-        from gd_rules_ui import RulesWidget
-
-        self._rules_page = RulesWidget(standalone=False)
-        self._add_page(self._rules_page, "tab.rules")
-
-        from gd_utils_ui import UtilsWidget
-
-        self._utils_page = UtilsWidget(standalone=False, host=self)
-        from PyQt5.QtWidgets import QScrollArea
-
-        utils_scroll = QScrollArea()
-        utils_scroll.setWidgetResizable(True)
-        utils_scroll.setFrameShape(QScrollArea.NoFrame)
-        utils_scroll.setWidget(self._utils_page)
-        utils_scroll.setObjectName("UtilitiesScrollArea")
-        self._utils_scroll = utils_scroll
-        self._add_page(utils_scroll, "tab.utils")
-
-        from gd_dns_ui import DnsWidget
-
-        self._dns_page = DnsWidget(standalone=False)
-        self._add_page(self._dns_page, "tab.dns")
-
-        from gd_zapret_ui import ZapretWidget
-
-        self._zapret_page = ZapretWidget(standalone=False, host=self)
-        self._add_page(self._zapret_page, "tab.zapret")
-
-        from gd_agent_ui import AgentWidget
-
-        self._agent_page = AgentWidget(standalone=False, host=self)
-        self._add_page(self._agent_page, "tab.agent")
+        # Остальные страницы ленивые: модуль вкладки импортируется и виджеты
+        # строятся при первом открытии вкладки (или первом действии, которому
+        # нужен её объект), а не на старте окна — см. `_ensure_page`.
+        self._add_page(None, "tab.rules", factory=self._make_rules_page)
+        self._add_page(None, "tab.utils", factory=self._make_utils_page)
+        self._add_page(None, "tab.dns", factory=self._make_dns_page)
+        self._add_page(None, "tab.zapret", factory=self._make_zapret_page)
+        self._add_page(None, "tab.agent", factory=self._make_agent_page)
 
         self._retranslate_tabs()
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self._on_tab_changed(self.tabs.currentIndex())
+        gd_boot.mark("ui:pages-done")
 
         # каркас: титлбар сверху, сайдбар слева, страницы справа, статусбар снизу
         central = QWidget()
@@ -2046,6 +2041,7 @@ class MainWindow(QMainWindow):
         root.addWidget(body, 1)
         root.addWidget(self._build_statusbar())
         self.setCentralWidget(central)
+        gd_boot.mark("ui:done")
 
     # -- каркас «Пульт»: сайдбар, страницы, статусбар (вариант A, монохром) -----
     def _rebuild_sidebar(self) -> None:
@@ -2421,8 +2417,13 @@ class MainWindow(QMainWindow):
             pass
         self._tb_mode.setText(f"{i18n.t('Режим:')} {name or i18n.t('не применён')}  \u25be")
 
-    def _add_page(self, widget, key: str):
-        """Страница в стек с шапкой (заголовок + подпись) — как в макете A."""
+    def _add_page(self, widget, key: str, factory=None):
+        """Страница в стек с шапкой (заголовок + подпись) — как в макете A.
+
+        `widget=None, factory=...` — ленивая страница: шапка и место в стеке
+        создаются сразу (порядок вкладок и индексы стабильны), а сам экран
+        собирает `_ensure_page` при первом открытии вкладки.
+        """
         shell = QWidget()
         shell.setObjectName("PageShell")
         outer = QVBoxLayout(shell)
@@ -2441,20 +2442,93 @@ class MainWindow(QMainWindow):
         head_lay.addWidget(title)
         head_lay.addWidget(sub)
         outer.addWidget(head)
-        if isinstance(widget, QScrollArea):
+        slot = None             # место экрана: у ленивых — пустая прокрутка
+        if widget is not None and isinstance(widget, QScrollArea):
             outer.addWidget(widget, 1)
         else:
             scroll = QScrollArea()
             scroll.setObjectName("PageScroll")
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.NoFrame)
-            scroll.setWidget(widget)
+            if widget is not None:
+                scroll.setWidget(widget)
             outer.addWidget(scroll, 1)
+            slot = scroll
 
+        self._page_layouts[key] = outer
+        self._page_slots[key] = slot
+        self._page_factories[key] = factory
         self._page_heads[key] = (title, sub)
         self._page_widgets[key] = widget
         self._key_to_index[key] = self.tabs.count()
         self.tabs.addWidget(shell)
+
+    def _ensure_page(self, key: str):
+        """Собрать ленивую страницу (один раз) и вернуть её виджет.
+
+        Вызывается при первом открытии вкладки и во всех действиях, которым
+        нужен объект экрана (сброс всех изменений, локальный API, палитра).
+        Страницы, которых действие не касается, не строятся.
+        """
+        widget = self._page_widgets.get(key)
+        if widget is not None:
+            return widget
+        factory = self._page_factories.get(key)
+        if factory is None:
+            return None
+        gd_boot.mark(f"lazy:{key}")
+        widget = factory()
+        if widget is None:
+            return None
+        outer = self._page_layouts.get(key)
+        slot = self._page_slots.get(key)
+        if slot is not None and outer is not None and isinstance(widget, QScrollArea):
+            # у «Утилит» своя обёртка прокрутки: она встаёт на место заготовки,
+            # а не второй прокруткой внутри неё
+            outer.replaceWidget(slot, widget)
+            slot.deleteLater()
+        elif slot is not None:
+            slot.setWidget(widget)
+        self._page_widgets[key] = widget
+        gd_boot.mark(f"lazy:{key}:done")
+        return widget
+
+    # -- фабрики ленивых страниц: импорт модуля вкладки и сборка экрана ----
+    def _make_rules_page(self):
+        from gd_rules_ui import RulesWidget
+
+        self._rules_page = RulesWidget(standalone=False)
+        return self._rules_page
+
+    def _make_utils_page(self):
+        from gd_utils_ui import UtilsWidget
+
+        self._utils_page = UtilsWidget(standalone=False, host=self)
+        utils_scroll = QScrollArea()
+        utils_scroll.setWidgetResizable(True)
+        utils_scroll.setFrameShape(QScrollArea.NoFrame)
+        utils_scroll.setWidget(self._utils_page)
+        utils_scroll.setObjectName("UtilitiesScrollArea")
+        self._utils_scroll = utils_scroll
+        return utils_scroll
+
+    def _make_dns_page(self):
+        from gd_dns_ui import DnsWidget
+
+        self._dns_page = DnsWidget(standalone=False)
+        return self._dns_page
+
+    def _make_zapret_page(self):
+        from gd_zapret_ui import ZapretWidget
+
+        self._zapret_page = ZapretWidget(standalone=False, host=self)
+        return self._zapret_page
+
+    def _make_agent_page(self):
+        from gd_agent_ui import AgentWidget
+
+        self._agent_page = AgentWidget(standalone=False, host=self)
+        return self._agent_page
 
     def _fix_tab_order(self) -> None:
         """Порядок обхода Tab: сайдбар → содержимое страницы → кнопки титлбара.
@@ -2703,6 +2777,7 @@ class MainWindow(QMainWindow):
             limited = False
         self.tray.set_perf_limited(limited)
         self.tray.show()
+        gd_boot.mark("tray-shown")
 
         # живой тултип (ТЗ 5.1): раз в секунду, без всплывающих окон
         self._gpu_cache = None
@@ -2711,6 +2786,7 @@ class MainWindow(QMainWindow):
         self._tray_timer.timeout.connect(self._tray_tick)
         self._tray_timer.start()
         self._tray_tick()
+        gd_boot.mark("tray-ready")
 
     def _tray_tick(self):
         """Тултип и цвет иконки трея — по данным общего кэша метрик."""
@@ -2981,7 +3057,9 @@ class MainWindow(QMainWindow):
         ok, err = self.start_agent_api()
         if not ok:
             try:
-                self._agent_page._show_warn(err)
+                page = self._ensure_page("tab.agent")
+                if page is not None:
+                    page._show_warn(err)
             except Exception:  # noqa: BLE001
                 pass
             self.set_status(i18n.t("Локальный API не запущен: {v0}", v0=err), ok=False)
@@ -2995,7 +3073,9 @@ class MainWindow(QMainWindow):
         if not ok:
             return False, err
         self._agent_server = server
-        self._agent_page.set_running(server.port, server.warn)
+        page = self._ensure_page("tab.agent")  # ленивый экран собирается под действие
+        if page is not None:
+            page.set_running(server.port, server.warn)
         self.set_agent_autostart(True)
         self.set_status(i18n.t("Локальный API включён: {v0}", v0=server.endpoint()))
         return True, ""
@@ -3124,6 +3204,17 @@ class MainWindow(QMainWindow):
         }
         return {"ok": True, "data": data}
 
+    def _zapret_path(self) -> str:
+        """Папка zapret из настроек — как у вкладки обхода, но без её сборки.
+
+        Нужна локальному API и статусу: значения живут в конфиге, и собирать
+        ленивый экран ради строки пути не нужно (см. gd_zapret_ui._path).
+        """
+        try:
+            return str((self.config.get("settings") or {}).get("zapret_path") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _agent_zapret_data(self) -> dict:
         """Состояние обхода DPI без полного сканирования (файл состояния + PID)."""
         import gd_zapret
@@ -3131,7 +3222,7 @@ class MainWindow(QMainWindow):
         ours = gd_zapret.our_state()
         alive = bool(ours) and gd_zapret.pid_alive(ours.get("pid"))
         return {
-            "path": self._zapret_page.current_path(),
+            "path": self._zapret_path(),
             "ours": ours if alive else None,
             "our_stale": bool(ours) and not alive,
         }
@@ -3171,7 +3262,7 @@ class MainWindow(QMainWindow):
     def _agent_zapret(self, params: dict, req) -> dict:
         import gd_zapret
 
-        return {"ok": True, "data": gd_zapret.snapshot(self._zapret_page.current_path())}
+        return {"ok": True, "data": gd_zapret.snapshot(self._zapret_path())}
 
     # -- изменяющие действия (после подтверждения) --------------------------
     def _agent_cpu_profile(self, params: dict, req):
@@ -3196,7 +3287,11 @@ class MainWindow(QMainWindow):
         return None
 
     def _agent_dns_set(self, params: dict, req):
-        self._dns_page.set_provider(
+        dns = self._ensure_page("tab.dns")  # ленивый экран собирается под действие
+        if dns is None:
+            self._agent_reply(req, {"ok": False, "error": i18n.t("вкладка DNS недоступна")})
+            return None
+        dns.set_provider(
             params["provider"], source=i18n.t("агент"),
             on_done=lambda resp: self._agent_reply(req, {
                 "ok": bool(resp.get("ok")), "error": resp.get("error")}))
@@ -3235,6 +3330,9 @@ class MainWindow(QMainWindow):
         for nav_key, nav_item in getattr(self, "_nav_items", {}).items():
             nav_item.set_active(nav_key == key)
         self._update_mode_chip()
+        if key:
+            # ленивая вкладка собирается ровно в момент первого открытия
+            self._ensure_page(key)
         page = self._page_widgets.get(key)
         power = getattr(self, "_power_page", None)
         gpu = getattr(self, "_gpu_page", None)
@@ -3261,7 +3359,9 @@ class MainWindow(QMainWindow):
 
     def open_dns_tab(self):
         """Открыть вкладку «DNS» в главном окне."""
-        self.tabs.setCurrentWidget(self._dns_page)
+        idx = self._key_to_index.get("tab.dns")
+        if idx is not None:
+            self.tabs.setCurrentIndex(idx)      # открытие соберёт ленивую вкладку
         self.show_window()
 
     def apply_theme(self, name: str) -> str:
@@ -3364,7 +3464,9 @@ class MainWindow(QMainWindow):
 
     def open_utils_tab(self):
         """Открыть вкладку «Утилиты» в главном окне."""
-        self.tabs.setCurrentWidget(getattr(self, "_utils_scroll", None) or self._utils_page)
+        idx = self._key_to_index.get("tab.utils")
+        if idx is not None:
+            self.tabs.setCurrentIndex(idx)      # открытие соберёт ленивую вкладку
         self.show_window()
 
     # -- сброс всех изменений и «тихий час» (ТЗ 6.3, п.3 и п.5) -------------
@@ -3395,7 +3497,7 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
 
-        dns = getattr(self, "_dns_page", None)
+        dns = self._ensure_page("tab.dns")     # ленивый экран собирается под действие
         if dns is not None:
             try:
                 dns._restore()
@@ -3404,18 +3506,18 @@ class MainWindow(QMainWindow):
                 pass
 
         # обход DPI: остановить winws.exe, запущенный Gammadrilon (ТЗ 8, DoD)
-        zapret = getattr(self, "_zapret_page", None)
-        if zapret is not None:
-            try:
-                import gd_zapret
+        try:
+            import gd_zapret
 
-                state = gd_zapret.our_state()
-                pid = (state or {}).get("pid")
-                if pid and gd_zapret.pid_alive(pid):
+            state = gd_zapret.our_state()
+            pid = (state or {}).get("pid")
+            if pid and gd_zapret.pid_alive(pid):
+                zapret = self._ensure_page("tab.zapret")
+                if zapret is not None:
                     zapret._off()
                     done.append(i18n.t("обход DPI"))
-            except Exception:  # noqa: BLE001
-                pass
+        except Exception:  # noqa: BLE001
+            pass
 
         try:
             rules = gd_rules.load_rules()
@@ -3430,16 +3532,17 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             pass
 
-        utils = getattr(self, "_utils_page", None)
-        if utils is not None:
-            try:
-                utils._load_auto()
-                if utils.chk_auto.isChecked():
-                    utils.chk_auto.setChecked(False)
-                    utils._save_auto()
-                    done.append(i18n.t("автоочистка ОЗУ"))
-            except Exception:  # noqa: BLE001
-                pass
+        # автоочистка: состояние живёт в autoclean.json (пишет вкладка «Утилиты»),
+        # читаем его напрямую — ленивый экран ради галочки не собираем
+        try:
+            import gd_profiles
+
+            auto = gd_profiles._read_autoclean()
+            if auto.get("enabled") and gd_profiles._write_autoclean(
+                    {**auto, "enabled": False}):
+                done.append(i18n.t("автоочистка ОЗУ"))
+        except Exception:  # noqa: BLE001
+            pass
 
         try:
             if (gd_extra.timer_ms() or 99) < 1.0:
@@ -3579,17 +3682,23 @@ class MainWindow(QMainWindow):
 
     def open_rules_tab(self):
         """Открыть вкладку «Правила» в главном окне."""
-        self.tabs.setCurrentWidget(self._rules_page)
+        idx = self._key_to_index.get("tab.rules")
+        if idx is not None:
+            self.tabs.setCurrentIndex(idx)      # открытие соберёт ленивую вкладку
         self.show_window()
 
     def open_gpu_tab(self):
         """Открыть вкладку «Питание GPU» в главном окне."""
-        self.tabs.setCurrentWidget(self._gpu_page)
+        idx = self._key_to_index.get("tab.gpu")
+        if idx is not None:
+            self.tabs.setCurrentIndex(idx)
         self.show_window()
 
     def open_power_window(self):
         """Открыть вкладку «Питание CPU» в главном окне."""
-        self.tabs.setCurrentWidget(self._power_page)
+        idx = self._key_to_index.get("tab.cpu")
+        if idx is not None:
+            self.tabs.setCurrentIndex(idx)
         self.show_window()
 
     def _gpu_autostart_check(self):
@@ -4418,6 +4527,9 @@ class MainWindow(QMainWindow):
         """Результат проверки обновлений пришёл в GUI-поток: показать честно."""
         import gd_toast
 
+        # карточка обновлений живёт на ленивой вкладке «Утилиты»: результат
+        # проверки попадает в неё так же, как до ленивой сборки
+        self._ensure_page("tab.utils")
         utils = getattr(self, "_utils_page", None)
         if not isinstance(res, dict) or not res.get("ok"):
             error = (res or {}).get("error") if isinstance(res, dict) else str(res)
@@ -4480,6 +4592,7 @@ class MainWindow(QMainWindow):
     def showEvent(self, event):
         super().showEvent(event)
         self._sync_metrics_activity()
+        gd_boot.mark("showEvent")
 
     def hideEvent(self, event):
         super().hideEvent(event)
@@ -4581,16 +4694,50 @@ def build_app_stylesheet() -> str:
 
 
 APP_STYLESHEET = build_app_stylesheet()
+gd_boot.mark("module")
+
 
 def main():
     if sys.platform != "win32":
         print("This application works only on Windows.")
         return
 
+    gd_boot.mark("main")
+
+    # Таблицы имён keyboard первый add_hotkey строил прямо в GUI-потоке
+    # (замер: ~185 мс), а сам импорт модуля — ещё ~96 мс. Делаем и то и другое
+    # в фоне параллельно сборке окна: к моменту bind_hotkeys таблицы готовы,
+    # add_hotkey только ставит хуки.
+    try:
+        import threading
+
+        def _kb_prewarm():
+            import keyboard as kb
+
+            _os_kb = getattr(kb, "_os_keyboard", None)
+            if _os_kb is not None:
+                _os_kb.init()
+
+        threading.Thread(target=_kb_prewarm, name="kb-prewarm", daemon=True).start()
+    except Exception:  # noqa: BLE001
+        pass
+
     # язык нужен раньше окна: сообщение «уже запущено» тоже должно быть переведено
     i18n.init_for_process()
 
-    if is_another_instance_running():
+    # Тема — до сборки окна: страницы создаются уже со своим QSS, и повторная
+    # полировка всего дерева при старте (замер: ~330 мс) больше не нужна.
+    global APP_STYLESHEET
+    try:
+        _boot_cfg = load_config()
+        th.apply((_boot_cfg.get("settings") or {}).get("theme", "dark"))
+    except Exception:  # noqa: BLE001
+        pass
+    APP_STYLESHEET = build_app_stylesheet()
+
+    # пробам замеров (GD_ALLOW_SECOND_INSTANCE=1) нужно поднять второе окно
+    # рядом с работающим приложением: мьютекс для них пропускаем
+    if not os.environ.get("GD_ALLOW_SECOND_INSTANCE") and is_another_instance_running():
         _warn_already_running()
         return
 
@@ -4602,6 +4749,7 @@ def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(APP_STYLESHEET)
     app.setQuitOnLastWindowClosed(False)
+    gd_boot.mark("app")
 
     # общий фоновой сборщик метрик: UI читает кэш и не дёргает nvidia-smi/netsh
     try:
@@ -4611,6 +4759,7 @@ def main():
         app.aboutToQuit.connect(gd_metrics.stop)
     except Exception:  # noqa: BLE001
         pass
+    gd_boot.mark("metrics")
 
     icon_path = resource_path(ICON_FILE)
 
@@ -4618,7 +4767,11 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     window = MainWindow()
+    gd_boot.mark("window")
     window.show()
+    gd_boot.mark("shown")
+    # первый проход цикла событий: к этому моменту окно уже отрисовано
+    QTimer.singleShot(0, lambda: gd_boot.mark("loop"))
 
     if window.config.get("settings", {}).get("check_updates", False):
         # тихая проверка: человек просил не пропустить новый релиз, а не отчёт

@@ -1204,6 +1204,7 @@ DIRECT: dict[str, str] = {
     "Локальный API не запущен: {v0}": "Local API did not start: {v0}",
     "Локальный API включён: {v0}": "Local API is on: {v0}",
     "Локальный API выключен.": "Local API is off.",
+    "вкладка DNS недоступна": "the DNS tab is unavailable",
     # страницы: занятость и валидация внешних вызовов
     "занято: операция уже выполняется": "busy: an operation is already running",
     "занято: профиль уже применяется": "busy: the profile is already being applied",
