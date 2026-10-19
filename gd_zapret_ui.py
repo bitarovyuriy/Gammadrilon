@@ -33,8 +33,10 @@ from PyQt5.QtWidgets import (  # noqa: E402
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -43,8 +45,10 @@ from PyQt5.QtWidgets import (  # noqa: E402
 
 import gd_i18n as i18n  # noqa: E402
 import gd_journal  # noqa: E402
+import gd_paths  # noqa: E402
 import gd_theme as th
 import gd_zapret  # noqa: E402
+import gd_zapret_update as upd  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
 
 
@@ -91,6 +95,10 @@ class ZapretWidget(QWidget):
         self._ignored = set()          # «оставить как есть» — до конца сессии
         self._worker = None            # фоновое действие (включить/выключить/…)
         self._gen = 0                  # поколение состояния: см. _snap_job/_on_snap
+        self._update = {"ok": False, "current": None, "latest": None, "newer": False,
+                        "release": {}, "checked_at": None, "cached": False, "error": None}
+        self._update_progress = ""
+        self._gf_editing = False
         # прошлый запуск приложения мог закрыться вместе с winws — это не «он
         # умер сам»: снимаем наследство молча, см. gd_zapret.forget_previous_run
         gd_zapret.forget_previous_run()
@@ -133,6 +141,81 @@ class ZapretWidget(QWidget):
         self.lbl_path_note.setWordWrap(True)
         lay.addWidget(self.lbl_path_note)
         root.addWidget(card)
+
+        # --- обновления -----------------------------------------------------
+        card_upd, lay_upd = make_card(
+            i18n.t("ОБНОВЛЕНИЯ ZAPRET"),
+            i18n.t("Последний релиз берётся с GitHub Flowseal. Перед "
+                   "обновлением Gammadrilon сам останавливает обход, делает "
+                   "резервную копию папки и сохраняет ваши списки и "
+                   "стратегии *.user.bat."),
+        )
+        self.lbl_version = QLabel(i18n.t("—"))
+        self.lbl_version.setObjectName("Value")
+        lay_upd.addWidget(self.lbl_version)
+        self.lbl_update_note = QLabel("")
+        self.lbl_update_note.setObjectName("Hint")
+        self.lbl_update_note.setWordWrap(True)
+        lay_upd.addWidget(self.lbl_update_note)
+        urow = QHBoxLayout()
+        self.btn_upd_check = QPushButton(i18n.t("Проверить"))
+        self.btn_upd_check.setObjectName("Segment")
+        self.btn_upd_check.clicked.connect(self._update_check)
+        urow.addWidget(self.btn_upd_check)
+        self.btn_upd_apply = QPushButton(i18n.t("Обновить"))
+        self.btn_upd_apply.setObjectName("PrimaryButton")
+        self.btn_upd_apply.clicked.connect(self._update_apply)
+        urow.addWidget(self.btn_upd_apply)
+        self.btn_upd_rollback = QPushButton(i18n.t("Откатить"))
+        self.btn_upd_rollback.setObjectName("Segment")
+        self.btn_upd_rollback.clicked.connect(self._update_rollback)
+        urow.addWidget(self.btn_upd_rollback)
+        self.btn_upd_notes = QPushButton(i18n.t("Что нового"))
+        self.btn_upd_notes.setObjectName("Segment")
+        self.btn_upd_notes.clicked.connect(self._update_notes)
+        urow.addWidget(self.btn_upd_notes)
+        urow.addStretch(1)
+        lay_upd.addLayout(urow)
+        root.addWidget(card_upd)
+
+        # --- служба ---------------------------------------------------------
+        card_srv, lay_srv = make_card(
+            i18n.t("СЛУЖБА ZAPRET"),
+            i18n.t("Штатный автозапуск обхода без service.bat: служба Windows "
+                   "поднимает winws.exe выбранной стратегией при входе в "
+                   "систему. Управление требует прав администратора."),
+        )
+        self.lbl_service = QLabel(i18n.t("—"))
+        self.lbl_service.setObjectName("Value")
+        lay_srv.addWidget(self.lbl_service)
+        self.lbl_service_note = QLabel("")
+        self.lbl_service_note.setObjectName("Hint")
+        self.lbl_service_note.setWordWrap(True)
+        lay_srv.addWidget(self.lbl_service_note)
+        srow = QHBoxLayout()
+        self.btn_svc_install = QPushButton(i18n.t("Установить/обновить"))
+        self.btn_svc_install.setObjectName("PrimaryButton")
+        self.btn_svc_install.clicked.connect(lambda: self._service_action("install"))
+        srow.addWidget(self.btn_svc_install)
+        self.btn_svc_start = QPushButton(i18n.t("Запустить"))
+        self.btn_svc_start.setObjectName("Segment")
+        self.btn_svc_start.clicked.connect(lambda: self._service_action("start"))
+        srow.addWidget(self.btn_svc_start)
+        self.btn_svc_stop = QPushButton(i18n.t("Остановить"))
+        self.btn_svc_stop.setObjectName("Segment")
+        self.btn_svc_stop.clicked.connect(lambda: self._service_action("stop"))
+        srow.addWidget(self.btn_svc_stop)
+        self.btn_svc_restart = QPushButton(i18n.t("Перезапустить"))
+        self.btn_svc_restart.setObjectName("Segment")
+        self.btn_svc_restart.clicked.connect(lambda: self._service_action("restart"))
+        srow.addWidget(self.btn_svc_restart)
+        self.btn_svc_remove = QPushButton(i18n.t("Удалить"))
+        self.btn_svc_remove.setObjectName("Segment")
+        self.btn_svc_remove.clicked.connect(lambda: self._service_action("remove"))
+        srow.addWidget(self.btn_svc_remove)
+        srow.addStretch(1)
+        lay_srv.addLayout(srow)
+        root.addWidget(card_srv)
 
         # --- состояние ------------------------------------------------------
         card2, lay2 = make_card(
@@ -236,10 +319,47 @@ class ZapretWidget(QWidget):
         frow.addWidget(self.chk_ipset)
         frow.addStretch(1)
         lay4.addLayout(frow)
+
+        portrow = QHBoxLayout()
+        portrow.addWidget(QLabel(i18n.t("TCP-порты")))
+        self.txt_gf_tcp = QLineEdit()
+        self.txt_gf_tcp.setPlaceholderText(gd_zapret.GAME_FILTER_DEFAULT_TCP)
+        self.txt_gf_tcp.setMaximumWidth(170)
+        self.txt_gf_tcp.textEdited.connect(lambda *_: setattr(self, "_gf_editing", True))
+        portrow.addWidget(self.txt_gf_tcp)
+        portrow.addWidget(QLabel(i18n.t("UDP-порты")))
+        self.txt_gf_udp = QLineEdit()
+        self.txt_gf_udp.setPlaceholderText(gd_zapret.GAME_FILTER_DEFAULT_UDP)
+        self.txt_gf_udp.setMaximumWidth(170)
+        self.txt_gf_udp.textEdited.connect(lambda *_: setattr(self, "_gf_editing", True))
+        portrow.addWidget(self.txt_gf_udp)
+        self.btn_gf_apply = QPushButton(i18n.t("Применить порты"))
+        self.btn_gf_apply.setObjectName("Segment")
+        self.btn_gf_apply.clicked.connect(self._apply_gf_ports)
+        portrow.addWidget(self.btn_gf_apply)
+        portrow.addStretch(1)
+        lay4.addLayout(portrow)
+
         self.lbl_lists = QLabel("")
         self.lbl_lists.setObjectName("Hint")
         self.lbl_lists.setWordWrap(True)
         lay4.addWidget(self.lbl_lists)
+
+        lrow = QHBoxLayout()
+        self.btn_ipset_update = QPushButton(i18n.t("Обновить IPSet"))
+        self.btn_ipset_update.setObjectName("Segment")
+        self.btn_ipset_update.clicked.connect(self._ipset_update)
+        lrow.addWidget(self.btn_ipset_update)
+        self.btn_hosts_check = QPushButton(i18n.t("Проверить hosts"))
+        self.btn_hosts_check.setObjectName("Segment")
+        self.btn_hosts_check.clicked.connect(self._hosts_check)
+        lrow.addWidget(self.btn_hosts_check)
+        self.btn_hosts_apply = QPushButton(i18n.t("Обновить hosts"))
+        self.btn_hosts_apply.setObjectName("Segment")
+        self.btn_hosts_apply.clicked.connect(self._hosts_apply)
+        lrow.addWidget(self.btn_hosts_apply)
+        lrow.addStretch(1)
+        lay4.addLayout(lrow)
         root.addWidget(card4)
 
         # --- журнал winws ---------------------------------------------------
@@ -277,9 +397,442 @@ class ZapretWidget(QWidget):
         """Открытие вкладки — включаем опрос (psutil + файлы состояния)."""
         self._poll.start(2000)
         self._poll.trigger()
+        self._maybe_check_update()
 
     def deactivate(self):
         self._poll.stop()
+
+    # -- обновления, служба, списки: автоматизация вместо service.bat --------
+
+    def _settings(self) -> dict:
+        if self._standalone or self.host is None:
+            return {}
+        try:
+            return self.host.config.setdefault("settings", {})
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _get_setting(self, key: str, default=None):
+        settings = self._settings()
+        return settings.get(key, default)
+
+    def _set_setting(self, key: str, value) -> None:
+        settings = self._settings()
+        if settings.get(key) == value:
+            return
+        settings[key] = value
+        if not self._standalone and self.host is not None:
+            try:
+                from main import save_config
+
+                save_config(self.host.config)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _maybe_check_update(self) -> None:
+        """Тихая проверка обновлений при входе на вкладку — не чаще суток."""
+        if not self._get_setting("zapret_auto_update_check", True):
+            return
+        if self._standalone or self.host is None:
+            return
+        if gd_bg.is_running(self._worker):
+            return
+        last = self._get_setting("zapret_update_last_check", 0) or 0
+        import time
+
+        if time.time() - float(last) < 24 * 3600 and self._update.get("latest"):
+            return
+        self._update_check(force=False)
+
+    def _update_check(self, force: bool = True) -> None:
+        if gd_bg.is_running(self._worker):
+            return
+        path = self._path()
+        self._set_status(i18n.t("Проверяю обновления zapret…"))
+        self._worker = gd_bg.submit(lambda: upd.check_updates(path, force=force),
+                                    self._update_checked, parent=self)
+
+    def _update_checked(self, result) -> None:
+        if isinstance(result, dict):
+            self._update = result
+            if result.get("ok"):
+                import time
+
+                self._set_setting("zapret_update_last_check", int(time.time()))
+                if result.get("newer"):
+                    self._set_status(i18n.t("Доступна новая версия zapret {v0}.",
+                                            v0=result.get("latest")))
+                else:
+                    self._set_status(i18n.t("Обновлений zapret нет: {v0}.",
+                                            v0=result.get("current") or "?"))
+            else:
+                self._set_status(i18n.t("Проверка обновлений: {v0}",
+                                        v0=result.get("error") or "?"), ok=False)
+        self._render()
+
+    def _update_notes(self) -> None:
+        release = self._update.get("release") or {}
+        body = release.get("body") or i18n.t("Описание релиза пустое.")
+        url = release.get("url") or upd.REPO_URL
+        QMessageBox.information(self, i18n.t("Что нового: {v0}",
+                                             v0=release.get("tag") or "?"),
+                                f"{body}\n\n{url}")
+
+    def _update_apply(self) -> None:
+        if gd_bg.is_running(self._worker):
+            return
+        path = self._path()
+        path_ok = bool(path) and not gd_zapret.validate(path).get("errors")
+        if not path_ok:
+            self._set_status(i18n.t("Сначала выберите рабочую папку zapret."), ok=False)
+            return
+        if not self._update.get("newer"):
+            self._update_check(force=True)
+            self._set_status(i18n.t("Новых версий zapret нет."))
+            return
+        answer = QMessageBox.question(
+            self, i18n.t("Обновить zapret"),
+            i18n.t("Обход будет остановлен на время обновления, папка сохранится "
+                   "в архив. Продолжить?"),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        self._update_progress = i18n.t("подготовка")
+        self._set_status(i18n.t("Обновляю zapret…"))
+        self._worker = gd_bg.submit(self._job_update, self._update_done, parent=self)
+        self._render()
+
+    def _job_update(self) -> dict:
+        path = self._path()
+        snap = gd_zapret.snapshot(path)
+        ours = snap.get("ours") or {}
+        our_pid = ours.get("pid")
+        ours_external = bool(ours.get("external"))
+        svc = snap.get("service_zapret") == "RUNNING"
+        foreign = [p for p in (snap.get("foreign") or []) if p.get("pid") != our_pid]
+        if foreign and not svc:
+            return {"ok": False, "error": i18n.t(
+                "Обход запущен чужим winws.exe. Возьмите его под управление "
+                "или остановите, иначе обновление не сможет заменить папку.")}
+        old_argv = list(ours.get("argv") or [])
+        strategy = (snap.get("service_strategy") or gd_zapret.service_registry_strategy()
+                    or ours.get("strategy") or self._remembered_strategy())
+
+        client = self._ensure()
+        if svc:
+            client.call({"cmd": "zapret_service", "op": "stop"}, timeout=90)
+        elif our_pid and not ours_external:
+            client.call({"cmd": "zapret_stop", "pid": our_pid}, timeout=40)
+
+        self._update_progress = i18n.t("проверка релиза")
+        info = upd.check_updates(path, force=True)
+        if not info.get("ok"):
+            return {"ok": False, "error": info.get("error") or i18n.t("нет данных о релизе")}
+        tag = info.get("latest") or "?"
+        url = upd.release_zip_url(info.get("release") or {})
+        if not url:
+            return {"ok": False, "error": i18n.t("в релизе нет zip-архива")}
+        zip_path = gd_paths.log_dir() / f"zapret-{tag}.zip"
+        self._update_progress = i18n.t("загрузка {v0}", v0=tag)
+
+        def progress(done, total):
+            if total:
+                self._update_progress = i18n.t("загрузка {v0}: {v1:.0f}%",
+                                               v0=tag, v1=done * 100.0 / total)
+
+        ok, msg = upd.download(url, zip_path, on_progress=progress)
+        if not ok:
+            return {"ok": False, "error": msg}
+        self._update_progress = i18n.t("распаковка и замена")
+
+        res = client.call({"cmd": "zapret_update", "op": "apply", "path": path,
+                           "zip": str(zip_path), "version": tag}, timeout=600)
+        if not res.get("ok"):
+            # обход останавливали мы — возвращаем его в строй старыми средствами
+            if svc:
+                client.call({"cmd": "zapret_service", "op": "start"}, timeout=90)
+            elif our_pid and old_argv and not ours_external:
+                client.call({"cmd": "zapret_start", "path": path, "argv": old_argv,
+                             "log": gd_zapret.log_path(), "note": strategy}, timeout=60)
+            return {"ok": False, "error": res.get("error") or i18n.t("обновление не применилось")}
+
+        restart_error = None
+        restarted = False
+        self._update_progress = i18n.t("перезапуск обхода")
+        if svc and strategy:
+            recon = client.call({"cmd": "zapret_recon", "path": path,
+                                 "strategy": strategy}, timeout=120)
+            if recon.get("ok"):
+                inst = client.call({"cmd": "zapret_service", "op": "install",
+                                    "path": path, "strategy": strategy,
+                                    "argv": recon["data"]["argv"]}, timeout=180)
+                restarted = bool(inst.get("ok"))
+                if not restarted:
+                    restart_error = inst.get("error")
+            else:
+                restart_error = recon.get("error")
+            if not restarted:
+                client.call({"cmd": "zapret_service", "op": "start"}, timeout=90)
+        elif our_pid and strategy and not ours_external:
+            recon = client.call({"cmd": "zapret_recon", "path": path,
+                                 "strategy": strategy}, timeout=120)
+            if recon.get("ok"):
+                argv = recon["data"]["argv"]
+                gd_zapret.cache_put(path, strategy, argv)
+                started = client.call({"cmd": "zapret_start", "path": path, "argv": argv,
+                                       "log": gd_zapret.log_path(), "note": strategy},
+                                      timeout=60)
+                if started.get("ok"):
+                    gd_zapret.save_our_state(path, strategy, int(started["data"]["pid"]), argv)
+                    restarted = True
+                else:
+                    restart_error = started.get("error")
+            else:
+                restart_error = recon.get("error")
+        try:
+            zip_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {"ok": True, "version": tag, "data": res.get("data") or {},
+                "restarted": restarted, "restart_error": restart_error,
+                "was_service": svc, "was_ours": bool(our_pid and not ours_external)}
+
+    def _update_done(self, result) -> None:
+        self._update_progress = ""
+        if isinstance(result, dict) and result.get("ok"):
+            note = i18n.t("Zapret обновлён до {v0}.", v0=result.get("version") or "?")
+            if result.get("restart_error"):
+                note += " " + i18n.t("Обход не перезапустился: {v0}",
+                                     v0=result.get("restart_error"))
+            self._set_status(note, ok=not result.get("restart_error"))
+            gd_journal.record("zapret", i18n.t("Обновление"),
+                              before=i18n.t("версия до обновления"),
+                              after=result.get("version") or "?",
+                              why=i18n.t("релиз Flowseal"))
+            self._update_check(force=True)
+        else:
+            err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+            self._set_status(i18n.t("Обновление zapret: {v0}", v0=err), ok=False)
+        self._poll.trigger()
+
+    def _update_rollback(self) -> None:
+        if gd_bg.is_running(self._worker):
+            return
+        manifest = upd.load_manifest()
+        if not manifest:
+            self._set_status(i18n.t("Откатывать нечего: резервной копии нет."), ok=False)
+            return
+        answer = QMessageBox.question(
+            self, i18n.t("Откатить обновление"),
+            i18n.t("Вернуть папку zapret из архива {v0}?",
+                   v0=manifest.get("old_version") or "?"),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        self._set_status(i18n.t("Откатываю zapret…"))
+        self._worker = gd_bg.submit(self._job_rollback, self._rollback_done, parent=self)
+
+    def _job_rollback(self) -> dict:
+        path = self._path()
+        snap = gd_zapret.snapshot(path)
+        svc = snap.get("service_zapret") == "RUNNING"
+        ours = snap.get("ours") or {}
+        client = self._ensure()
+        if svc:
+            client.call({"cmd": "zapret_service", "op": "stop"}, timeout=90)
+        elif ours.get("pid"):
+            client.call({"cmd": "zapret_stop", "pid": ours["pid"]}, timeout=40)
+        res = client.call({"cmd": "zapret_update", "op": "rollback"}, timeout=300)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error")}
+        if svc:
+            client.call({"cmd": "zapret_service", "op": "start"}, timeout=90)
+        return {"ok": True, "data": res.get("data") or {}}
+
+    def _rollback_done(self, result) -> None:
+        if isinstance(result, dict) and result.get("ok"):
+            data = result.get("data") or {}
+            self._set_status(i18n.t("Вернул версию {v0}.", v0=data.get("version") or "?"))
+            gd_journal.record("zapret", i18n.t("Откат обновления"),
+                              before=i18n.t("новая версия"), after=data.get("version") or "?",
+                              why=i18n.t("ручной откат"))
+        else:
+            err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+            self._set_status(i18n.t("Откат: {v0}", v0=err), ok=False)
+        self._poll.trigger()
+
+    # -- служба --------------------------------------------------------------
+
+    def _service_action(self, op: str) -> None:
+        if gd_bg.is_running(self._worker):
+            return
+        if op == "remove":
+            answer = QMessageBox.question(
+                self, i18n.t("Удалить службу zapret"),
+                i18n.t("Удалить службу и драйвер WinDivert? Обход перестанет "
+                       "запускаться с Windows."),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+        self._set_status(i18n.t("Служба zapret: {v0}…", v0=op))
+        self._worker = gd_bg.submit(lambda: self._job_service(op), self._service_done,
+                                    parent=self)
+        self._render()
+
+    def _job_service(self, op: str) -> dict:
+        client = self._ensure()
+        path = self._path()
+        strategy = ""
+        argv = None
+        if op == "install":
+            st = self._selected_strategy()
+            if not st:
+                return {"ok": False, "error": i18n.t("выберите стратегию")}
+            snap = gd_zapret.snapshot(path)
+            ours_now = (snap.get("ours") or {}).get("pid")
+            foreign = [p for p in (snap.get("foreign") or []) if p.get("pid") != ours_now]
+            if foreign and snap.get("service_zapret") != "RUNNING":
+                return {"ok": False, "error": i18n.t(
+                    "Посторонний winws.exe (PID {v0}) — сначала остановите его "
+                    "или возьмите под управление.", v0=foreign[0].get("pid"))}
+            strategy = st["id"]
+            argv = gd_zapret.cache_get(path, strategy)
+            if argv is None:
+                recon = client.call({"cmd": "zapret_recon", "path": path,
+                                     "strategy": strategy}, timeout=120)
+                if not recon.get("ok"):
+                    return {"ok": False, "error": recon.get("error")}
+                argv = recon["data"]["argv"]
+                gd_zapret.cache_put(path, strategy, argv)
+            ours = gd_zapret.our_state()
+            if ours and gd_zapret.pid_alive(ours.get("pid")):
+                client.call({"cmd": "zapret_stop", "pid": ours["pid"]}, timeout=40)
+                gd_zapret.clear_our_state()
+        res = client.call({"cmd": "zapret_service", "op": op, "path": path,
+                           "strategy": strategy, "argv": argv or []}, timeout=180)
+        return {"ok": bool(res.get("ok")), "error": res.get("error"), "op": op,
+                "strategy": strategy, "data": res.get("data")}
+
+    def _service_done(self, result) -> None:
+        if isinstance(result, dict) and result.get("ok"):
+            op = result.get("op")
+            texts = {"install": i18n.t("Служба установлена и запущена."),
+                     "start": i18n.t("Служба запущена."),
+                     "stop": i18n.t("Служба остановлена."),
+                     "restart": i18n.t("Служба перезапущена."),
+                     "remove": i18n.t("Служба удалена.")}
+            self._set_status(texts.get(op, i18n.t("Готово.")))
+            gd_journal.record("zapret", i18n.t("Служба zapret"),
+                              before="", after=op, why=i18n.t("кнопка вкладки"))
+        else:
+            err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+            self._set_status(i18n.t("Служба zapret: {v0}", v0=err), ok=False)
+        self._poll.trigger()
+
+    # -- списки и hosts ------------------------------------------------------
+
+    def _ipset_update(self) -> None:
+        if gd_bg.is_running(self._worker):
+            return
+        self._set_status(i18n.t("Обновляю ipset-all.txt…"))
+        self._worker = gd_bg.submit(self._job_ipset, self._ipset_done, parent=self)
+
+    def _job_ipset(self) -> dict:
+        path = self._path()
+        res = upd.update_ipset(path)
+        if not res.get("ok"):
+            return res
+        snap = gd_zapret.snapshot(path)
+        ours = snap.get("ours") or {}
+        client = self._ensure()
+        if snap.get("service_zapret") == "RUNNING":
+            client.call({"cmd": "zapret_service", "op": "restart"}, timeout=120)
+        elif ours.get("pid") and not ours.get("external"):
+            st = self._strategy_by_id(ours.get("strategy")) or self._selected_strategy()
+            if st:
+                client.call({"cmd": "zapret_stop", "pid": ours["pid"]}, timeout=30)
+                gd_zapret.clear_our_state()
+                argv = gd_zapret.cache_get(path, st["id"]) or list(ours.get("argv") or [])
+                started = client.call({"cmd": "zapret_start", "path": path, "argv": argv,
+                                       "log": gd_zapret.log_path(),
+                                       "note": st["name"]}, timeout=60)
+                if started.get("ok"):
+                    gd_zapret.save_our_state(path, st["id"], int(started["data"]["pid"]), argv)
+        return res
+
+    def _ipset_done(self, result) -> None:
+        if isinstance(result, dict) and result.get("ok"):
+            self._set_status(i18n.t("IPSet обновлён: {v0} строк.",
+                                    v0=result.get("lines") or 0))
+            gd_journal.record("zapret", "IPSet", before="", after=i18n.t("список обновлён"),
+                              why=i18n.t("кнопка вкладки"))
+        else:
+            err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+            self._set_status(i18n.t("IPSet: {v0}", v0=err), ok=False)
+        self._poll.trigger()
+
+    def _hosts_check(self) -> None:
+        if gd_bg.is_running(self._worker):
+            return
+        self._set_status(i18n.t("Скачиваю hosts Flowseal…"))
+        self._worker = gd_bg.submit(self._job_hosts_check, self._hosts_checked, parent=self)
+
+    def _job_hosts_check(self) -> dict:
+        ok, res = upd.fetch_hosts()
+        if not ok:
+            return {"ok": False, "error": res}
+        status = upd.hosts_status(res)
+        status["ok"] = True
+        status["downloaded"] = res
+        return status
+
+    def _hosts_checked(self, result) -> None:
+        if not (isinstance(result, dict) and result.get("ok")):
+            err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+            self._set_status(i18n.t("hosts: {v0}", v0=err), ok=False)
+            return
+        if result.get("needs_update"):
+            self._set_status(i18n.t(
+                "hosts требует обновления. Нажмите «Обновить hosts» — "
+                "файл будет сохранён с резервной копией."), ok=False)
+        else:
+            self._set_status(i18n.t("hosts в актуальном состоянии."))
+        self._render()
+
+    def _hosts_apply(self) -> None:
+        if gd_bg.is_running(self._worker):
+            return
+        answer = QMessageBox.question(
+            self, i18n.t("Обновить hosts"),
+            i18n.t("Добавить или заменить управляемый блок Gammadrilon в "
+                   "системном hosts? Соседние строки не трогаем, копия файла "
+                   "сохраняется."),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        self._set_status(i18n.t("Обновляю hosts…"))
+        self._worker = gd_bg.submit(self._job_hosts_apply, self._hosts_applied, parent=self)
+
+    def _job_hosts_apply(self) -> dict:
+        res = self._ensure().call({"cmd": "zapret_update", "op": "hosts"}, timeout=120)
+        return {"ok": bool(res.get("ok")), "error": res.get("error"),
+                "data": res.get("data")}
+
+    def _hosts_applied(self, result) -> None:
+        if isinstance(result, dict) and result.get("ok"):
+            data = result.get("data") or {}
+            self._set_status(i18n.t("hosts обновлён. Резервная копия: {v0}",
+                                    v0=data.get("backup") or "?"))
+            gd_journal.record("zapret", "hosts", before="", after=i18n.t("блок обновлён"),
+                              why=i18n.t("кнопка вкладки"))
+        else:
+            err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+            self._set_status(i18n.t("hosts: {v0}", v0=err), ok=False)
+        self._poll.trigger()
+
+    def _apply_gf_ports(self) -> None:
+        self._gf_editing = False
+        self._on_toggle_gf()
 
     @property
     def busy(self) -> bool:
@@ -453,6 +1006,55 @@ class ZapretWidget(QWidget):
         self.btn_svc.setEnabled(bool(path)
                                 and os.path.isfile(os.path.join(path, "service.bat")))
 
+        # обновления
+        u = self._update or {}
+        current = u.get("current") or upd.installed_version(path) or i18n.t("не определена")
+        latest = u.get("latest")
+        if u.get("ok") and u.get("newer"):
+            self.lbl_version.setText(i18n.t("Установлено: {v0} · доступна {v1}",
+                                            v0=current, v1=latest or "?"))
+        elif u.get("ok"):
+            self.lbl_version.setText(i18n.t("Установлено: {v0} · это последняя версия",
+                                            v0=current))
+        else:
+            self.lbl_version.setText(i18n.t("Установлено: {v0}", v0=current))
+        update_note = []
+        if self._update_progress:
+            update_note.append(self._update_progress)
+        if u.get("checked_at"):
+            update_note.append(i18n.t("проверено {v0}", v0=_fmt_date(u["checked_at"])))
+        if u.get("error"):
+            update_note.append(i18n.t("проверка: {v0}", v0=u["error"]))
+        manifest = upd.load_manifest()
+        if manifest:
+            update_note.append(i18n.t("доступен откат к {v0}",
+                                      v0=manifest.get("old_version") or "?"))
+        self.lbl_update_note.setText("  ·  ".join(update_note))
+
+        # служба
+        svc = {"installed": bool(snap.get("service_zapret") or snap.get("service_strategy")),
+               "state": snap.get("service_zapret"), "strategy": snap.get("service_strategy")}
+        svc_state = svc.get("state") or ""
+        svc_names = {
+            "RUNNING": i18n.t("работает"),
+            "STOPPED": i18n.t("остановлена"),
+            "START_PENDING": i18n.t("запускается"),
+            "STOP_PENDING": i18n.t("останавливается"),
+        }
+        if svc.get("installed"):
+            self.lbl_service.setText(i18n.t("Служба zapret: {v0}",
+                                            v0=svc_names.get(svc_state, svc_state or "?")))
+            note = []
+            if svc.get("strategy"):
+                note.append(i18n.t("стратегия: {v0}", v0=svc["strategy"]))
+            note.append(i18n.t("автозапуск при входе в Windows"))
+            self.lbl_service_note.setText("  ·  ".join(note))
+        else:
+            self.lbl_service.setText(i18n.t("Служба не установлена."))
+            self.lbl_service_note.setText(i18n.t(
+                "Установите службу, чтобы обход поднимался автоматически без "
+                "окна консоли."))
+
         # состояние
         import time as _time
 
@@ -502,6 +1104,7 @@ class ZapretWidget(QWidget):
 
         # тумблеры — из родных файлов zapret, без сигналов
         gf = snap.get("game_filter") or "off"
+        gf_state = snap.get("game_filter_state") or {}
         ipset = snap.get("ipset") or {}
         for chk, val in ((self.chk_tcp, gf in ("tcp", "all")),
                          (self.chk_udp, gf in ("udp", "all")),
@@ -509,6 +1112,10 @@ class ZapretWidget(QWidget):
             chk.blockSignals(True)
             chk.setChecked(bool(val))
             chk.blockSignals(False)
+        if not self.txt_gf_tcp.hasFocus():
+            self.txt_gf_tcp.setText(gf_state.get("tcp") or "")
+        if not self.txt_gf_udp.hasFocus():
+            self.txt_gf_udp.setText(gf_state.get("udp") or "")
         mode_names = {
             "loaded": i18n.t("загружен"),
             "none": i18n.t("отключён (заглушка)"),
@@ -531,6 +1138,20 @@ class ZapretWidget(QWidget):
         self.btn_recon.setEnabled(path_ok and bool(sel) and not any_foreign and not busy)
         self.btn_adopt.setEnabled(not busy)
         self.btn_ignore.setEnabled(not busy)
+        self.btn_upd_check.setEnabled(bool(path) and not busy)
+        self.btn_upd_apply.setEnabled(bool(path) and path_ok and bool(self._update.get("newer"))
+                                      and not busy)
+        self.btn_upd_rollback.setEnabled(bool(manifest) and not busy)
+        self.btn_upd_notes.setEnabled(bool((self._update.get("release") or {}).get("body"))
+                                      and not busy)
+        self.btn_svc_install.setEnabled(path_ok and bool(sel) and not busy)
+        for btn in (self.btn_svc_start, self.btn_svc_stop, self.btn_svc_restart,
+                    self.btn_svc_remove):
+            btn.setEnabled(bool(svc.get("installed")) and not busy)
+        self.btn_ipset_update.setEnabled(bool(path) and path_ok and not busy)
+        self.btn_hosts_check.setEnabled(not busy)
+        self.btn_hosts_apply.setEnabled(not busy)
+        self.btn_gf_apply.setEnabled(bool(path) and path_ok and not busy)
 
         # журнал winws
         if ours:
@@ -875,8 +1496,10 @@ class ZapretWidget(QWidget):
         path = self._path()
         tcp = self.chk_tcp.isChecked()
         udp = self.chk_udp.isChecked()
+        mode = "all" if (tcp and udp) else ("tcp" if tcp else ("udp" if udp else "off"))
         before = self._snap.get("game_filter") or "off"
-        ok, msg = gd_zapret.set_game_filter(path, tcp, udp)
+        ok, msg = gd_zapret.set_game_filter_mode(
+            path, mode, self.txt_gf_tcp.text().strip(), self.txt_gf_udp.text().strip())
         if not ok:
             self._set_status(i18n.t("GameFilter: {v0}", v0=msg), ok=False)
             self._poll.trigger()
