@@ -414,6 +414,10 @@ DEFAULT_CONFIG = {
         # проверка обновлений ходит в сеть — по умолчанию выключена (обещание
         # «без облака и телеметрии» остаётся в силе, пока галочку не поставят)
         "check_updates": False,
+        # обход DPI (zapret): авто-проверка релиза Flowseal не чаще суток и
+        # отметка последней проверки, чтобы вкладка не дёргала GitHub API
+        "zapret_auto_update_check": True,
+        "zapret_update_last_check": 0,
     },
     "presets": [
         {
@@ -552,6 +556,8 @@ def load_config() -> dict:
     settings.setdefault("perf_limited", False)
     settings.setdefault("perf_sound", True)
     settings.setdefault("gpu_apply_on_start", False)
+    settings.setdefault("zapret_auto_update_check", True)
+    settings.setdefault("zapret_update_last_check", 0)
 
     if settings.get("gpu_auto_pl") is not None:
         try:

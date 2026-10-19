@@ -431,6 +431,48 @@ def _handle(obj: dict) -> dict:
         with _OP_LOCK:
             ok, res = _zapret_adopt(int(obj.get("pid") or 0))
         return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
+    # -- служба zapret и автообновление (ТЗ 8): без консоли service.bat --------
+    if cmd == "zapret_service":
+        op = str(obj.get("op") or "status")
+        with _OP_LOCK:
+            import gd_zapret
+
+            if op == "status":
+                return {"ok": True, "data": gd_zapret.service_status()}
+            if op == "install":
+                ok, res = gd_zapret.service_install(
+                    obj.get("path") or "", obj.get("strategy") or "",
+                    obj.get("argv") or [], bool(obj.get("start", True)))
+            elif op == "remove":
+                ok, res = gd_zapret.service_remove()
+            elif op == "start":
+                ok, res = gd_zapret.service_start()
+            elif op == "stop":
+                ok, res = gd_zapret.service_stop()
+            elif op == "restart":
+                ok, res = gd_zapret.service_restart()
+            else:
+                return {"ok": False, "error": i18n.t("неизвестная операция службы: {v0}", v0=op)}
+        return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
+    if cmd == "zapret_update":
+        op = str(obj.get("op") or "apply")
+        with _OP_LOCK:
+            import gd_zapret_update as upd
+
+            if op == "apply":
+                res = upd.apply_update(obj.get("path") or "", obj.get("zip") or "",
+                                       obj.get("version") or "")
+            elif op == "rollback":
+                res = upd.rollback_update()
+            elif op == "ipset":
+                res = upd.update_ipset(obj.get("path") or "")
+            elif op == "hosts":
+                ok, tmp = upd.fetch_hosts()
+                res = upd.apply_hosts(tmp) if ok else {"ok": False, "error": tmp}
+            else:
+                return {"ok": False, "error": i18n.t("неизвестная операция обновления: {v0}", v0=op)}
+        return {"ok": bool(res.get("ok")), "data": res if res.get("ok") else None,
+                "error": None if res.get("ok") else res.get("error")}
     return {"ok": False, "error": i18n.t("неизвестная команда: {v0}", v0=cmd)}
 
 

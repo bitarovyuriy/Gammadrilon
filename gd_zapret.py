@@ -152,36 +152,115 @@ def scan_strategies(root: str | None) -> list[dict]:
 # --------------------------------------------------------------------------
 
 
-def game_filter(root: str | None) -> str:
-    """Режим GameFilter: off / all / tcp / udp (файл utils\\game_filter.enabled)."""
+#: диапазоны GameFilter по умолчанию — те же, что в service.bat
+GAME_FILTER_DEFAULT_TCP = "1024-65535"
+GAME_FILTER_DEFAULT_UDP = "1024-65535"
+#: проверка формата пользовательского диапазона портов: «1024-1934,1936-65535»
+_PORT_RANGE_RE = re.compile(r"^\d{1,5}(?:-\d{1,5})?(?:,\d{1,5}(?:-\d{1,5})?)*$")
+
+
+def valid_port_range(text: str) -> str | None:
+    """Нормализовать диапазон портов или вернуть None (как service.bat)."""
+    text = "".join(str(text or "").split())
+    if not text or not _PORT_RANGE_RE.match(text):
+        return None
+    for part in text.split(","):
+        pieces = [int(p) for p in part.split("-")]
+        if any(p < 1 or p > 65535 for p in pieces):
+            return None
+        if len(pieces) == 2 and pieces[0] > pieces[1]:
+            return None
+    return text
+
+
+def game_filter_state(root: str | None) -> dict:
+    """Разбор ``utils\\game_filter.enabled`` в формате service.bat 1.10.3.
+
+    Возвращает ``{'mode': off|all|tcp|udp, 'tcp': '…', 'udp': '…'}``.
+    Старый формат (одна строка ``all`` / ``tcp`` / ``udp``) тоже понимается.
+    """
+    state = {"mode": "off", "tcp": GAME_FILTER_DEFAULT_TCP,
+             "udp": GAME_FILTER_DEFAULT_UDP}
     if not root:
-        return "off"
+        return state
     f = Path(root).joinpath(*GAME_FILTER_FILE)
     try:
-        mode = f.read_text(encoding="utf-8", errors="replace").strip().lower()
+        text = f.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return "off"
-    return mode if mode in GAME_FILTER_MODES else "off"
+        return state
+    tcp, udp = None, None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            if line.lower() in GAME_FILTER_MODES:
+                state["mode"] = line.lower()
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        key = key.lower()
+        if key == "mode" and value.lower() in GAME_FILTER_MODES:
+            state["mode"] = value.lower()
+        elif key == "all":
+            state["mode"] = "all"
+            tcp = udp = value or None
+        elif key == "tcp":
+            if value:
+                tcp = value
+            else:
+                state["mode"] = "tcp"
+        elif key == "udp":
+            if value:
+                udp = value
+            else:
+                state["mode"] = "udp"
+    if tcp:
+        state["tcp"] = valid_port_range(tcp) or GAME_FILTER_DEFAULT_TCP
+    if udp:
+        state["udp"] = valid_port_range(udp) or GAME_FILTER_DEFAULT_UDP
+    return state
+
+
+def game_filter(root: str | None) -> str:
+    """Режим GameFilter: off / all / tcp / udp (файл utils\\game_filter.enabled)."""
+    return game_filter_state(root)["mode"]
 
 
 def set_game_filter(root: str | None, tcp: bool, udp: bool) -> tuple[bool, str]:
-    """Записать GameFilter так, как это делает `service.bat :game_switch`.
+    """Совместимая обёртка: записать GameFilter по двум галочкам."""
+    mode = "all" if (tcp and udp) else ("tcp" if tcp else ("udp" if udp else "off"))
+    return set_game_filter_mode(root, mode)
 
-    Батники читают этот файл при каждом запуске (`load_game_filter`), поэтому
-    смена тумблера при работающем winws требует повторного освоения — иначе
-    тумблер соврёт о состоянии (ТЗ 8.3).
+
+def set_game_filter_mode(root: str | None, mode: str, tcp_range: str = "",
+                         udp_range: str = "") -> tuple[bool, str]:
+    """Записать GameFilter так, как это делает `service.bat :game_switch` 1.10.3.
+
+    Поддерживает диапазоны портов: ``tcp=1024-1934,1936-65535``. Батники
+    читают этот файл при каждом запуске (`load_game_filter`), поэтому смена
+    тумблера при работающем winws требует повторного освоения — иначе тумблер
+    соврёт о состоянии (ТЗ 8.3).
     """
     if not root:
         return False, i18n.t("папка zapret не выбрана")
-    mode = "all" if (tcp and udp) else ("tcp" if tcp else ("udp" if udp else "off"))
+    mode = (mode or "off").lower()
+    if mode not in GAME_FILTER_MODES:
+        return False, i18n.t("неизвестный режим GameFilter")
+    tcp = valid_port_range(tcp_range) or GAME_FILTER_DEFAULT_TCP
+    udp = valid_port_range(udp_range) or GAME_FILTER_DEFAULT_UDP
+    if tcp_range and tcp != "".join(str(tcp_range).split()):
+        return False, i18n.t("неверный диапазон TCP-портов")
+    if udp_range and udp != "".join(str(udp_range).split()):
+        return False, i18n.t("неверный диапазон UDP-портов")
     f = Path(root).joinpath(*GAME_FILTER_FILE)
     try:
         if mode == "off":
             if f.exists():
                 f.unlink()
-        else:
-            f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text(mode + "\n", encoding="ascii")
+            return True, mode
+        f.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f"mode={mode}", f"tcp={tcp}", f"udp={udp}"]
+        f.write_text("\n".join(lines) + "\n", encoding="ascii")
     except OSError as exc:
         return False, i18n.t("не удалось изменить game_filter.enabled: {v0}", v0=exc)
     return True, mode
@@ -326,6 +405,219 @@ def service_state(name: str) -> str | None:
         # Строка «Тип : 10 WIN32_OWN_PROCESS» тоже подходит под шаблон:
         # неизвестный код — не повод считать, что службы нет, читаем дальше.
     return None
+
+
+# --------------------------------------------------------------------------
+# служба zapret: установка/запуск/остановка без консоли service.bat
+# --------------------------------------------------------------------------
+
+
+SERVICE_NAME = "zapret"
+SERVICE_DISPLAY = "zapret"
+SERVICE_DESC = "Zapret DPI bypass software"
+SERVICE_REG_VALUE = "zapret-discord-youtube"
+_WINDIVERT = ("WinDivert", "WinDivert14")
+
+
+def _run_sc(args: list[str], timeout: float = 20.0):
+    """Запустить sc.exe и вернуть (код, текст) без исключений."""
+    try:
+        proc = gd_proc.run(["sc", *args], timeout=timeout, text=True)
+    except (OSError, gd_proc.TimeoutExpired) as exc:
+        return 1, f"{type(exc).__name__}: {exc}"
+    return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
+
+
+def _service_wait(target: str, timeout: float = 15.0) -> bool:
+    """Дождаться состояния службы (RUNNING/STOPPED) после команды sc."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if service_state(SERVICE_NAME) == target:
+            return True
+        time.sleep(0.4)
+    return service_state(SERVICE_NAME) == target
+
+
+def service_registry_strategy() -> str | None:
+    """Имя стратегии, которым служба была установлена (пишет service.bat)."""
+    return _service_reg_value(SERVICE_REG_VALUE)
+
+
+def _service_reg_value(name: str) -> str | None:
+    """Прочитать строковое значение из ключа службы (ImagePath, Start, …)."""
+    key = rf"HKLM\System\CurrentControlSet\Services\{SERVICE_NAME}"
+    try:
+        proc = gd_proc.run(["reg", "query", key, "/v", name], timeout=8, text=True)
+    except (OSError, gd_proc.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].lower() == name.lower():
+            return " ".join(parts[2:]).strip()
+    return None
+
+
+def _service_config() -> dict:
+    """Снимок текущей службы — чтобы вернуть её при неудачной переустановке."""
+    return {
+        "exists": service_state(SERVICE_NAME) is not None,
+        "image": _service_reg_value("ImagePath"),
+        "display": _service_reg_value("DisplayName"),
+        "start": _service_reg_value("Start"),
+        "strategy": service_registry_strategy(),
+    }
+
+
+def _restore_service(config: dict) -> bool:
+    """Восстановить службу из снимка (после неудачного `sc create`)."""
+    image = config.get("image")
+    if not image:
+        return False
+    _run_sc(["delete", SERVICE_NAME], timeout=15)
+    code, _ = _run_sc(["create", SERVICE_NAME, "binPath=", image,
+                       "DisplayName=", config.get("display") or SERVICE_DISPLAY,
+                       "start=", "auto"], timeout=25)
+    if code != 0 or service_state(SERVICE_NAME) is None:
+        return False
+    if config.get("strategy"):
+        key = rf"HKLM\System\CurrentControlSet\Services\{SERVICE_NAME}"
+        try:
+            gd_proc.run(["reg", "add", key, "/v", SERVICE_REG_VALUE, "/t", "REG_SZ",
+                         "/d", str(config["strategy"]), "/f"], timeout=10, text=True)
+        except (OSError, gd_proc.TimeoutExpired):
+            pass
+    service_start()
+    return True
+
+
+def service_status() -> dict:
+    """Состояние службы: installed/state/strategy (без прав администратора)."""
+    state = service_state(SERVICE_NAME)
+    strategy = service_registry_strategy()
+    installed = state is not None or strategy is not None
+    return {"installed": installed, "state": state, "strategy": strategy}
+
+
+def service_binpath(root: str, argv: list) -> str:
+    """Командная строка процесса для ``sc create binPath=``."""
+    exe = Path(root) / "bin" / "winws.exe"
+    return subprocess.list2cmdline([str(exe), *[str(a) for a in (argv or [])]])
+
+
+def _valid_argv(argv: list) -> bool:
+    """Аргументы winws не должны ломать ``sc create``: ни переводов строк, ни кавычек.
+
+    Кавычки внутри argv практически не встречаются (psutil отдаёт готовые
+    элементы), но ``sc`` сохраняет их как часть ImagePath — с экранированием,
+    которое winws потом не поймёт. Поэтому лучше отказаться, чем испортить службу.
+    """
+    return bool(argv) and all(
+        isinstance(a, str) and "\n" not in a and "\r" not in a and '"' not in a
+        for a in argv)
+
+
+def service_stop(timeout: float = 20.0) -> tuple[bool, str]:
+    """Остановить службу zapret (нужны права администратора)."""
+    state = service_state(SERVICE_NAME)
+    if state is None:
+        return True, i18n.t("служба не установлена")
+    if state != "STOPPED":
+        _run_sc(["stop", SERVICE_NAME], timeout=timeout)
+        _service_wait("STOPPED", timeout=timeout)
+    return (service_state(SERVICE_NAME) == "STOPPED",
+            i18n.t("служба остановлена") if service_state(SERVICE_NAME) == "STOPPED"
+            else i18n.t("служба не остановилась"))
+
+
+def service_start(timeout: float = 25.0) -> tuple[bool, str]:
+    """Запустить службу zapret и дождаться RUNNING."""
+    if service_state(SERVICE_NAME) is None:
+        return False, i18n.t("служба не установлена")
+    if service_state(SERVICE_NAME) != "RUNNING":
+        _run_sc(["start", SERVICE_NAME], timeout=timeout)
+        _service_wait("RUNNING", timeout=timeout)
+    ok = service_state(SERVICE_NAME) == "RUNNING"
+    return ok, i18n.t("служба запущена") if ok else i18n.t("служба не запустилась")
+
+
+def service_restart(timeout: float = 30.0) -> tuple[bool, str]:
+    """Перезапустить службу (после смены стратегии или настроек)."""
+    if service_state(SERVICE_NAME) is None:
+        return False, i18n.t("служба не установлена")
+    _run_sc(["stop", SERVICE_NAME], timeout=timeout)
+    _service_wait("STOPPED", timeout=timeout)
+    return service_start(timeout=timeout)
+
+
+def service_install(root: str, strategy: str, argv: list,
+                    start: bool = True) -> tuple[bool, str]:
+    """Поставить/переустановить службу zapret с готовым argv (нужен админ).
+
+    Полностью повторяет то, что делает ``service.bat``: binPath из winws.exe
+    и argv, DisplayName «zapret», автозапуск, реестровая метка стратегии.
+    """
+    if not root:
+        return False, i18n.t("папка zapret не выбрана")
+    if not (Path(root) / "bin" / "winws.exe").is_file():
+        return False, i18n.t("в bin\\ нет winws.exe")
+    if not _valid_argv(argv):
+        return False, i18n.t("нет готового argv — сначала «Распознать»")
+
+    previous = _service_config()
+    stop_ok, stop_msg = service_stop()
+    if not stop_ok:
+        return False, stop_msg
+    _run_sc(["delete", SERVICE_NAME], timeout=15)
+    if service_state(SERVICE_NAME) is not None:
+        # Windows не сразу отпускает службу после delete
+        for _ in range(20):
+            if service_state(SERVICE_NAME) is None:
+                break
+            time.sleep(0.4)
+
+    binpath = service_binpath(root, argv)
+    code, out = _run_sc(["create", SERVICE_NAME, "binPath=", binpath,
+                         "DisplayName=", SERVICE_DISPLAY, "start=", "auto"], timeout=25)
+    if code != 0 or service_state(SERVICE_NAME) is None:
+        # службу уже могли удалить — возвращаем прежнюю, чтобы не оставить
+        # пользователя без обхода после неудачной переустановки
+        restored = _restore_service(previous) if previous.get("exists") else False
+        hint = i18n.t("sc create: {v0}", v0=out or code)
+        if previous.get("exists"):
+            hint += " " + (i18n.t("прежняя служба восстановлена") if restored
+                           else i18n.t("прежнюю службу вернуть не удалось"))
+        return False, hint
+    _run_sc(["description", SERVICE_NAME, SERVICE_DESC], timeout=10)
+    key = rf"HKLM\System\CurrentControlSet\Services\{SERVICE_NAME}"
+    try:
+        gd_proc.run(["reg", "add", key, "/v", SERVICE_REG_VALUE, "/t", "REG_SZ",
+                     "/d", strategy or "?", "/f"], timeout=10, text=True)
+    except (OSError, gd_proc.TimeoutExpired):
+        pass
+    if start:
+        return service_start()
+    return True, i18n.t("служба установлена")
+
+
+def service_remove(timeout: float = 25.0) -> tuple[bool, str]:
+    """Удалить службу zapret и связанные WinDivert (нужен админ).
+
+    Как и официальный ``service.bat``, чистит драйверные службы WinDivert:
+    без этого после удаления остаётся занятый фильтр и следующий запуск
+    обхода упирается в «WinDivert уже загружен».
+    """
+    stop_ok, stop_msg = service_stop(timeout=timeout)
+    if not stop_ok:
+        return False, stop_msg
+    code, out = _run_sc(["delete", SERVICE_NAME], timeout=15)
+    for name in _WINDIVERT:
+        _run_sc(["stop", name], timeout=15)
+        _run_sc(["delete", name], timeout=15)
+    if service_state(SERVICE_NAME) is not None:
+        return False, i18n.t("sc delete: {v0}", v0=out or code)
+    return True, i18n.t("служба удалена")
 
 
 # --------------------------------------------------------------------------
@@ -527,12 +819,14 @@ def snapshot(root: str | None) -> dict:
         "problems": validate(root),
         "strategies": scan_strategies(root),
         "game_filter": game_filter(root),
+        "game_filter_state": game_filter_state(root),
         "ipset": ipset_info(root),
         "ours": None,
         "our_stale": False,
         "foreign": [],
         "service_zapret": None,
         "service_windivert": None,
+        "service_strategy": None,
         "others": [],
     }
     ours = our_state()
@@ -551,6 +845,7 @@ def snapshot(root: str | None) -> dict:
     snap["foreign"] = [p for p in processes() if p["pid"] != our_pid]
     snap["service_zapret"] = service_state("zapret")
     snap["service_windivert"] = service_state("WinDivert")
+    snap["service_strategy"] = service_registry_strategy()
     snap["others"] = other_bypasses()
     return snap
 

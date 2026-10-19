@@ -43,3 +43,11 @@ def test_strategy_bat_name_accepts_ui_id_and_file_name():
     assert gd_zapret.strategy_bat_name("general.bat") == "general.bat"
     assert gd_zapret.strategy_bat_name("..\\general") is None
     assert gd_zapret.strategy_bat_name("other") is None
+
+
+def test_valid_argv_rejects_quotes_and_newlines():
+    """sc create хранит кавычки как экранированный текст — winws их не поймёт."""
+    assert not gd_zapret._valid_argv(['--hostlist="C:\\x y\\list.txt"'])
+    assert not gd_zapret._valid_argv(["--hostlist=x\n--new"])
+    assert not gd_zapret._valid_argv([])
+    assert gd_zapret._valid_argv(["--wf-tcp=80,443", "--hostlist=C:\\x\\list.txt"])
