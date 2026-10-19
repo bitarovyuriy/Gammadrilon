@@ -175,7 +175,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "профиль CPU не распознан: {v0}": "профиль CPU не распознан: {v0}",
         "профиль GPU не распознан: {v0}": "профиль GPU не распознан: {v0}",
         "Применять лимит при запуске": "Применять лимит при запуске",
-        "Галочка стоит — при запуске Gammadrilon вернёт лимит к последнему применённому значению (потребуется разрешение администратора). Снята — приложение только скажет, что лимит слетел.": "Галочка стоит — при запуске Gammadrilon вернёт лимит к последнему применённому значению (потребуется разрешение администратора). Снята — приложение только скажет, что лимит слетел.",
+        "Стоит — при запуске Gammadrilon вернёт лимит к последнему значению (спросит права администратора). Снята — приложение только скажет, что лимит слетел.": "Стоит — при запуске Gammadrilon вернёт лимит к последнему значению (спросит права администратора). Снята — приложение только скажет, что лимит слетел.",
         "Лимит вернётся при запуске приложения.": "Лимит вернётся при запуске приложения.",
         "Лимит не будет применяться при запуске.": "Лимит не будет применяться при запуске.",
         "запуск приложения": "запуск приложения",
@@ -421,7 +421,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "профиль CPU не распознан: {v0}": "unrecognized CPU profile: {v0}",
         "профиль GPU не распознан: {v0}": "unrecognized GPU profile: {v0}",
         "Применять лимит при запуске": "Apply power limit on start",
-        "Галочка стоит — при запуске Gammadrilon вернёт лимит к последнему применённому значению (потребуется разрешение администратора). Снята — приложение только скажет, что лимит слетел.": "Checked — Gammadrilon restores the limit to the last applied value on start (administrator permission required). Unchecked — the app only reports that the limit was reset.",
+        "Стоит — при запуске Gammadrilon вернёт лимит к последнему значению (спросит права администратора). Снята — приложение только скажет, что лимит слетел.": "Checked — on start Gammadrilon restores the limit to the last value (it will ask for administrator rights). Unchecked — the app only reports that the limit was reset.",
         "Лимит вернётся при запуске приложения.": "The limit will be restored on app start.",
         "Лимит не будет применяться при запуске.": "The limit will not be applied on start.",
         "запуск приложения": "app start",
@@ -548,6 +548,9 @@ DIRECT: dict[str, str] = {
     "Имя пресета:": "Preset name:",
     "Невозможно удалить": "Cannot delete",
     "Нельзя удалить последний пресет.": "You cannot delete the last preset.",
+    "Ничего не найдено — измени запрос": "Nothing found — change the query",
+    "Стратегий не нашлось — в корне папки нет general*.bat": "No strategies found — the folder root has no general*.bat",
+    "Процессов не нашлось.": "No processes found.",
     "Удалить пресет": "Delete preset",
     "Удалить пресет «{v0}»?": "Delete preset “{v0}”?",
     "Горячая клавиша для «{v0}»: пример ctrl+alt+1": "Hotkey for “{v0}”: example ctrl+alt+1",
@@ -631,7 +634,7 @@ DIRECT: dict[str, str] = {
     "Гамма восстановлена после сброса системой.": "Gamma restored after being reset by the system.",
     "Кошачье зрение: выключено": "Cat Vision: OFF",
     "Кошачье зрение снято: значения изменены вручную.": "Cat Vision turned off: values were changed manually.",
-    "99% — классический способ отключить Turbo Boost: Windows держит частоту ниже последнего P-state. На Intel работает предсказуемо, на AMD — частично, зависит от CPPC/PBO и настроек BIOS. Гарантий по температуре нет — смотрите фактические сенсоры ниже.": "99% is the classic way to disable Turbo Boost: Windows keeps the clock below the last P-state. Predictable on Intel; on AMD it is partial and depends on CPPC/PBO and BIOS settings. No temperature guarantees — watch the actual sensors below.",
+    "99% — способ отключить Turbo Boost: частота держится ниже последнего P-state. На Intel работает предсказуемо, на AMD — частично (зависит от CPPC/PBO и BIOS). Температура при этом не гарантирована — смотрите сенсоры ниже.": "99% is the way to disable Turbo Boost: the clock stays below the last P-state. Predictable on Intel, partial on AMD (depends on CPPC/PBO and BIOS). Temperature is not guaranteed either — watch the sensors below.",
     "Gammadrilon — Питание CPU": "Gammadrilon — CPU power",
     "Агрессивный": "Aggressive",
     "Активное": "Active",
@@ -651,7 +654,7 @@ DIRECT: dict[str, str] = {
     "Приоритет энергосбережения: 0 — максимальная производительность, 100 — максимальная экономия.": "Energy preference: 0 — max performance, 100 — max savings.",
     "Профиль записан, но частота пока не отреагировала. Вероятные причины: AMD PBO / настройки BIOS / драйверный сервис перехватывает управление.": "Profile written, but the clock has not reacted yet. Likely causes: AMD PBO / BIOS settings / a driver service overriding it.",
     "Профиль не применён — активна исходная схема.": "No profile applied — the original scheme is active.",
-    "Профиль применяется к схеме питания через её клон — исходная схема не меняется, откат в один клик. Значения пишутся и в AC, и в DC.": "The profile is applied to a clone of the power scheme — the original stays untouched, rollback in one click. Values are written for both AC and DC.",
+    "Профиль применяется к клону схемы: исходная не меняется, откат в один клик. Значения пишутся и в AC, и в DC.": "The profile applies to a clone of the power scheme: the original stays intact, rollback in one click. Values are written for both AC and DC.",
     "Профиль применён.": "Profile applied.",
     "Профиль применён. Проверяю реакцию частоты…": "Profile applied. Checking clock reaction…",
     "Режим «СВОЙ»: настройте параметры ниже и нажмите «Применить как «СВОЙ»».": "CUSTOM mode: adjust the values below and press “Apply as CUSTOM”.",
@@ -660,7 +663,7 @@ DIRECT: dict[str, str] = {
     "СЕЙЧАС": "NOW",
     "Схема возвращена к исходной.": "Scheme restored.",
     "Точные значения профиля. «СВОЙ» — применить произвольную комбинацию.": "Exact profile values. CUSTOM — apply an arbitrary combination.",
-    "Частота — оценка: номинал × % производительности (счётчик PDH). Температура недоступна без дополнительного ПО (датчик не отдаётся системой).": "Clock is an estimate: base × % of performance (PDH counter). Temperature needs extra software (the sensor is not exposed by the system).",
+    "Частота — оценка: номинал × % производительности (счётчик PDH). Температура недоступна: система не отдаёт датчик.": "Clock is an estimate: base × % of performance (PDH counter). Temperature is unavailable: the system does not expose the sensor.",
     "ЭКО": "ECO",
     "Эффективный": "Efficient",
     "Эффективный агрессивный": "Efficient aggressive",
@@ -696,7 +699,7 @@ DIRECT: dict[str, str] = {
     "Автозапуск настраивается из главного окна.": "Autostart is configured from the main window.",
     "Автозапуск не изменён: {v0}": "Autostart not changed: {v0}",
     "ЗАПУСК ВМЕСТЕ С WINDOWS": "START WITH WINDOWS",
-    "Файл автозапуска ложится в папку «Автозагрузка» текущего пользователя — без окна и без запроса прав. Приложение стартует в трей, настройки экрана применяются как обычно.": "The autostart file is placed in the current user’s Startup folder — no window, no rights prompt. The app starts in the tray; screen settings are applied as usual.",
+    "Ярлык ложится в «Автозагрузку» пользователя — без окон и запроса прав. Приложение стартует в трей, настройки экрана применяются как обычно.": "A shortcut goes to the user’s Startup folder — no windows, no rights prompt. The app starts in the tray; screen settings are applied as usual.",
     "Автоочистка выключена.": "Auto-cleanup is off.",
     "Больше не показывать": "Don’t show again",
     "Вернуть питание CPU/GPU, DNS, правила, автоочистку, таймер и гамму к состоянию системы по умолчанию?": "Restore CPU/GPU power, DNS, rules, auto-cleanup, timer and gamma to system defaults?",
@@ -735,16 +738,15 @@ DIRECT: dict[str, str] = {
     "Обновить": "Refresh",
     # лимит GPU: удержание лимита после выхода приложения
     "Не возвращать лимит при выходе приложения": "Do not restore the limit when the app closes",
-    "Галочка стоит — лимит остаётся на карте после закрытия Gammadrilon (до перезагрузки или кнопки «Вернуть как было»). Снята — при закрытии лимит возвращается к исходному.": "Checked — the limit stays on the card after Gammadrilon closes (until reboot or “Restore”). Unchecked — closing the app returns the original limit.",
+    "Стоит — лимит остаётся на карте после закрытия (до перезагрузки или кнопки «Вернуть как было»). Снята — при закрытии возвращается к исходному.": "On — the limit stays on the card after exit (until reboot or “Restore”). Off — the limit returns to the original value on exit.",
     "Лимит останется после выхода приложения.": "The limit will be kept after the app closes.",
     "Лимит вернётся к исходному при выходе приложения.": "The limit will return to the original when the app closes.",
     "применено: {v0} (лимит останется после выхода)": "applied: {v0} (limit stays after exit)",
     "Отмена": "Cancel",
     "Отметить все": "Select all",
-    "Отметьте процессы. Их рабочие наборы будут сжаты: Windows выгрузит страницы, к которым давно не обращались. Для чужих процессов нужны права администратора.": "Tick processes. Their working sets will be trimmed: Windows will unload pages that have not been touched for a while. Other users’ processes require administrator rights.",
+    "Отметь процессы: Windows выгрузит страницы, к которым давно не обращались. Для чужих процессов нужны права администратора.": "Tick processes: Windows will unload pages untouched for a while. Other users’ processes need administrator rights.",
     "Очистить standby list": "Purge standby list",
     "Очистить журнал": "Clear log",
-    "ПРОФИЛИ — ЭКСПОРТ / ИМПОРТ": "PROFILES — EXPORT / IMPORT",
     "ПРОФИЛЬ GPU": "GPU PROFILE",
     "Параметр триггера": "Trigger parameter",
     "Питание CPU и GPU, DNS, правила, автоочистка, точность таймера, гамма — всё возвращается к состоянию системы по умолчанию.": "CPU and GPU power, DNS, rules, auto-cleanup, timer resolution, gamma — everything goes back to system defaults.",
@@ -754,14 +756,13 @@ DIRECT: dict[str, str] = {
     "Понятно": "Got it",
     "Потери": "Loss",
     "Правила": "Rules",
-    "Правила, «тихий час» и настройки автоочистки делятся файлом; профили CPU/GPU встроенные.": "Rules, quiet hour and auto-cleanup settings are shared via the file; CPU/GPU profiles are built-in.",
     "Правило": "Rule",
     "Применить": "Apply",
     "Применить выбранный": "Apply selected",
     "Проверить bufferbloat": "Check bufferbloat",
     "Профиль": "Profile",
     "Профиль не применён.": "No profile applied.",
-    "Профиль — ярлык над слайдером лимита, а не отдельная настройка: «Тихий» ставит 150 Вт, «Дефолт» — номинал, «Игровой» — 93 % максимума, «Макс» — максимум драйвера.": "A profile is a shortcut above the limit slider, not a separate setting: Quiet sets 150 W, Default — nominal, Gaming — 93% of max, Max — driver maximum.",
+    "Профиль — ярлык над слайдером лимита, а не отдельная настройка: «Тихий» — 150 Вт, «Дефолт» — номинал, «Игровой» — 93 % максимума, «Макс» — максимум драйвера.": "A profile is a shortcut above the limit slider, not a separate setting: Quiet — 150 W, Default — nominal, Gaming — 93% of max, Max — driver maximum.",
     "Процессы не выбраны.": "No processes selected.",
     "РЕЗОЛВЕРЫ": "RESOLVERS",
     "Разброс / потери": "Spread / loss",
@@ -781,12 +782,12 @@ DIRECT: dict[str, str] = {
     "Сжать рабочие наборы…": "Trim working sets…",
     "Снять все": "Clear all",
     "Сохранить": "Save",
-    "Сработает один раз в сутки, когда указанное время наступит при работающем приложении: пропущенное время (приложение было закрыто) не «догоняется».": "Fires once a day when that time comes while the app is running: a missed time (the app was closed) is not caught up.",
+    "Сработает раз в сутки, когда время наступит при работающем приложении: пропущенное (приложение было закрыто) не «догоняется».": "Fires once a day when the time comes while the app runs: a missed time (app closed) is not caught up.",
     "Сработает при переходе с сети на батарею. На этой машине батарея не обнаружена — правило будет ждать.": "Fires when switching from AC to battery. No battery found on this machine — the rule will wait.",
     "Сработает, когда процесс появится в системе.": "Fires when the process appears in the system.",
     "ТИХИЙ ЧАС — ЭКО И МИНИМУМ ЯРКОСТИ ПО РАСПИСАНИЮ": "QUIET HOUR — ECO AND MINIMUM BRIGHTNESS ON SCHEDULE",
     "ТОЧНОСТЬ СИСТЕМНОГО ТАЙМЕРА": "SYSTEM TIMER RESOLUTION",
-    "Температура, частота ядра, лимит мощности и загрузка — прямо из драйвера (nvidia-smi), без прав администратора.": "Temperature, core clock, power limit and load — straight from the driver (nvidia-smi), no admin rights needed.",
+    "Температура, частота, лимит мощности и загрузка — прямо из драйвера (nvidia-smi), без прав администратора.": "Temperature, clock, power limit and load — straight from the driver (nvidia-smi), no admin rights needed.",
     "Триггер": "Trigger",
     "Триггер → условие → действие. Правило применяет профиль само и пишет об этом в журнал изменений (источник — «правило»).": "Trigger → condition → action. The rule applies a profile by itself and writes it to the change log (source — “rule”).",
     "У резолвера нет адресов.": "The resolver has no addresses.",
@@ -794,7 +795,7 @@ DIRECT: dict[str, str] = {
     "Узел": "Node",
     "Укажите адрес для строки «Свой».": "Enter an address for the “Custom” row.",
     "Условие": "Condition",
-    "Установка лимита требует прав администратора — при первом применении будет запрос UAC. Лимит держится до кнопки «Вернуть как было» или до закрытия приложения (см. галочку ниже).": "Setting the limit requires administrator rights — the first apply raises a UAC prompt. The limit holds until “Restore” or until the app closes (see the checkbox below).",
+    "Лимит ставится с правами администратора: при первом применении Windows спросит UAC. Держится до кнопки «Вернуть как было» или до закрытия приложения (см. галочку ниже).": "The limit needs administrator rights: the first apply raises a UAC prompt. It holds until “Restore” or until the app closes (see the checkbox below).",
     "Утилиты": "Utilities",
     "ЧЧ:ММ, например 23:30": "HH:MM, e.g. 23:30",
     "Что произошло": "What happened",
@@ -843,17 +844,17 @@ DIRECT: dict[str, str] = {
     "Запуск процесса": "Process start",
     "Игровой": "Gaming",
     "Не удалось": "Failed",
-    "Очищает кэш файлов, который Windows держит намеренно. Может убрать микрофризы при нехватке памяти; в остальных случаях даст просадку — кэш придётся читать с диска заново. Это не освобождение «занятой» памяти и не ускорение системы.": "Purges the file cache Windows keeps on purpose. It may remove micro-stutters when memory is tight; otherwise it causes a slowdown — the cache must be re-read from disk. This is not freeing “used” memory and not speeding the system up.",
+    "Сбрасывает файловый кэш Windows. Помогает при нехватке памяти, иначе даёт просадку: кэш читается с диска заново. Это не освобождение «занятой» памяти и не ускорение.": "Drops the Windows file cache. It helps when memory is tight; otherwise it slows things down — the cache is re-read from disk. It is not freeing “used” RAM and not a speed-up.",
     "Переход на батарею": "Battery switch",
     "По расписанию": "On schedule",
-    "Прирост от таймера 0.5 мс в основном мифический: реальный эффект измерим лишь в отдельных играх. Значение действует, пока Gammadrilon запущен, и сбрасывается само при выходе.": "The 0.5 ms timer gain is mostly a myth: a real effect is measurable only in a few games. It lasts while Gammadrilon runs and resets itself on exit.",
+    "0,5 мс — в основном миф: эффект заметен лишь в отдельных играх. Действует, пока Gammadrilon запущен, и сбрасывается при выходе.": "0.5 ms is mostly a myth: the effect shows in a few games only. It lasts while Gammadrilon runs and resets on exit.",
     "Профиль CPU": "CPU profile",
     "Профиль GPU": "GPU profile",
     "Свой": "Custom",
     "Смена DNS может ухудшить резолв в вашей сети. Сравнивайте латентность до и после.": "Changing DNS may worsen resolution on your network. Compare latency before and after.",
     "Сменить DNS": "Switch DNS",
     "Тихий": "Quiet",
-    "Это измерение, а не «оптимизатор пинга»: показывает долю повторно переданных сегментов TCP, джиттер, потери и рост задержки под нагрузкой (bufferbloat).": "This is a measurement, not a “ping optimizer”: it shows the TCP retransmit share, jitter, loss and latency growth under load (bufferbloat).",
+    "Измерение, а не «оптимизатор пинга»: повторные сегменты TCP, джиттер, потери и рост задержки под нагрузкой (bufferbloat).": "A measurement, not a “ping optimizer”: retransmitted TCP segments, jitter, loss and latency growth under load (bufferbloat).",
     "Яндекс": "Yandex",
     "без условий": "no conditions",
     "включена": "enabled",
@@ -1010,31 +1011,20 @@ DIRECT: dict[str, str] = {
     "Копировать": "Copy",
     "не выбрана": "not selected",
     "Папка zapret-discord-youtube": "zapret-discord-youtube folder",
-    "Папка комплекта zapret-discord-youtube. Комплект остаётся внешним: Gammadrilon — контроллер и UI, обновления приходят от автора zapret. Путь должен быть без кириллицы.":
-        "The zapret-discord-youtube bundle folder. The bundle stays external: Gammadrilon is "
-        "the controller and UI, updates come from the zapret author. The path must not contain "
-        "non-ASCII characters.",
-    "ВЫКЛЮЧЕНО / РАБОТАЕТ (наша стратегия, PID и аптайм) / внешний winws.exe, который Gammadrilon не трогает без вашего решения.":
-        "OFF / RUNNING (our strategy, PID and uptime) / an external winws.exe that Gammadrilon "
-        "never touches without your decision.",
-    "Видимый запуск service.bat: служба zapret, обновление списков, диагностика — интерактивное меню открывается в своём окне.":
-        "Visible service.bat launch: the zapret service, list updates, diagnostics — the "
-        "interactive menu opens in its own window.",
-    "Список — это файлы general*.bat в корне папки. «Освоение» один раз ловит командную строку winws.exe, дальше запуск идёт напрямую — без cmd.exe, с контролем статуса и stdout.":
-        "The list is the general*.bat files in the bundle root. “Learning” captures the "
-        "winws.exe command line once; after that the app launches it directly — no cmd.exe, "
-        "with status and stdout control.",
-    "GameFilter — диапазоны портов для игр: батник читает их при запуске, поэтому смена тумблера запускает повторное освоение. IPSet — список IP (lists\\ipset-all.txt): winws читает его при старте, поэтому при работающем обходе список перезапускается.":
-        "GameFilter — game port ranges: the batch reads them at launch, so flipping the toggle "
-        "triggers re-learning. IPSet — the IP list (lists\\ipset-all.txt): winws reads it at "
-        "startup, so with the bypass running the list is applied by a restart.",
-    "Последние строки stdout winws.exe: пишутся при прямом запуске. Драйвер WinDivert и стратегия пишут сюда же свои сообщения.":
-        "The last lines of winws.exe stdout: written on direct launch. The WinDivert driver "
-        "and the strategy write their messages here too.",
-    "Найден посторонний winws.exe (PID {v0}) — вероятно, запущен вручную. Gammadrilon не трогает его молча: можно взять под управление (прочитает аргументы и сможет останавливать) или оставить как есть.":
-        "A foreign winws.exe (PID {v0}) was found — probably started manually. Gammadrilon "
-        "never touches it silently: take it under management (reads its arguments and allows "
-        "stopping) or leave it as is.",
+    "Папка комплекта zapret-discord-youtube. Комплект внешний: Gammadrilon — контроллер и UI, обновления приходят от автора zapret. Путь — без кириллицы.":
+        "The zapret-discord-youtube bundle folder. The bundle is external: Gammadrilon is the controller and UI, updates come from the zapret author. The path must not contain Cyrillic.",
+    "ВЫКЛЮЧЕНО / РАБОТАЕТ (наша стратегия, PID и аптайм) / внешний winws.exe, который Gammadrilon не трогает без решения.":
+        "OFF / RUNNING (our strategy, PID and uptime) / an external winws.exe that Gammadrilon never touches without a decision.",
+    "Видимый запуск service.bat: служба zapret, обновление списков, диагностика — меню откроется в своём окне.":
+        "Visible service.bat launch: the zapret service, list updates, diagnostics — the menu opens in its own window.",
+    "Список — файлы general*.bat в корне папки. «Освоение» один раз ловит аргументы winws.exe; дальше запуск идёт напрямую — без cmd.exe, с контролем статуса и вывода.":
+        "The list is the general*.bat files in the bundle root. “Learning” captures the winws.exe arguments once; after that the app launches it directly — no cmd.exe, with status and output control.",
+    "GameFilter — порты для игр: батник читает их при запуске, поэтому тумблер запускает повторное освоение. IPSet — список IP из lists\\ipset-all.txt: winws читает его при старте, поэтому при работающем обходе список перезапускается.":
+        "GameFilter — game ports: the batch reads them at launch, so the toggle triggers re-learning. IPSet — the IP list from lists\\ipset-all.txt: winws reads it at startup, so with the bypass running the list is applied by a restart.",
+    "Последние строки вывода winws.exe — при прямом запуске. WinDivert и стратегия пишут сюда же.":
+        "The last lines of winws.exe output — on direct launch. WinDivert and the strategy write here too.",
+    "Посторонний winws.exe (PID {v0}) — вероятно, запущен вручную. Gammadrilon молча его не трогает: его можно взять под управление (прочитаю аргументы и смогу останавливать) или оставить как есть.":
+        "A foreign winws.exe (PID {v0}) — probably started manually. Gammadrilon never touches it silently: take it under management (I will read its arguments and be able to stop it) or leave it as is.",
     "Внешний winws.exe взят под управление — его можно остановить кнопкой «Выключить».":
         "The external winws.exe is now under management — it can be stopped with the "
         "“Disable” button.",
@@ -1148,12 +1138,10 @@ DIRECT: dict[str, str] = {
     "Изменение выполнится один раз и только после вашего решения. Если понадобится, Windows отдельно спросит права администратора.":
         "The change runs once and only after your decision. If needed, Windows will separately ask "
         "for administrator rights.",
-    "Локальный API для инструментов: сервер слушает только 127.0.0.1 и требует токен из файла. Агент видит только действия из списка ниже — реестр, shell и файлы ему недоступны. Изменения выполняются только после вашего подтверждения в окне.":
-        "Local tool API: the server listens on 127.0.0.1 only and requires the token from the file. "
-        "The agent sees only the actions listed below — the registry, shell and files are out of reach. "
-        "Changes run only after your confirmation in a dialog.",
-    "Журнал аудита только дописывается — приложение его не редактирует. Запись: время, действие, решение и параметры.":
-        "The audit log is append-only — the app never edits it. Each entry: time, action, decision and parameters.",
+    "Локальный API для инструментов: сервер слушает только 127.0.0.1 и требует токен. Агенту доступны только действия из списка ниже — без реестра, shell и файлов. Изменения идут только после подтверждения в окне.":
+        "Local tool API: the server listens on 127.0.0.1 only and requires a token. The agent only has the actions listed below — no registry, shell or files. Changes happen only after confirmation in a dialog.",
+    "Журнал аудита только дописывается. Запись: время, действие, решение и параметры.":
+        "The audit log is append-only. Each entry: time, action, decision and parameters.",
     "параметры: {v0}\nисточник: {v1}\nдлительность: {v2} мс":
         "parameters: {v0}\nsource: {v1}\nduration: {v2} ms",
     # действия API
@@ -1369,20 +1357,17 @@ DIRECT: dict[str, str] = {
     "настройки приложения применить не удалось": "could not apply app settings",
     "настройки приложения": "app settings",
     "НАСТРОЙКИ И ПРОФИЛИ — ЭКСПОРТ / ИМПОРТ": "SETTINGS AND PROFILES — EXPORT / IMPORT",
-    "Одним файлом переносятся настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистка; "
-    "профили CPU/GPU встроенные. Настройки приложения вступят в силу после перезапуска.":
-        "One file carries app settings, gamma presets, rules, quiet hour and RAM auto-cleanup; "
-        "CPU/GPU profiles are built in. App settings take effect after a restart.",
+    "Один файл переносит настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистку; профили CPU/GPU встроенные. Настройки применятся после перезапуска.":
+        "One file carries app settings, gamma presets, rules, quiet hour and RAM auto-cleanup; CPU/GPU profiles are built in. The settings apply after a restart.",
     # --- проверка обновлений ---
+    "GitHub ответил {v0}": "GitHub replied {v0}",
+    "нет связи: {v0}": "no connection: {v0}",
+    "в ответе GitHub нет тега версии": "the GitHub response has no version tag",
     "ОБНОВЛЕНИЯ": "UPDATES",
     "Проверять при запуске": "Check at startup",
     "Проверить сейчас": "Check now",
-    "Запрос уходит на api.github.com и не несёт ничего, кроме самого запроса: ни версии приложения, "
-    "ни идентификаторов, ни счётчиков. GitHub при этом видит IP — поэтому галочка выключена, "
-    "пока её не поставить.":
-        "The request goes to api.github.com and carries nothing but the request itself: no app version, "
-        "no identifiers, no counters. GitHub still sees the IP — that is why the checkbox stays off "
-        "until you turn it on.",
+    "Запрос уходит на api.github.com без версии, идентификаторов и счётчиков. GitHub видит IP — поэтому галочка по умолчанию снята.":
+        "The request goes to api.github.com without version, identifiers or counters. GitHub sees the IP — so the checkbox is off by default.",
     "Обновления не проверялись.": "Updates have not been checked yet.",
     "Спрашиваю GitHub…": "Asking GitHub…",
     "Проверка обновлений не удалась: {v0}": "Update check failed: {v0}",
