@@ -62,7 +62,6 @@ class DnsWidget(QWidget):
         super().__init__()
         self.setObjectName("PanelRoot")
         self._standalone = standalone
-        self.setStyleSheet(th.STYLESHEET)
         self.client = None
         self._results: dict = {}
         self._worker = None
@@ -71,8 +70,8 @@ class DnsWidget(QWidget):
         self._doh_worker = None       # фоновая проверка поддержки DoH
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(12)
+        root.setContentsMargins(*th.PAGE_MARGINS)
+        root.setSpacing(th.PAGE_SPACING)
 
         head = QHBoxLayout()
         title = QLabel("DNS")
@@ -101,6 +100,8 @@ class DnsWidget(QWidget):
         self.table.setColumnWidth(1, 200)
         self.table.setColumnWidth(2, 150)
         self.table.setMinimumHeight(230)
+        # сетка сеткой, а разделяют строки линии-подчёркивания из QSS (`QTableWidget::item`)
+        self.table.setShowGrid(False)
         for i, r in enumerate(gd_dns.RESOLVERS):
             self.table.setItem(i, 0, QTableWidgetItem(r["label"]))
             self.table.setItem(i, 1, QTableWidgetItem(", ".join(r["servers"]) or "—"))

@@ -57,7 +57,7 @@ COOL_LABELS = [i18n.t("Пассивное"), i18n.t("Активное")]
 PROFILE_NAMES = {"eco": i18n.t("ЭКО"), "normal": i18n.t("НОРМАЛ"), "boost": i18n.t("БУСТ"), "custom": i18n.t("СВОЙ")}
 
 _TURBO_TIP = (
-    i18n.t("99% — классический способ отключить Turbo Boost: Windows держит частоту ниже последнего P-state. На Intel работает предсказуемо, на AMD — частично, зависит от CPPC/PBO и настроек BIOS. Гарантий по температуре нет — смотрите фактические сенсоры ниже.")
+    i18n.t("99% — способ отключить Turbo Boost: частота держится ниже последнего P-state. На Intel работает предсказуемо, на AMD — частично (зависит от CPPC/PBO и BIOS). Температура при этом не гарантирована — смотрите сенсоры ниже.")
 )
 
 
@@ -267,11 +267,11 @@ def make_card(title: str, tip: str = ""):
     frame = QFrame()
     frame.setObjectName("Card")
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(14, 12, 14, 14)
-    lay.setSpacing(10)
+    lay.setContentsMargins(*th.CARD_MARGINS)
+    lay.setSpacing(th.CARD_SPACING)
     if title:
         row = QHBoxLayout()
-        row.setSpacing(6)
+        row.setSpacing(th.SPACE_XS)
         lbl = QLabel(title)
         lbl.setObjectName("CardLabel")
         row.addWidget(lbl)
@@ -300,8 +300,6 @@ class PowerWindow(QWidget):
         if standalone:
             self.setWindowTitle(i18n.t("Gammadrilon — Питание CPU"))
             self.resize(470, 680)
-        # собственный стиль — работает и при встраивании вкладкой в главное окно
-        self.setStyleSheet(th.STYLESHEET)
         self.client = PowerClient()
         self._profile = None
         self._orig_values = None
@@ -361,8 +359,8 @@ class PowerWindow(QWidget):
     # -- построение --------------------------------------------------------
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(14)
+        root.setContentsMargins(*th.PAGE_MARGINS)
+        root.setSpacing(th.PAGE_SPACING)
 
         head = QHBoxLayout()
         self._title = QLabel(i18n.t("Питание CPU"))
@@ -382,7 +380,7 @@ class PowerWindow(QWidget):
         # --- профиль ---
         card, lay = make_card(
             i18n.t("ПРОФИЛЬ"),
-            i18n.t("Профиль применяется к схеме питания через её клон — исходная схема не меняется, откат в один клик. Значения пишутся и в AC, и в DC."),
+            i18n.t("Профиль применяется к клону схемы: исходная не меняется, откат в один клик. Значения пишутся и в AC, и в DC."),
         )
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -408,10 +406,10 @@ class PowerWindow(QWidget):
         # --- сейчас ---
         card2, lay2 = make_card(
             i18n.t("СЕЙЧАС"),
-            i18n.t("Частота — оценка: номинал × % производительности (счётчик PDH). Температура недоступна без дополнительного ПО (датчик не отдаётся системой)."),
+            i18n.t("Частота — оценка: номинал × % производительности (счётчик PDH). Температура недоступна: система не отдаёт датчик."),
         )
         metrics = QHBoxLayout()
-        metrics.setSpacing(16)
+        metrics.setSpacing(th.SPACE_L)
         self.lbl_freq = QLabel("—")
         self.lbl_load = QLabel("—")
         self.lbl_perf = QLabel("—")
@@ -419,7 +417,7 @@ class PowerWindow(QWidget):
         for lbl, cap in ((self.lbl_freq, i18n.t("частота")), (self.lbl_load, i18n.t("загрузка")),
                          (self.lbl_perf, i18n.t("производит.")), (self.lbl_temp, i18n.t("температура"))):
             col = QVBoxLayout()
-            col.setSpacing(2)
+            col.setSpacing(th.SPACE_XS)
             lbl.setObjectName("Value")
             c = QLabel(cap)
             c.setObjectName("Hint")
@@ -438,8 +436,8 @@ class PowerWindow(QWidget):
             i18n.t("Точные значения профиля. «СВОЙ» — применить произвольную комбинацию."),
         )
         grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(10)
+        grid.setHorizontalSpacing(th.SPACE_M)
+        grid.setVerticalSpacing(th.SPACE_S)
 
         grid.addWidget(self._hint(i18n.t("Макс. состояние"), _TURBO_TIP), 0, 0)
         self.sl_max = QSlider(Qt.Horizontal)
@@ -470,8 +468,8 @@ class PowerWindow(QWidget):
             i18n.t("Режим усиления, охлаждение и применение своей комбинации."),
         )
         grid4 = QGridLayout()
-        grid4.setHorizontalSpacing(12)
-        grid4.setVerticalSpacing(10)
+        grid4.setHorizontalSpacing(th.SPACE_M)
+        grid4.setVerticalSpacing(th.SPACE_S)
 
         grid4.addWidget(self._hint(i18n.t("Режим усиления")), 0, 0)
         self.cb_boost = QComboBox()

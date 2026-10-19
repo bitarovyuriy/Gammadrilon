@@ -23,7 +23,6 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -36,6 +35,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import gd_bg  # noqa: E402
+import gd_dialog  # noqa: E402
 import gd_extra  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_profiles  # noqa: E402
@@ -96,6 +96,7 @@ class ExtraPanel(QWidget):
         self.table.setHorizontalHeaderLabels([i18n.t("Узел"), i18n.t("Медиана"), i18n.t("Джиттер"), i18n.t("Потери")])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setShowGrid(False)   # строки разделяют линии из QSS, а не сетка
         self.table.setMaximumHeight(130)
         for i, (h, p) in enumerate(gd_extra.TCP_PROBES):
             self.table.setItem(i, 0, QTableWidgetItem(f"{h}:{p}"))
@@ -150,7 +151,7 @@ class ExtraPanel(QWidget):
         r4.addWidget(self.btn_import)
         r4.addStretch(1)
         c4.addLayout(r4)
-        self.lbl_prof = QLabel(i18n.t("Одним файлом переносятся настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистка; профили CPU/GPU встроенные. Настройки приложения вступят в силу после перезапуска."))
+        self.lbl_prof = QLabel(i18n.t("Один файл переносит настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистку; профили CPU/GPU встроенные. Настройки применятся после перезапуска."))
         self.lbl_prof.setObjectName("Hint")
         self.lbl_prof.setWordWrap(True)
         c4.addWidget(self.lbl_prof)
@@ -355,11 +356,11 @@ class ExtraPanel(QWidget):
         if self.host is None or not hasattr(self.host, "reset_everything"):
             self._set_status(self.lbl_prof, i18n.t("Сброс доступен из главного окна."), ok=False)
             return
-        ans = QMessageBox.question(
+        ans = gd_dialog.confirm(
             self, i18n.t("Сбросить все изменения"),
             i18n.t("Вернуть питание CPU/GPU, DNS, правила, автоочистку, таймер и гамму к состоянию системы по умолчанию?"),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ans != QMessageBox.Yes:
+            confirm_text=i18n.t("Сбросить всё"), destructive=True)
+        if not ans:
             return
         report = self.host.reset_everything()
         self._set_status(self.lbl_prof, i18n.t("Сброшено: ") + (", ".join(report) if report else i18n.t("нечего сбрасывать")) + ".")

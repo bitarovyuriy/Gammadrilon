@@ -86,13 +86,12 @@ class AgentConfirmDialog(QDialog):
     def __init__(self, spec: gd_agent.Action, params: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(i18n.t("Запрос от локального агента"))
-        self.setStyleSheet(th.STYLESHEET)
         self.setMinimumWidth(460)
         self._left = CONFIRM_SECONDS
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(*th.DIALOG_MARGINS)
+        root.setSpacing(th.DIALOG_SPACING)
 
         title = QLabel(i18n.t(spec.title))
         title.setObjectName("Title")
@@ -160,14 +159,13 @@ class AgentWidget(QWidget):
         self.setObjectName("PanelRoot")
         self._standalone = standalone
         self._host = host
-        self.setStyleSheet(th.STYLESHEET)
         self._running = False
         self._endpoint = ""
         self._sync_guard = False
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(12)
+        root.setContentsMargins(*th.PAGE_MARGINS)
+        root.setSpacing(th.PAGE_SPACING)
 
         # --- СЕРВЕР ---
         card, lay = make_card(i18n.t("СЕРВЕР"))
@@ -218,9 +216,9 @@ class AgentWidget(QWidget):
         lay.addWidget(self.lbl_warn)
 
         hint = QLabel(i18n.t(
-            "Локальный API для инструментов: сервер слушает только 127.0.0.1 и требует токен из "
-            "файла. Агент видит только действия из списка ниже — реестр, shell и файлы ему "
-            "недоступны. Изменения выполняются только после вашего подтверждения в окне."
+            "Локальный API для инструментов: сервер слушает только 127.0.0.1 и требует токен. "
+            "Агенту доступны только действия из списка ниже — без реестра, shell и файлов. "
+            "Изменения идут только после подтверждения в окне."
         ))
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
@@ -235,6 +233,7 @@ class AgentWidget(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QTableWidget.NoSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setShowGrid(False)   # строки разделяют линии из QSS, а не сетка
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -270,7 +269,7 @@ class AgentWidget(QWidget):
         row3.addStretch(1)
         lay3.addLayout(row3)
         hint3 = QLabel(i18n.t(
-            "Журнал аудита только дописывается — приложение его не редактирует. "
+            "Журнал аудита только дописывается. "
             "Запись: время, действие, решение и параметры."
         ))
         hint3.setObjectName("Hint")

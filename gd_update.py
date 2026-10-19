@@ -16,6 +16,8 @@ import json
 import urllib.error
 import urllib.request
 
+import gd_i18n as i18n
+
 #: канонический адрес: ссылки bonzeros/... ведут сюда же (старый аккаунт,
 #: GitHub редиректит), но проверять версию лучше по текущему имени.
 REPO = "bitarovyuriy/Gammadrilon"
@@ -72,15 +74,15 @@ def fetch_latest(timeout: float = TIMEOUT) -> dict:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
-        return {"ok": False, "error": f"GitHub ответил {exc.code}"}
+        return {"ok": False, "error": i18n.t("GitHub ответил {v0}", v0=exc.code)}
     except urllib.error.URLError as exc:
-        return {"ok": False, "error": f"нет связи: {exc.reason}"}
+        return {"ok": False, "error": i18n.t("нет связи: {v0}", v0=exc.reason)}
     except (OSError, ValueError) as exc:  # таймаут, обрыв, неразобранный JSON
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     tag = str(data.get("tag_name") or "").strip()
     if not tag:
-        return {"ok": False, "error": "в ответе GitHub нет тега версии"}
+        return {"ok": False, "error": i18n.t("в ответе GitHub нет тега версии")}
     return {
         "ok": True,
         "tag": tag,

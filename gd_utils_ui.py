@@ -65,12 +65,11 @@ class ProcessPicker(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(i18n.t("Сжать рабочие наборы"))
-        self.setStyleSheet(th.STYLESHEET)
         self.resize(480, 520)
 
         root = QVBoxLayout(self)
         hint = QLabel(
-            i18n.t("Отметьте процессы. Их рабочие наборы будут сжаты: Windows выгрузит страницы, к которым давно не обращались. Для чужих процессов нужны права администратора.")
+            i18n.t("Отметь процессы: Windows выгрузит страницы, к которым давно не обращались. Для чужих процессов нужны права администратора.")
         )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
@@ -140,6 +139,11 @@ class ProcessPicker(QDialog):
             it.setCheckState(Qt.Unchecked)
             it.setData(Qt.UserRole, p["pid"])
             self.list.addItem(it)
+        if not rows:
+            # пусто — это не «отказ»: список честно пуст
+            it = QListWidgetItem(i18n.t("Процессов не нашлось."))
+            it.setFlags(Qt.NoItemFlags)
+            self.list.addItem(it)
 
     def _set_all(self, state):
         for i in range(self.list.count()):
@@ -160,7 +164,6 @@ class UtilsWidget(QWidget):
         self.setObjectName("PanelRoot")
         self._standalone = standalone
         self.host = host
-        self.setStyleSheet(th.STYLESHEET)
 
         self.client = None
         self._sensors = None
@@ -169,8 +172,8 @@ class UtilsWidget(QWidget):
         self._ws_worker = None    # фоновое сжатие рабочих наборов
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(14)
+        root.setContentsMargins(*th.PAGE_MARGINS)
+        root.setSpacing(th.PAGE_SPACING)
 
         head = QHBoxLayout()
         title = QLabel(i18n.t("Утилиты"))
@@ -186,8 +189,8 @@ class UtilsWidget(QWidget):
         # --- память ---
         card, lay = make_card(i18n.t("ОЧИСТКА ОЗУ — STANDBY LIST И РАБОЧИЕ НАБОРЫ"))
         grid = QGridLayout()
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(4)
+        grid.setHorizontalSpacing(th.SPACE_L)
+        grid.setVerticalSpacing(th.SPACE_XS)
         self.value_labels = {}
         self.delta_labels = {}
         for i, key in enumerate(ROWS):
@@ -275,8 +278,8 @@ class UtilsWidget(QWidget):
         lay_run.addWidget(self.chk_startup)
 
         run_note = QLabel(i18n.t(
-            "Файл автозапуска ложится в папку «Автозагрузка» текущего пользователя — "
-            "без окна и без запроса прав. Приложение стартует в трей, настройки экрана "
+            "Ярлык ложится в «Автозагрузку» пользователя — "
+            "без окон и запроса прав. Приложение стартует в трей, настройки экрана "
             "применяются как обычно."))
         run_note.setObjectName("Hint")
         run_note.setWordWrap(True)
@@ -311,9 +314,8 @@ class UtilsWidget(QWidget):
         lay_upd.addLayout(urow)
 
         upd_note = QLabel(i18n.t(
-            "Запрос уходит на api.github.com и не несёт ничего, кроме самого запроса: "
-            "ни версии приложения, ни идентификаторов, ни счётчиков. GitHub при этом "
-            "видит IP — поэтому галочка выключена, пока её не поставить."))
+            "Запрос уходит на api.github.com без версии, идентификаторов и счётчиков. "
+            "GitHub видит IP — поэтому галочка по умолчанию снята."))
         upd_note.setObjectName("Hint")
         upd_note.setWordWrap(True)
         lay_upd.addWidget(upd_note)

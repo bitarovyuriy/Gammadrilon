@@ -43,12 +43,11 @@ class FirstRunDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(i18n.t("Gammadrilon — первый запуск"))
-        self.setStyleSheet(th.STYLESHEET)
         self.setMinimumWidth(460)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 20, 22, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(*th.DIALOG_MARGINS)
+        root.setSpacing(th.DIALOG_SPACING)
 
         title = QLabel(i18n.t("Что умеет Gammadrilon"))
         title.setObjectName("DialogTitle")
@@ -57,7 +56,6 @@ class FirstRunDialog(QDialog):
         body = QLabel(INTRO)
         body.setWordWrap(True)
         body.setObjectName("Hint")
-        body.setStyleSheet(f"color: {th.INK2}; font-size: 12px;")
         root.addWidget(body)
 
         self.chk = QCheckBox(i18n.t("Больше не показывать"))

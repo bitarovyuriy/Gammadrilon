@@ -40,11 +40,10 @@ class JournalDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(i18n.t("Gammadrilon — журнал изменений"))
         self.resize(620, 480)
-        self.setStyleSheet(th.STYLESHEET)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(*th.DIALOG_MARGINS)
+        root.setSpacing(th.DIALOG_SPACING)
 
         title = QLabel(i18n.t("Что произошло"))
         title.setObjectName("Title")

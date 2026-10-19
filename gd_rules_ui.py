@@ -55,7 +55,6 @@ class RuleDialog(QDialog):
     def __init__(self, rule: dict | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(i18n.t("Правило"))
-        self.setStyleSheet(th.STYLESHEET)
         self.resize(460, 300)
         self.rule = dict(rule) if rule else gd_rules.new_rule()
         trig = self.rule.get("trigger") or {}
@@ -138,7 +137,7 @@ class RuleDialog(QDialog):
         else:
             self.trig_param.setEnabled(True)
             self.trig_param.setPlaceholderText(i18n.t("ЧЧ:ММ, например 23:30"))
-            self.trig_hint.setText(i18n.t("Сработает один раз в сутки, когда указанное время наступит при работающем приложении: пропущенное время (приложение было закрыто) не «догоняется»."))
+            self.trig_hint.setText(i18n.t("Сработает раз в сутки, когда время наступит при работающем приложении: пропущенное (приложение было закрыто) не «догоняется»."))
 
         kind = self.act_kind.currentData()
         self.act_profile.clear()
@@ -170,11 +169,10 @@ class RulesWidget(QWidget):
         super().__init__()
         self.setObjectName("PanelRoot")
         self._standalone = standalone
-        self.setStyleSheet(th.STYLESHEET)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(*th.PAGE_MARGINS)
+        root.setSpacing(th.PAGE_SPACING)
 
         head = QHBoxLayout()
         title = QLabel(i18n.t("Правила"))
@@ -199,6 +197,7 @@ class RulesWidget(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setShowGrid(False)   # строки разделяют линии из QSS, а не сетка
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -225,7 +224,7 @@ class RulesWidget(QWidget):
         self.btn_edit.setObjectName("Segment")
         self.btn_edit.clicked.connect(self._edit)
         self.btn_del = QPushButton(i18n.t("Удалить"))
-        self.btn_del.setObjectName("Segment")
+        self.btn_del.setObjectName("DangerButton")
         self.btn_del.clicked.connect(self._delete)
         brow.addWidget(self.btn_add)
         brow.addWidget(self.btn_edit)

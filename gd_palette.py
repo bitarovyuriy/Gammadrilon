@@ -22,6 +22,7 @@ except Exception:  # noqa: BLE001
     pass
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtWidgets import (
     QDialog,
     QLabel,
@@ -64,7 +65,6 @@ class CommandPalette(QDialog):
         self.setWindowTitle(i18n.t("Палитра команд"))
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint | Qt.Popup)
         self.resize(560, 380)
-        self.setStyleSheet(th.STYLESHEET)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -217,10 +217,17 @@ class CommandPalette(QDialog):
             self.list.addItem(it)
         if self.list.count():
             self.list.setCurrentRow(0)
+        else:
+            # пустое состояние честное: палитра не молчит, а говорит, почему пусто
+            empty = QListWidgetItem(i18n.t("Ничего не найдено — измени запрос"))
+            empty.setFlags(Qt.NoItemFlags)
+            empty.setForeground(QBrush(QColor(th.MUTED)))
+            self.list.addItem(empty)
+            self.hint.setText(i18n.t("Ничего не найдено — измени запрос"))
 
     def _run_current(self):
         it = self.list.currentItem()
-        if it is None:
+        if it is None or it.data(Qt.UserRole) is None:   # строка «ничего не найдено»
             return
         action = it.data(Qt.UserRole)
         self.accept()

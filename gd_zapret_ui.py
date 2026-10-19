@@ -84,7 +84,6 @@ class ZapretWidget(QWidget):
         self.setObjectName("PanelRoot")
         self._standalone = standalone
         self.host = host
-        self.setStyleSheet(th.STYLESHEET)
 
         self.client = None
         self._snap = {}
@@ -97,8 +96,8 @@ class ZapretWidget(QWidget):
         gd_zapret.forget_previous_run()
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(14)
+        root.setContentsMargins(*th.PAGE_MARGINS)
+        root.setSpacing(th.PAGE_SPACING)
 
         head = QHBoxLayout()
         title = QLabel(i18n.t("Обход DPI"))
@@ -111,9 +110,9 @@ class ZapretWidget(QWidget):
         # --- папка zapret ---------------------------------------------------
         card, lay = make_card(
             i18n.t("ПАПКА ZAPRET"),
-            i18n.t("Папка комплекта zapret-discord-youtube. Комплект остаётся "
-                   "внешним: Gammadrilon — контроллер и UI, обновления приходят "
-                   "от автора zapret. Путь должен быть без кириллицы."),
+            i18n.t("Папка комплекта zapret-discord-youtube. Комплект внешний: "
+                   "Gammadrilon — контроллер и UI, обновления приходят "
+                   "от автора zapret. Путь — без кириллицы."),
         )
         prow = QHBoxLayout()
         self.lbl_path = QLabel(i18n.t("не выбрана"))
@@ -139,8 +138,8 @@ class ZapretWidget(QWidget):
         card2, lay2 = make_card(
             i18n.t("СОСТОЯНИЕ"),
             i18n.t("ВЫКЛЮЧЕНО / РАБОТАЕТ (наша стратегия, PID и аптайм) / "
-                   "внешний winws.exe, который Gammadrilon не трогает без "
-                   "вашего решения."),
+                   "внешний winws.exe, который Gammadrilon не трогает "
+                   "без решения."),
         )
         self.lbl_state = QLabel(i18n.t("—"))
         self.lbl_state.setObjectName("Value")
@@ -186,7 +185,7 @@ class ZapretWidget(QWidget):
         self.btn_svc.setObjectName("Segment")
         self.btn_svc.setToolTip(i18n.t(
             "Видимый запуск service.bat: служба zapret, обновление списков, "
-            "диагностика — интерактивное меню открывается в своём окне."))
+            "диагностика — меню откроется в своём окне."))
         self.btn_svc.clicked.connect(self._svc_launch)
         brow.addWidget(self.btn_svc)
         brow.addStretch(1)
@@ -201,9 +200,9 @@ class ZapretWidget(QWidget):
         # --- стратегии ------------------------------------------------------
         card3, lay3 = make_card(
             i18n.t("СТРАТЕГИИ"),
-            i18n.t("Список — это файлы general*.bat в корне папки. «Освоение» "
-                   "один раз ловит командную строку winws.exe, дальше запуск "
-                   "идёт напрямую — без cmd.exe, с контролем статуса и stdout."),
+            i18n.t("Список — файлы general*.bat в корне папки. «Освоение» "
+                   "один раз ловит аргументы winws.exe; дальше запуск "
+                   "идёт напрямую — без cmd.exe, с контролем статуса и вывода."),
         )
         self.list = QListWidget()
         self.list.setFixedHeight(210)
@@ -218,9 +217,9 @@ class ZapretWidget(QWidget):
         # --- фильтры --------------------------------------------------------
         card4, lay4 = make_card(
             i18n.t("ФИЛЬТРЫ"),
-            i18n.t("GameFilter — диапазоны портов для игр: батник читает их при "
-                   "запуске, поэтому смена тумблера запускает повторное "
-                   "освоение. IPSet — список IP (lists\\ipset-all.txt): winws "
+            i18n.t("GameFilter — порты для игр: батник читает их при "
+                   "запуске, поэтому тумблер запускает повторное "
+                   "освоение. IPSet — список IP из lists\\ipset-all.txt: winws "
                    "читает его при старте, поэтому при работающем обходе "
                    "список перезапускается."),
         )
@@ -246,9 +245,8 @@ class ZapretWidget(QWidget):
         # --- журнал winws ---------------------------------------------------
         card5, lay5 = make_card(
             i18n.t("ЖУРНАЛ WINWS"),
-            i18n.t("Последние строки stdout winws.exe: пишутся при прямом "
-                   "запуске. Драйвер WinDivert и стратегия пишут сюда же свои "
-                   "сообщения."),
+            i18n.t("Последние строки вывода winws.exe — при прямом "
+                   "запуске. WinDivert и стратегия пишут сюда же."),
         )
         self.lbl_journal = QLabel("")
         self.lbl_journal.setObjectName("Hint")
@@ -496,10 +494,10 @@ class ZapretWidget(QWidget):
         self.btn_ignore.setVisible(show_conflict)
         if show_conflict:
             self.lbl_conflict.setText(i18n.t(
-                "Найден посторонний winws.exe (PID {v0}) — вероятно, запущен "
-                "вручную. Gammadrilon не трогает его молча: можно взять под "
-                "управление (прочитает аргументы и сможет останавливать) или "
-                "оставить как есть.", v0=foreign[0]["pid"]))
+                "Посторонний winws.exe (PID {v0}) — вероятно, запущен "
+                "вручную. Gammadrilon молча его не трогает: его можно взять "
+                "под управление (прочитаю аргументы и смогу останавливать) "
+                "или оставить как есть.", v0=foreign[0]["pid"]))
             self.lbl_conflict.setStyleSheet(f"color: {th.WARN};")
 
         # тумблеры — из родных файлов zapret, без сигналов
@@ -569,6 +567,11 @@ class ZapretWidget(QWidget):
             item.setData(Qt.UserRole, st["id"])
             item.setToolTip(st["file"])
             self.list.addItem(item)
+        if not (self._snap.get("strategies") or []):
+            # папка выбрана, а general*.bat в ней нет — говорим об этом прямо
+            empty = QListWidgetItem(i18n.t("Стратегий не нашлось — в корне папки нет general*.bat"))
+            empty.setFlags(Qt.NoItemFlags)
+            self.list.addItem(empty)
         self.list.blockSignals(False)
         want = self._remembered_strategy() or self._selected_strategy()
         if want:

@@ -129,7 +129,6 @@ class GpuWidget(QWidget):
         if standalone:
             self.setWindowTitle(i18n.t("Gammadrilon — Питание GPU"))
             self.resize(470, 680)
-        self.setStyleSheet(th.STYLESHEET)
 
         self.client = gd_gpu.GpuClient()
         self._state = None
@@ -253,8 +252,8 @@ class GpuWidget(QWidget):
     # -- построение --------------------------------------------------------
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(14)
+        root.setContentsMargins(*th.PAGE_MARGINS)
+        root.setSpacing(th.PAGE_SPACING)
 
         head = QHBoxLayout()
         title = QLabel(i18n.t("Питание GPU"))
@@ -288,7 +287,7 @@ class GpuWidget(QWidget):
         # --- профиль ---
         card, lay = make_card(
             i18n.t("ПРОФИЛЬ GPU"),
-            i18n.t("Профиль — ярлык над слайдером лимита, а не отдельная настройка: «Тихий» ставит 150 Вт, «Дефолт» — номинал, «Игровой» — 93 % максимума, «Макс» — максимум драйвера."),
+            i18n.t("Профиль — ярлык над слайдером лимита, а не отдельная настройка: «Тихий» — 150 Вт, «Дефолт» — номинал, «Игровой» — 93 % максимума, «Макс» — максимум драйвера."),
         )
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -312,10 +311,10 @@ class GpuWidget(QWidget):
         # --- сейчас ---
         card2, lay2 = make_card(
             i18n.t("СЕЙЧАС"),
-            i18n.t("Температура, частота ядра, лимит мощности и загрузка — прямо из драйвера (nvidia-smi), без прав администратора."),
+            i18n.t("Температура, частота, лимит мощности и загрузка — прямо из драйвера (nvidia-smi), без прав администратора."),
         )
         metrics = QHBoxLayout()
-        metrics.setSpacing(16)
+        metrics.setSpacing(th.SPACE_L)
         self.lbl_temp = QLabel("—")
         self.lbl_clk = QLabel("—")
         self.lbl_pl = QLabel("—")
@@ -323,7 +322,7 @@ class GpuWidget(QWidget):
         for lbl, cap in ((self.lbl_temp, i18n.t("температура")), (self.lbl_clk, i18n.t("частота")),
                          (self.lbl_pl, i18n.t("лимит")), (self.lbl_util, i18n.t("загрузка"))):
             col = QVBoxLayout()
-            col.setSpacing(2)
+            col.setSpacing(th.SPACE_XS)
             lbl.setObjectName("Value")
             c = QLabel(cap)
             c.setObjectName("Hint")
@@ -340,7 +339,7 @@ class GpuWidget(QWidget):
         # --- лимит мощности ---
         card3, lay3 = make_card(
             i18n.t("ЛИМИТ МОЩНОСТИ"),
-            i18n.t("Установка лимита требует прав администратора — при первом применении будет запрос UAC. Лимит держится до кнопки «Вернуть как было» или до закрытия приложения (см. галочку ниже)."),
+            i18n.t("Лимит ставится с правами администратора: при первом применении Windows спросит UAC. Держится до кнопки «Вернуть как было» или до закрытия приложения (см. галочку ниже)."),
         )
         self.lbl_range = QLabel("—")
         self.lbl_range.setObjectName("Hint")
@@ -370,7 +369,7 @@ class GpuWidget(QWidget):
         self.chk_keep.setChecked(self._keep_on_exit)
         self.chk_keep.stateChanged.connect(self._on_keep_on_exit)
         lay3.addWidget(self.chk_keep)
-        keep_hint = QLabel(i18n.t("Галочка стоит — лимит остаётся на карте после закрытия Gammadrilon (до перезагрузки или кнопки «Вернуть как было»). Снята — при закрытии лимит возвращается к исходному."))
+        keep_hint = QLabel(i18n.t("Стоит — лимит остаётся на карте после закрытия (до перезагрузки или кнопки «Вернуть как было»). Снята — при закрытии возвращается к исходному."))
         keep_hint.setObjectName("Hint")
         keep_hint.setWordWrap(True)
         lay3.addWidget(keep_hint)
@@ -379,7 +378,7 @@ class GpuWidget(QWidget):
         self.chk_autostart.setChecked(self._apply_on_start())
         self.chk_autostart.stateChanged.connect(self._on_autostart_changed)
         lay3.addWidget(self.chk_autostart)
-        autostart_hint = QLabel(i18n.t("Галочка стоит — при запуске Gammadrilon вернёт лимит к последнему применённому значению (потребуется разрешение администратора). Снята — приложение только скажет, что лимит слетел."))
+        autostart_hint = QLabel(i18n.t("Стоит — при запуске Gammadrilon вернёт лимит к последнему значению (спросит права администратора). Снята — приложение только скажет, что лимит слетел."))
         autostart_hint.setObjectName("Hint")
         autostart_hint.setWordWrap(True)
         lay3.addWidget(autostart_hint)
