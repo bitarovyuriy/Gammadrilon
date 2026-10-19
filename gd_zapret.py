@@ -318,8 +318,13 @@ def service_state(name: str) -> str | None:
     text = (proc.stdout or "") + (proc.stderr or "")
     for line in text.splitlines():
         m = re.search(r":\s*(\d+)\s+[A-Z_]+", line)
-        if m:
-            return _SC_STATES.get(int(m.group(1)))
+        if not m:
+            continue
+        state = _SC_STATES.get(int(m.group(1)))
+        if state:
+            return state
+        # Строка «Тип : 10 WIN32_OWN_PROCESS» тоже подходит под шаблон:
+        # неизвестный код — не повод считать, что службы нет, читаем дальше.
     return None
 
 
@@ -572,6 +577,16 @@ def _tail_text(raw: bytes, max_lines: int = 8) -> str:
     return " | ".join(lines[-max_lines:])
 
 
+def strategy_bat_name(strategy: str) -> str | None:
+    """Имя батника стратегии: UI отдаёт ``general (ALT2)``, файл — с ``.bat``."""
+    name = os.path.basename(strategy or "")
+    if name != strategy or not name.lower().startswith("general"):
+        return None
+    if not name.lower().endswith(".bat"):
+        name += ".bat"
+    return name
+
+
 def recon(root: str, strategy: str, timeout: float = 20.0) -> tuple[bool, dict | str]:
     """Освоение стратегии (ТЗ 8.2): запустить батник и поймать argv winws.exe.
 
@@ -581,9 +596,8 @@ def recon(root: str, strategy: str, timeout: float = 20.0) -> tuple[bool, dict |
     """
     import psutil
 
-    name = os.path.basename(strategy or "")
-    if name != strategy or not (name.lower().startswith("general")
-                                and name.lower().endswith(".bat")):
+    name = strategy_bat_name(strategy)
+    if not name:
         return False, i18n.t("недопустимое имя стратегии")
     rootp = Path(root or "")
     bat = rootp / name

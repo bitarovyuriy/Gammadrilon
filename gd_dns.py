@@ -210,45 +210,29 @@ def active_interface(force: bool = False) -> str | None:
 
 
 def current_state(iface: str | None = None) -> dict:
-    """{'iface','mode':'dhcp'|'static','servers':[...]} — читается ДО любых изменений."""
+    """{'iface','mode':'dhcp'|'static','servers':[...]} — читается ДО любых изменений.
+
+    Режим берём из ``show dnsservers``: ``show config`` на Windows 11 может
+    написать «DNS-серверы с настройкой через DHCP» и при статически заданных
+    адресах. Из-за этого приложение считало статический DNS DHCP-шным и
+    «восстановление» сбрасывало его на серверы роутера.
+    """
     iface = iface or active_interface()
     if not iface:
         return {"iface": None, "mode": None, "servers": []}
-    code, out = _run(["netsh", "interface", "ipv4", "show", "config", f"name={iface}"])
-    dhcp_servers: list[str] = []
-    static_servers: list[str] = []
-    grab = None
+    code, out = _run(["netsh", "interface", "ipv4", "show", "dnsservers", f"name={iface}"])
+    servers: list[str] = []
+    mode = None
     if code == 0:
-        for line in out.splitlines():
-            # i18n: skip-start — регулярки под вывод netsh RU/EN, не UI-строки
-            if re.search(r"DNS-сервер\w*.*(?:через DHCP|through DHCP)", line):
-                grab = "dhcp"
-                tail = line.split(":", 1)[-1].strip()
-                if re.match(r"^\d+\.\d+\.\d+\.\d+$", tail):
-                    dhcp_servers.append(tail)
-                continue
-            if re.search(r"DNS-сервер\w*.*(?:статически|statically)", line):
-                grab = "static"
-                tail = line.split(":", 1)[-1].strip()
-                for part in re.findall(r"\d+\.\d+\.\d+\.\d+", tail):
-                    static_servers.append(part)
-                continue
-            if grab:
-                m = re.match(r"^\s*(\d+\.\d+\.\d+\.\d+)\s*$", line)
-                if m:
-                    (static_servers if grab == "static" else dhcp_servers).append(m.group(1))
-                elif line.strip() and not line.strip().startswith("("):
-                    grab = None
-            # i18n: skip-end
-    # статические записи важнее: если они есть — режим статический
-    mode = "static" if static_servers else ("dhcp" if dhcp_servers else None)
-    servers = static_servers if static_servers else dhcp_servers
-    if not servers:
-        # запасной путь — тоже netsh (PowerShell стоит ~3 с CPU за запуск)
-        code2, out2 = _run(["netsh", "interface", "ipv4", "show", "dnsservers", f"name={iface}"])
-        if code2 == 0:
-            servers = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", out2)
-    return {"iface": iface, "mode": mode or ("static" if servers else "dhcp"), "servers": servers}
+        # i18n: skip-start — регулярки под вывод netsh RU/EN, не UI-строки
+        servers = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", out)
+        if servers:
+            mode = "static" if re.search(r"статич|statically", out, re.I) else "dhcp"
+        # i18n: skip-end
+    if servers:
+        return {"iface": iface, "mode": mode, "servers": servers}
+    # DNS не задан вовсе: честный пустой ответ, а не адрес шлюза из show config
+    return {"iface": iface, "mode": mode or "dhcp", "servers": []}
 
 
 def save_state() -> bool:
