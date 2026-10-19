@@ -1059,6 +1059,8 @@ class ZapretWidget(QWidget):
         import time as _time
 
         detail_parts = []
+        service_running = snap.get("service_zapret") == "RUNNING"
+        service_pid = snap.get("service_pid")
         if ours:
             name = ours.get("strategy") or "?"
             started = ours.get("started")
@@ -1068,6 +1070,10 @@ class ZapretWidget(QWidget):
                 label = i18n.t("ПОД УПРАВЛЕНИЕМ: внешний winws.exe")
             self.lbl_state.setText(f"{label}  ·  PID {ours.get('pid')}  ·  {up}")
             self.lbl_state.setStyleSheet(f"color: {th.INK};")
+        elif service_running:
+            self.lbl_state.setText(i18n.t("СЛУЖБА ZAPRET: работает  ·  PID {v0}",
+                                          v0=service_pid or "?"))
+            self.lbl_state.setStyleSheet(f"color: {th.INK};")
         elif foreign:
             self.lbl_state.setText(
                 i18n.t("ВНЕШНИЙ winws.exe (PID {v0})", v0=foreign[0]["pid"]))
@@ -1076,9 +1082,9 @@ class ZapretWidget(QWidget):
             self.lbl_state.setText(i18n.t("ВЫКЛЮЧЕНО"))
             self.lbl_state.setStyleSheet(f"color: {th.MUTED};")
 
-        if snap.get("service_zapret") == "RUNNING":
-            detail_parts.append(i18n.t("служба zapret: RUNNING (внешняя, не управляется)"))
-        if snap.get("service_windivert") == "RUNNING" and not ours:
+        if service_running:
+            detail_parts.append(i18n.t("служба zapret: RUNNING (автозапуск)"))
+        if snap.get("service_windivert") == "RUNNING" and not ours and not service_running:
             detail_parts.append(i18n.t(
                 "драйвер WinDivert: RUNNING — им пользуется другая программа"))
         for other in snap.get("others") or []:
@@ -1133,9 +1139,10 @@ class ZapretWidget(QWidget):
         path_ok = bool(path) and not errors
         sel = self._selected_strategy()
         self.btn_on.setEnabled(path_ok and bool(sel) and not ours
-                               and not any_foreign and not busy)
+                               and not any_foreign and not service_running and not busy)
         self.btn_off.setEnabled(bool(ours) and not busy)
-        self.btn_recon.setEnabled(path_ok and bool(sel) and not any_foreign and not busy)
+        self.btn_recon.setEnabled(path_ok and bool(sel) and not any_foreign
+                                  and not service_running and not busy)
         self.btn_adopt.setEnabled(not busy)
         self.btn_ignore.setEnabled(not busy)
         self.btn_upd_check.setEnabled(bool(path) and not busy)
@@ -1158,6 +1165,10 @@ class ZapretWidget(QWidget):
             self.lbl_journal.setText(i18n.t("Обход: {v0} (PID {v1})",
                                             v0=ours.get("strategy") or "?",
                                             v1=ours.get("pid")))
+        elif service_running:
+            self.lbl_journal.setText(i18n.t("Служба zapret: PID {v0}; вывод службы "
+                                            "пишется в журнал winws, если включён.",
+                                            v0=service_pid or "?"))
         else:
             self.lbl_journal.setText(i18n.t("Обход не запущен — журнал пуст, пока не включите."))
         tail = gd_zapret.log_tail(200)

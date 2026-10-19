@@ -827,6 +827,7 @@ def snapshot(root: str | None) -> dict:
         "service_zapret": None,
         "service_windivert": None,
         "service_strategy": None,
+        "service_pid": None,
         "others": [],
     }
     ours = our_state()
@@ -842,8 +843,15 @@ def snapshot(root: str | None) -> dict:
     elif ours:
         snap["our_stale"] = True
     our_pid = (snap["ours"] or {}).get("pid")
-    snap["foreign"] = [p for p in processes() if p["pid"] != our_pid]
+    all_foreign = [p for p in processes() if p["pid"] != our_pid]
+    # winws, поднятый службой zapret, — не «посторонний»: это штатный автозапуск.
+    # Один WinDivert допускает только один winws, поэтому при RUNNING службы
+    # первый найденный процесс и есть её процесс.
     snap["service_zapret"] = service_state("zapret")
+    if snap["service_zapret"] == "RUNNING" and all_foreign:
+        snap["service_pid"] = all_foreign[0]["pid"]
+        all_foreign = [p for p in all_foreign if p["pid"] != snap["service_pid"]]
+    snap["foreign"] = all_foreign
     snap["service_windivert"] = service_state("WinDivert")
     snap["service_strategy"] = service_registry_strategy()
     snap["others"] = other_bypasses()

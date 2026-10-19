@@ -1513,6 +1513,10 @@ DIRECT: dict[str, str] = {
     "стратегия: {v0}": "strategy: {v0}",
     "автозапуск при входе в Windows": "autostart at Windows sign-in",
     "Служба не установлена.": "The service is not installed.",
+    "СЛУЖБА ZAPRET: работает  ·  PID {v0}": "ZAPRET SERVICE: running · PID {v0}",
+    "служба zapret: RUNNING (автозапуск)": "zapret service: RUNNING (autostart)",
+    "Служба zapret: PID {v0}; вывод службы пишется в журнал winws, если включён.":
+        "Zapret service: PID {v0}; service output goes to the winws log when enabled.",
     "Установите службу, чтобы обход поднимался автоматически без окна консоли.":
         "Install the service to start the bypass automatically without a console window.",
     "папка zapret не найдена": "the zapret folder was not found",
