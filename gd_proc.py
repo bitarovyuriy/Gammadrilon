@@ -35,7 +35,17 @@ def hidden_kwargs() -> dict:
 
 
 def run(args: list, timeout: float | None = None, text: bool = False, cwd: str | None = None):
-    """Аналог subprocess.run без окна и с пустым stdin."""
+    """Аналог subprocess.run без окна и с пустым stdin.
+
+    Консольные утилиты Windows (`sc`, `nvidia-smi`, `powercfg`) печатают в
+    OEM-кодировке. В UTF-8 режиме Python (`PYTHONUTF8=1`) декодирование по
+    умолчанию падает в фоновом reader-потоке, а `stdout` остаётся `None`.
+    Поэтому текстовый режим всегда декодирует OEM с заменой плохих байтов.
+    """
+    kwargs = {}
+    if text:
+        kwargs["encoding"] = "oem" if os.name == "nt" else "utf-8"
+        kwargs["errors"] = "replace"
     return subprocess.run(
         list(args),
         capture_output=True,
@@ -43,6 +53,7 @@ def run(args: list, timeout: float | None = None, text: bool = False, cwd: str |
         timeout=timeout,
         cwd=cwd,
         stdin=subprocess.DEVNULL,
+        **kwargs,
         **hidden_kwargs(),
     )
 
