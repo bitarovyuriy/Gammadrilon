@@ -1489,6 +1489,7 @@ DIRECT: dict[str, str] = {
     "Обновляю ipset-all.txt…": "Updating ipset-all.txt…",
     "IPSet обновлён: {v0} строк.": "IPSet updated: {v0} lines.",
     "список обновлён": "list updated",
+    "GameFilter: {v0} — перезапускаю службу…": "GameFilter: {v0} — restarting the service…",
     "IPSet: {v0}": "IPSet: {v0}",
     "Скачиваю hosts Flowseal…": "Downloading Flowseal hosts…",
     "hosts: {v0}": "hosts: {v0}",

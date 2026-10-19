@@ -647,6 +647,19 @@ class ZapretWidget(QWidget):
             return {"ok": False, "error": res.get("error")}
         if svc:
             client.call({"cmd": "zapret_service", "op": "start"}, timeout=90)
+        elif ours.get("pid") and ours.get("strategy") and not ours.get("external"):
+            strategy = str(ours["strategy"])
+            recon = client.call({"cmd": "zapret_recon", "path": path,
+                                 "strategy": strategy}, timeout=120)
+            if recon.get("ok"):
+                argv = recon["data"]["argv"]
+                gd_zapret.cache_put(path, strategy, argv)
+                started = client.call({"cmd": "zapret_start", "path": path, "argv": argv,
+                                       "log": gd_zapret.log_path(),
+                                       "note": strategy}, timeout=60)
+                if started.get("ok"):
+                    gd_zapret.save_our_state(path, strategy,
+                                             int(started["data"]["pid"]), argv)
         return {"ok": True, "data": res.get("data") or {}}
 
     def _rollback_done(self, result) -> None:
@@ -1521,6 +1534,13 @@ class ZapretWidget(QWidget):
         # галочки к старым значениям, и следующий клик посчитал бы режим неверно
         self._snap["game_filter"] = msg
         self._gen += 1
+        if self._snap.get("service_zapret") == "RUNNING" and not self._snap.get("ours"):
+            self._set_status(i18n.t("GameFilter: {v0} — перезапускаю службу…", v0=msg))
+            self._worker = gd_bg.submit(lambda: self._job_service("restart"),
+                                        self._service_done, parent=self)
+            self._poll.trigger()
+            self._render()
+            return
         ours = self._snap.get("ours")
         if ours and not ours.get("external"):
             st = self._strategy_by_id(ours.get("strategy")) or self._selected_strategy()
