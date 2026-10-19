@@ -1013,19 +1013,19 @@ QSlider::handle:horizontal:pressed {
     border-color: @MID@;
 }
 
-QSlider:disabled::groove:horizontal,
-QSlider:disabled::add-page:horizontal,
-QSlider:disabled::sub-page:horizontal {
+QSlider::groove:horizontal:disabled,
+QSlider::add-page:horizontal:disabled,
+QSlider::sub-page:horizontal:disabled {
     background: @RULE@;
 }
 
-QSlider:disabled::handle:horizontal {
+QSlider::handle:horizontal:disabled {
     background: @MUTED@;
 }
 
-QSlider:focus {
-    border: 1px solid @ACCENT@;
-    border-radius: @RADIUS_SMALL@;
+QSlider::handle:horizontal:focus {
+    background: @MUTED@;
+    border-color: @INK@;
 }
 
 QSlider#TempSlider::groove:horizontal {

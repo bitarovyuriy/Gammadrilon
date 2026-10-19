@@ -61,6 +61,21 @@ def test_version_has_single_source():
     assert not offenders, "версия вписана мимо APP_VERSION — " + ", ".join(offenders)
 
 
+def test_theme_slider_disabled_selectors_are_scoped():
+    """Состояние :disabled пишем после подэлемента.
+
+    Было ``QSlider:disabled::handle`` — Qt 5.15 понимал такой селектор слишком
+    широко и заливал цветом ручки весь фон слайдера: вокруг дорожки появлялась
+    серая рамка. Рабочая форма — ``QSlider::handle:horizontal:disabled``.
+    """
+    import gd_theme
+
+    qss = gd_theme.build_stylesheet()
+    assert "QSlider:disabled::" not in qss
+    assert "QSlider::handle:horizontal:disabled" in qss
+    assert "QSlider::groove:horizontal:disabled" in qss
+
+
 def test_i18n_english_complete():
     """У каждого русского ключа есть английский текст — иначе в EN всплывает RU."""
     import gd_i18n
