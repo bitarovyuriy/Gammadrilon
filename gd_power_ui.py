@@ -319,6 +319,7 @@ class PowerWindow(QWidget):
         self._clones_busy = False
         self._clones_notified = False   # о найденных копиях сказано один раз
         self._state_note_shown = False  # о непригодном state сказано один раз
+        self._active_is_clone = False   # активна наша копия схемы без живого профиля?
         self._clones: list = []
         self._build()
 
@@ -698,6 +699,10 @@ class PowerWindow(QWidget):
     def current_profile(self):
         return getattr(self, "_profile", None)
 
+    def active_is_clone(self) -> bool:
+        """Активна наша копия схемы, но профиль в ней не числится (state потерян)."""
+        return bool(getattr(self, "_active_is_clone", False) and not self.current_profile())
+
     def service_alive(self) -> bool:
         """Работает ли компаньон питания прямо сейчас (для фута сайдбара).
 
@@ -805,6 +810,7 @@ class PowerWindow(QWidget):
             data = {}
         profile = data.get("profile")
         self._profile = profile
+        self._active_is_clone = bool(data.get("active_is_clone"))
         self._orig_values = values_dict(data.get("original_values")) or None
 
         # файл состояния есть, но непригоден: «профиль не применён» и «откатывать
@@ -840,6 +846,10 @@ class PowerWindow(QWidget):
         if profile:
             self.status_dot.setStyleSheet(f"color: {th.GOOD};")
             self.status_name.setText(f"{PROFILE_NAMES.get(profile, profile)}")
+        elif self._active_is_clone:
+            # активна наша копия, но state её не помнит: это не «исходная схема»
+            self.status_dot.setStyleSheet(f"color: {th.WARN};")
+            self.status_name.setText(i18n.t("наша копия без профиля"))
         else:
             self.status_dot.setStyleSheet(f"color: {th.MUTED};")
             self.status_name.setText(i18n.t("исходная схема"))
@@ -868,6 +878,11 @@ class PowerWindow(QWidget):
                 if ov is not None and nv is not None:
                     parts.append(f"{label}: {ov}{unit} → {nv}{unit}")
             self.profile_desc.setText(i18n.t("Применено — ") + " · ".join(parts) if parts else i18n.t("Профиль применён."))
+        elif not profile and self._active_is_clone:
+            self.profile_desc.setText(i18n.t(
+                "Активна наша копия схемы, но файл состояния её не помнит — "
+                "исходную схему автоматически не вернуть. Выберите схему в списке "
+                "Windows или примените профиль заново."))
         elif not profile:
             self.profile_desc.setText(i18n.t("Профиль не применён — активна исходная схема."))
 

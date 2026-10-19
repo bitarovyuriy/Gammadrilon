@@ -1,0 +1,154 @@
+# -*- coding: utf-8 -*-
+"""Профили питания: повторное применение не должно копить копии схем.
+
+Все вызовы powrprof подменены: тест не трогает настоящие схемы Windows.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import gd_power  # noqa: E402 — путь проекта добавлен выше
+
+
+def _fake_system(monkeypatch):
+    """Маленькая модель схем питания: словарь GUID -> имя и активный GUID."""
+    schemes = {"ORIG": "Сбалансированная"}
+    holder = {"state": None}
+    calls = {"duplicate": [], "deleted": [], "active": "ORIG"}
+
+    monkeypatch.setattr(gd_power, "load_state", lambda: holder["state"])
+    monkeypatch.setattr(gd_power, "save_state", lambda st: holder.__setitem__("state", st))
+    monkeypatch.setattr(gd_power, "get_active_scheme", lambda: calls["active"])
+    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: schemes.get(guid, ""))
+    monkeypatch.setattr(gd_power, "list_schemes", lambda: list(schemes))
+    monkeypatch.setattr(gd_power, "write_values",
+                        lambda guid, values: {"ok": list(values), "failed": {}})
+
+    def duplicate(src):
+        guid = f"CLONE-{len(calls['duplicate']) + 1}"
+        calls["duplicate"].append(src)
+        schemes[guid] = schemes.get(src, "")
+        return guid
+
+    def rename(guid, name):
+        schemes[guid] = name
+        return True
+
+    def activate(guid):
+        calls["active"] = guid
+        return True
+
+    def delete(guid):
+        calls["deleted"].append(guid)
+        schemes.pop(guid, None)
+        return True
+
+    monkeypatch.setattr(gd_power, "duplicate_scheme", duplicate)
+    monkeypatch.setattr(gd_power, "rename_scheme", rename)
+    monkeypatch.setattr(gd_power, "set_active_scheme", activate)
+    monkeypatch.setattr(gd_power, "delete_scheme", delete)
+    return schemes, holder, calls
+
+
+def test_reapply_updates_same_clone(monkeypatch):
+    """Второй профиль пишется в ту же копию: original и GUID не подменяются."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+
+    first = gd_power.apply_profile("eco")
+    second = gd_power.apply_profile("normal")
+
+    assert calls["duplicate"] == ["ORIG"], "клон активного клона создавать нельзя"
+    assert second["original_scheme"] == "ORIG"
+    assert second["clone_scheme"] == first["clone_scheme"]
+    assert calls["deleted"] == [], "рабочую копию при повторном применении не удаляем"
+    name = schemes[second["clone_scheme"]]
+    assert name.count(gd_power.CLONE_MARK) == 1, name
+    assert holder["state"]["profile"] == "normal"
+
+
+def test_apply_after_manual_switch_uses_new_scheme(monkeypatch):
+    """Пользователь выбрал другую схему — она и становится новой исходной."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    gd_power.apply_profile("eco")
+
+    schemes["OTHER"] = "Игровая"
+    calls["active"] = "OTHER"
+    state = gd_power.apply_profile("boost")
+
+    assert state["original_scheme"] == "OTHER"
+    assert calls["deleted"] == ["CLONE-1"], "прошлая копия должна быть убрана"
+    assert calls["duplicate"][-1] == "OTHER"
+
+
+def test_failed_reapply_keeps_working_clone(monkeypatch):
+    """Неудачная запись не удаляет копию, в которой уже был рабочий профиль."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    first = gd_power.apply_profile("eco")
+
+    monkeypatch.setattr(
+        gd_power, "write_values",
+        lambda guid, values: {"ok": [], "failed": {"max_state": [("AC", 1)]}},
+    )
+    with pytest.raises(OSError):
+        gd_power.apply_profile("normal")
+
+    assert calls["deleted"] == []
+    assert holder["state"]["profile"] == "eco"
+    assert holder["state"]["clone_scheme"] == first["clone_scheme"]
+
+
+def test_clone_name_strips_repeated_mark(monkeypatch):
+    """Имя копии не должно расти: «Gammadrilon — Gammadrilon — X» -> одна метка."""
+    monkeypatch.setattr(
+        gd_power, "scheme_name",
+        lambda guid: "Gammadrilon — Gammadrilon — Сбалансированная",
+    )
+    assert gd_power.clone_name("X") == "Gammadrilon — Сбалансированная"
+
+
+def test_snapshot_reports_profile_only_for_active_clone(monkeypatch):
+    """State от прошлой схемы не выдаёт профиль за применённый."""
+    monkeypatch.setattr(gd_power, "read_values", lambda guid: {})
+    monkeypatch.setattr(gd_power, "get_active_scheme", lambda: "CLONE-1")
+    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "Gammadrilon — ЭКО")
+    state = {"profile": "eco", "clone_scheme": "CLONE-1", "original_scheme": "ORIG"}
+    monkeypatch.setattr(gd_power, "read_state_report", lambda: (state, ""))
+
+    snap = gd_power.state_snapshot()
+    assert snap["profile"] == "eco"
+    assert snap["active_is_clone"] is True
+
+    monkeypatch.setattr(gd_power, "get_active_scheme", lambda: "ORIG")
+    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "Сбалансированная")
+    snap = gd_power.state_snapshot()
+    assert snap["profile"] is None, "после ручного выбора профиль уже не активен"
+    assert snap["active_is_clone"] is False
+
+
+def test_snapshot_marks_clone_without_state(monkeypatch):
+    """Активная наша копия без state — это не «исходная схема»."""
+    monkeypatch.setattr(gd_power, "read_values", lambda guid: {})
+    monkeypatch.setattr(gd_power, "get_active_scheme", lambda: "CLONE-OLD")
+    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "Gammadrilon — Gammadrilo")
+    monkeypatch.setattr(gd_power, "read_state_report", lambda: (None, ""))
+
+    snap = gd_power.state_snapshot()
+    assert snap["profile"] is None
+    assert snap["active_is_clone"] is True
+
+
+def test_display_name_drops_cut_marker_tail():
+    """Огрызок метки от старого обрезания на 80 символах не показывается."""
+    name = "Gammadrilon — Gammadrilon — Gammadrilo"
+    assert gd_power.display_scheme_name(name) == ""
+
+
+def test_clone_name_fits_windows_limit(monkeypatch):
+    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "Д" * 200)
+    assert len(gd_power.clone_name("X")) <= 80

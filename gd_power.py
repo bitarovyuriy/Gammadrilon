@@ -255,10 +255,39 @@ def rename_scheme(scheme_guid: str, name: str) -> bool:
     return r == 0
 
 
+def display_scheme_name(name: str) -> str:
+    """Имя схемы без повторяющихся наших меток — для подписи в окне."""
+    base = (name or "").strip()
+    stripped = False
+    while base.startswith(CLONE_MARK):
+        base = base[len(CLONE_MARK):].lstrip(" —-")
+        stripped = True
+    # старые версии резали имя на 80 символах и могли оставить огрызок
+    # последней метки («… — Gammadrilo»): его тоже убираем
+    if stripped and base and CLONE_MARK.startswith(base):
+        base = ""
+    return base.strip()
+
+
 def clone_name(src_guid: str) -> str:
-    """Имя своей копии: метка + имя исходной схемы (видно и в панели Windows)."""
-    base = scheme_name(src_guid) or i18n.t("схема питания")
-    return f"{CLONE_MARK} — {base}"[:80]
+    """Имя своей копии: метка + имя исходной схемы (видно и в панели Windows).
+
+    Метку снимаем со всех уровней: если исходной оказалась наша же копия
+    (файл состояния потерян, активна старая копия), имя не должно расти
+    гармошкой «Gammadrilon — Gammadrilon — …».
+    """
+    base = display_scheme_name(scheme_name(src_guid)) or i18n.t("схема питания")
+    # 80 символов — предел имени схемы в Windows; метка и разделитель входят
+    room = max(1, 80 - len(CLONE_MARK) - 3)
+    return f"{CLONE_MARK} — {base[:room]}"
+
+
+def _is_own_clone(scheme_guid: str) -> bool:
+    """Наша ли это копия схемы — по метке в имени (без исключений наружу)."""
+    try:
+        return scheme_name(scheme_guid).startswith(CLONE_MARK)
+    except OSError:
+        return False
 
 
 def list_clones() -> list[dict]:
@@ -398,6 +427,7 @@ def state_snapshot() -> dict:
     state = state or {}
     data: dict = {
         "active_scheme": active,
+        "active_is_clone": _is_own_clone(active),
         "profile": None,
         "clone_scheme": None,
         "values": read_values(active),
@@ -407,8 +437,12 @@ def state_snapshot() -> dict:
     except OSError:
         data["active_name"] = ""
     if state:
-        data["profile"] = state.get("profile")
-        data["clone_scheme"] = state.get("clone_scheme")
+        clone = state.get("clone_scheme")
+        # профиль считаем применённым, только если активна именно его копия:
+        # после ручного выбора другой схемы state ещё жив, но профиль уже нет
+        if clone and clone == active:
+            data["profile"] = state.get("profile")
+        data["clone_scheme"] = clone
         data["original_scheme"] = state.get("original_scheme")
         data["applied_at"] = state.get("applied_at")
         orig = state.get("original_scheme")
@@ -432,17 +466,39 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
     """Клонирует активную схему, пишет профиль, активирует клон.
 
     Возвращает state-словарь (сохраняется в STATE_FILE для отката).
-    При любой ошибке клон удаляется, активная схема не меняется.
+    При любой ошибке новый клон удаляется, активная схема не меняется.
+
+    Повторное применение не плодит копии: если активна наша же копия и файл
+    состояния помнит настоящую исходную схему, профиль пишется в эту копию.
+    Иначе копия создаётся заново, а прошлая (уже не активная) удаляется.
     """
     if profile_id not in PROFILES and profile_id != "custom":
         raise ValueError(i18n.t("неизвестный профиль: {v0}", v0=profile_id))
     values = dict(custom if profile_id == "custom" else PROFILES[profile_id])
 
-    original = get_active_scheme()
-    clone = duplicate_scheme(original)
-    # метка в имени копии: её видно в панели управления Windows и по ней потом
-    # находится остаток, если файл состояния пропадёт (см. list_clones)
-    rename_scheme(clone, clone_name(original))
+    prev = load_state() or {}
+    current = get_active_scheme()
+    prev_clone = prev.get("clone_scheme")
+    prev_original = prev.get("original_scheme")
+
+    # активна наша копия, а state знает, от какой схемы она сделана:
+    # не клонируем клон, а обновляем его — имя и original_scheme не портятся
+    reuse = bool(
+        prev_clone
+        and prev_clone == current
+        and prev_original
+        and not _is_own_clone(prev_original)
+    )
+    if reuse:
+        original, clone = prev_original, prev_clone
+        rename_scheme(clone, clone_name(original))
+    else:
+        original = current
+        clone = duplicate_scheme(original)
+        # метка в имени копии: её видно в панели управления Windows и по ней потом
+        # находится остаток, если файл состояния пропадёт (см. list_clones)
+        rename_scheme(clone, clone_name(original))
+
     try:
         res = write_values(clone, values)
         if res["failed"]:
@@ -450,8 +506,27 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
         if not set_active_scheme(clone):
             raise OSError(i18n.t("PowerSetActiveScheme не сработал"))
     except Exception:
-        delete_scheme(clone)
+        if reuse:
+            # копия была рабочей: возвращаем в неё прошлые значения, а не удаляем
+            old_values = prev.get("values")
+            if old_values:
+                try:
+                    write_values(clone, old_values)
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            delete_scheme(clone)
         raise
+
+    # прошлая копия больше не активна — убираем её, чтобы система не копила
+    # схемы после каждого применения профиля
+    if (
+        not reuse
+        and prev_clone
+        and prev_clone not in (clone, original)
+        and _is_own_clone(prev_clone)
+    ):
+        delete_scheme(prev_clone)
 
     state = {
         "version": 1,
