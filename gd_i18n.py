@@ -1367,8 +1367,8 @@ DIRECT: dict[str, str] = {
     "ОБНОВЛЕНИЯ": "UPDATES",
     "Проверять при запуске": "Check at startup",
     "Проверить сейчас": "Check now",
-    "Запрос уходит на api.github.com без версии, идентификаторов и счётчиков. GitHub видит IP — поэтому галочка по умолчанию снята.":
-        "The request goes to api.github.com without version, identifiers or counters. GitHub sees the IP — so the checkbox is off by default.",
+    "Запрос уходит на api.github.com не чаще раза в сутки, без версии, идентификаторов и счётчиков. GitHub видит IP — поэтому галочка по умолчанию снята.":
+        "The request goes to api.github.com at most once a day, without version, identifiers or counters. GitHub sees the IP — so the checkbox is off by default.",
     "Обновления не проверялись.": "Updates have not been checked yet.",
     "Спрашиваю GitHub…": "Asking GitHub…",
     "Проверка обновлений не удалась: {v0}": "Update check failed: {v0}",

@@ -315,8 +315,9 @@ class UtilsWidget(QWidget):
         lay_upd.addLayout(urow)
 
         upd_note = QLabel(i18n.t(
-            "Запрос уходит на api.github.com без версии, идентификаторов и счётчиков. "
-            "GitHub видит IP — поэтому галочка по умолчанию снята."))
+            "Запрос уходит на api.github.com не чаще раза в сутки, без версии, "
+            "идентификаторов и счётчиков. GitHub видит IP — поэтому галочка по "
+            "умолчанию снята."))
         upd_note.setObjectName("Hint")
         upd_note.setWordWrap(True)
         lay_upd.addWidget(upd_note)

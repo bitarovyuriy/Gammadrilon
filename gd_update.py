@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -26,6 +27,28 @@ PAGE_URL = f"https://github.com/{REPO}/releases/latest"
 
 #: ждать дольше смысла нет: проверка не срочная, а окно не должно «висеть»
 TIMEOUT = 8.0
+
+#: тихая проверка при запуске ходит в сеть не чаще раза в сутки: релизы выходят
+#: реже, а лишние запросы к api.github.com человек не просил
+CHECK_INTERVAL = 24 * 60 * 60
+
+
+def due(last_check, now: float | None = None) -> bool:
+    """Пора ли проверять снова: пустая или старая метка — да, свежая — нет.
+
+    Непонятная метка (текст, ноль, отрицательное) считается отсутствием
+    проверки: лучше лишний раз спросить сеть, чем молчать из-за битой настройки.
+    """
+    if now is None:
+        now = time.time()
+    if not isinstance(last_check, (int, float)) or last_check <= 0:
+        return True
+    return (now - last_check) >= CHECK_INTERVAL
+
+
+def stamp(now: float | None = None) -> float:
+    """Отметка «проверено в» для настроек — одна точка правды для формата."""
+    return float(time.time() if now is None else now)
 
 
 def parse_version(text: str) -> tuple[int, ...]:

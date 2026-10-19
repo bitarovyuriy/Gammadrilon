@@ -453,8 +453,10 @@ RUNTIME_SETTINGS: dict = {
 }
 
 #: Ключи, которые переносить нельзя: это состояние этой машины и этого
-#: человека, а не настройка («первый запуск пройден здесь» — и должен остаться).
-SETTINGS_NOT_TRANSFERABLE = ("first_run_done",)
+#: человека, а не настройка («первый запуск пройден здесь» — и должен остаться;
+#: «когда последний раз стучались в GitHub» — тоже: на новой машине проверка
+#: должна пройти сама, а не ждать сутки из-за чужой отметки).
+SETTINGS_NOT_TRANSFERABLE = ("first_run_done", "updates_last_check")
 
 
 def save_config(data: dict) -> bool:
@@ -4508,10 +4510,16 @@ class MainWindow(QMainWindow):
         """Спросить GitHub о последнем релизе — в фоне, и только по галочке.
 
         ``silent`` (проверка при запуске) молчит, когда новостей нет: человек не
-        просил отчёт, он просил не пропустить новый релиз.
+        просил отчёт, он просил не пропустить новый релиз. Тихая проверка ходит
+        в сеть не чаще раза в сутки — метка лежит в настройках
+        (``updates_last_check``), поэтому перезапуски подряд её не обходят.
+        Ручная проверка («Проверить сейчас») не тормозится никогда.
         """
         import gd_bg
 
+        settings = self.config.get("settings", {}) or {}
+        if silent and not gd_update.due(settings.get("updates_last_check")):
+            return
         if gd_bg.is_running(getattr(self, "_updates_worker", None)):
             return
         utils = getattr(self, "_utils_page", None)
@@ -4523,6 +4531,11 @@ class MainWindow(QMainWindow):
     def _updates_done(self, res, silent: bool) -> None:
         """Результат проверки обновлений пришёл в GUI-поток: показать честно."""
         import gd_toast
+
+        # Отметку ставим и при неудаче: следующий тихий запуск не должен
+        # немедленно повторять тот же запрос (без сети — каждые пару минут).
+        self.config.setdefault("settings", {})["updates_last_check"] = gd_update.stamp()
+        self._save_config()
 
         # карточка обновлений живёт на ленивой вкладке «Утилиты»: результат
         # проверки попадает в неё так же, как до ленивой сборки
