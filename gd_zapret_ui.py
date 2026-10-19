@@ -48,6 +48,7 @@ import gd_journal  # noqa: E402
 import gd_paths  # noqa: E402
 import gd_theme as th
 import gd_zapret  # noqa: E402
+import gd_zapret_probe as probe  # noqa: E402
 import gd_zapret_update as upd  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
 
@@ -264,6 +265,13 @@ class ZapretWidget(QWidget):
         self.btn_recon.setObjectName("Segment")
         self.btn_recon.clicked.connect(self._recon)
         brow.addWidget(self.btn_recon)
+        self.btn_probe = QPushButton(i18n.t("Проверить доступ"))
+        self.btn_probe.setObjectName("Segment")
+        self.btn_probe.setToolTip(i18n.t(
+            "Проверить Discord, YouTube, Google и Cloudflare через текущий обход. "
+            "Ничего не меняет — только сеть."))
+        self.btn_probe.clicked.connect(self._probe)
+        brow.addWidget(self.btn_probe)
         self.btn_svc = QPushButton(i18n.t("service.bat…"))
         self.btn_svc.setObjectName("Segment")
         self.btn_svc.setToolTip(i18n.t(
@@ -1156,6 +1164,7 @@ class ZapretWidget(QWidget):
         self.btn_off.setEnabled(bool(ours) and not busy)
         self.btn_recon.setEnabled(path_ok and bool(sel) and not any_foreign
                                   and not service_running and not busy)
+        self.btn_probe.setEnabled(path_ok and not busy)
         self.btn_adopt.setEnabled(not busy)
         self.btn_ignore.setEnabled(not busy)
         self.btn_upd_check.setEnabled(bool(path) and not busy)
@@ -1458,6 +1467,33 @@ class ZapretWidget(QWidget):
             err = (result or {}).get("error") if isinstance(result, dict) else str(result)
             self._set_status(i18n.t("Переосвоение не удалось: {v0}", v0=err), ok=False)
         self.list.clear()
+        self._poll.trigger()
+
+    # -- проверка доступности целей -----------------------------------------
+
+    def _probe(self):
+        """Короткий тест: отвечают ли Discord/YouTube/Google через текущий обход."""
+        if gd_bg.is_running(self._worker):
+            return
+        path = self._path()
+        if not path or not os.path.isdir(path):
+            self._set_status(i18n.t("Сначала выберите папку zapret."), ok=False)
+            return
+        self._set_status(i18n.t("Проверяю доступ…"))
+        self._worker = gd_bg.submit(lambda: probe.probe_all(path, timeout=6.0),
+                                    self._probe_done, parent=self)
+        self._render()
+
+    def _probe_done(self, result) -> None:
+        if not (isinstance(result, dict) and result.get("total")):
+            err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+            self._set_status(i18n.t("Проверка доступа: {v0}", v0=err or "?"), ok=False)
+            self._poll.trigger()
+            return
+        text = probe.describe(result)
+        self._set_status(text, ok=bool(result.get("ok")))
+        gd_journal.record("zapret", i18n.t("Проверка доступа"), before="",
+                          after=text, why=i18n.t("кнопка вкладки"))
         self._poll.trigger()
 
     # -- внешний winws: взять под управление / оставить как есть -------------
