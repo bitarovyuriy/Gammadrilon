@@ -54,6 +54,26 @@ _keep_on_exit = False
 
 
 _LOG_FILE: str | None = None
+_LOG_MAX_BYTES = 512 * 1024      # лог хелпера не растёт бесконечно (см. _trim_log)
+
+
+def _trim_log(path: str) -> None:
+    """Оставить последние ~256 КБ лога.
+
+    Файл открывается на дозапись и переживает сессии, а чистить его больше
+    некому: у активного пользователя он копится месяцами. Проверка размера —
+    один stat на строку лога (микросекунды), обрезка случается раз в ~4000 строк.
+    """
+    try:
+        if os.path.getsize(path) <= _LOG_MAX_BYTES:
+            return
+        with open(path, "rb") as fh:
+            fh.seek(-_LOG_MAX_BYTES // 2, os.SEEK_END)
+            tail = fh.read()
+        with open(path, "wb") as fh:
+            fh.write(tail)
+    except OSError:
+        pass
 
 
 def _log(msg: str) -> None:
@@ -66,6 +86,7 @@ def _log(msg: str) -> None:
         try:
             with open(_LOG_FILE, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
+            _trim_log(_LOG_FILE)
         except OSError:
             pass
 

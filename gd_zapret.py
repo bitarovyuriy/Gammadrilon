@@ -471,6 +471,29 @@ def log_path() -> str:
     return str(LOG_FILE)
 
 
+#: предел журнала winws.exe: файл живёт месяцами, а winws пишет много
+LOG_MAX_BYTES = 1024 * 1024
+
+
+def trim_log(path=None) -> None:
+    """Оставить последние ~512 КБ журнала winws.exe.
+
+    Журнал открывается на дозапись при каждом запуске обхода и между сессиями
+    не чистится (обещание «хвост виден» сохраняем: обрезаем только историю).
+    Вызывается перед открытием файла на запись — в фоне, не в GUI-потоке.
+    """
+    p = Path(path) if path else LOG_FILE
+    try:
+        if p.stat().st_size <= LOG_MAX_BYTES:
+            return
+        with p.open("rb") as fh:
+            fh.seek(-LOG_MAX_BYTES // 2, os.SEEK_END)
+            tail = fh.read()
+        p.write_bytes(tail)
+    except OSError:
+        pass
+
+
 def log_tail(n: int = 200) -> list[str]:
     """Хвост stdout/stderr winws.exe: последние n строк без чтения всего файла."""
     try:
@@ -724,6 +747,8 @@ def start_winws(root: str, argv: list, log_file: str = "", note: str = "") -> tu
         return False, i18n.t("уже запущен winws.exe (PID {v0}) — остановите его или "
                              "возьмите под управление", v0=pids)
     try:
+        if log_file:
+            trim_log(log_file)
         fh = open(log_file, "a", encoding="utf-8", errors="replace") if log_file else None
     except OSError:
         fh = None
