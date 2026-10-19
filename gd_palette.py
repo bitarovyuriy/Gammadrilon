@@ -144,6 +144,8 @@ class CommandPalette(QDialog):
              lambda: mw.open_journal()),
             (i18n.t("pal.reset_gamma"), "reset gamma сброс гамма",
              lambda: mw.reset_all()),
+            (i18n.t("pal.stop_crane"), "stop crane reset everything сброс стоп кран вернуть всё как было откат",
+             lambda: mw.stop_crane()),
             (i18n.t("pal.quit"), "quit exit выход закрыть",
              lambda: mw.quit_app()),
         ]

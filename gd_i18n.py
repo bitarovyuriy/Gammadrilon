@@ -44,7 +44,7 @@ STRINGS: dict[str, dict[str, str]] = {
         # каркас: сайдбар и статусбар
         "side.power": "Питание",
         "side.system": "Система",
-        "status.hints": "Ctrl+Alt+G — палитра  ·  Ctrl+Alt+Z — сброс",
+        "status.hints": "Ctrl+Alt+G — палитра  ·  Ctrl+Alt+Z — сброс гаммы  ·  Ctrl+Alt+R — стоп-кран",
         "Служба питания активна": "Служба питания активна",
         "схема": "схема",
         "ЭКО 50%": "ЭКО 50%",
@@ -98,6 +98,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "pal.gpu_max": "Питание GPU: Макс",
         "pal.gpu_restore": "Питание GPU: вернуть исходный лимит",
         "pal.perf_toggle": "Переключить производительность (ограничение ↔ буст)",
+        "pal.stop_crane": "Вернуть всё как было (стоп-кран)",
         "pal.language": "Язык: русский / English",
         "pal.open_gamma": "Открыть вкладку Gamma",
         "pal.reset_gamma": "Сбросить гамму",
@@ -290,7 +291,7 @@ STRINGS: dict[str, dict[str, str]] = {
         # shell: sidebar and status bar
         "side.power": "Power",
         "side.system": "System",
-        "status.hints": "Ctrl+Alt+G — palette  ·  Ctrl+Alt+Z — reset",
+        "status.hints": "Ctrl+Alt+G — palette  ·  Ctrl+Alt+Z — reset gamma  ·  Ctrl+Alt+R — stop-crane",
         "Служба питания активна": "Power service active",
         "схема": "scheme",
         "ЭКО 50%": "ECO 50%",
@@ -344,6 +345,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "pal.gpu_max": "GPU power: Max",
         "pal.gpu_restore": "GPU power: restore original limit",
         "pal.perf_toggle": "Toggle performance (limit ↔ boost)",
+        "pal.stop_crane": "Revert everything (stop-crane)",
         "pal.language": "Language: русский / English",
         "pal.open_gamma": "Open tab “Gamma”",
         "pal.reset_gamma": "Reset gamma",

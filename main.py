@@ -393,6 +393,9 @@ DEFAULT_CONFIG = {
             "reset": "ctrl+alt+z",
             "cat_vision": "scroll lock",
             "perf_toggle": "ctrl+alt+p",
+            # стоп-кран: вернуть всё как было (питание, DNS, правила, таймер, гамма).
+            # Буква R — рядом с аварийным сбросом гаммы Z, но другой рукой не спутать
+            "reset_everything": "ctrl+alt+r",
         },
         # переключатель производительности (клавиша perf_toggle): что применять,
         # когда ограничения включаются («limited») и когда снимаются («boost»).
@@ -862,6 +865,7 @@ class HotkeyManager(QObject):
     presetRequested = pyqtSignal(int)
     paletteRequested = pyqtSignal()
     perfToggle = pyqtSignal()
+    resetEverythingRequested = pyqtSignal()
     error = pyqtSignal(str)
 
     def __init__(self):
@@ -905,6 +909,8 @@ class HotkeyManager(QObject):
         safe_add(hotkeys.get("cat_vision", "scroll lock"), lambda: self.catVisionRequested.emit())
         safe_add(hotkeys.get("palette", "ctrl+alt+g"), lambda: self.paletteRequested.emit())
         safe_add(hotkeys.get("perf_toggle", "ctrl+alt+p"), lambda: self.perfToggle.emit())
+        safe_add(hotkeys.get("reset_everything", "ctrl+alt+r"),
+                 lambda: self.resetEverythingRequested.emit())
 
         for index, preset in enumerate(presets):
             preset_hotkey = str(preset.get("hotkey", "")).strip()
@@ -1116,6 +1122,7 @@ class HotkeySettingsDialog(QDialog):
         items = [
             ("next_preset", i18n.t("Следующий пресет")),            ("prev_preset", i18n.t("Предыдущий пресет")),
             ("reset", i18n.t("Аварийный сброс")),
+            ("reset_everything", i18n.t("Вернуть всё как было (стоп-кран)")),
             ("cat_vision", i18n.t("Кошачье зрение")),
             ("perf_toggle", i18n.t("Переключить производительность")),
         ]
@@ -2767,7 +2774,7 @@ class MainWindow(QMainWindow):
         self.tray.rulesRequested.connect(self.open_rules_tab)
         self.tray.utilsRequested.connect(self.open_utils_tab)
         self.tray.themeRequested.connect(self._tray_theme)
-        self.tray.resetEverythingRequested.connect(self._tray_reset_everything)
+        self.tray.resetEverythingRequested.connect(self.stop_crane)
         self.tray.quitRequested.connect(self.quit_app)
         # галка переключателя производительности — из конфига (переживает запуск)
         try:
@@ -3724,6 +3731,7 @@ class MainWindow(QMainWindow):
         self.hotkey_manager.presetRequested.connect(self.apply_preset_by_index)
         self.hotkey_manager.paletteRequested.connect(self.open_palette)
         self.hotkey_manager.perfToggle.connect(self._on_perf_toggle)
+        self.hotkey_manager.resetEverythingRequested.connect(self.stop_crane)
         self.hotkey_manager.error.connect(self.set_status)
 
         self.hotkey_manager.register(self.config)
@@ -4570,8 +4578,13 @@ class MainWindow(QMainWindow):
             if not silent:
                 gd_toast.show_toast(text, "ok")
 
-    def _tray_reset_everything(self) -> None:
-        """«Вернуть всё как было» из трея — с тем же вопросом, что и в «Утилитах»."""
+    def stop_crane(self) -> None:
+        """«Вернуть всё как было» — один вход для трея, палитры и горячей клавиши.
+
+        У кнопки в «Утилитах» свой вопрос (она рядом с описанием), а у стоп-крана
+        с клавиатуры и из трея — этот: что именно откатывается, человек может не
+        помнить, а действие необратимое (обратно — только вручную).
+        """
         answer = gd_dialog.confirm(
             None, i18n.t("Сбросить все изменения"),
             i18n.t("Вернуть питание CPU/GPU, DNS, правила, автоочистку, таймер и гамму "

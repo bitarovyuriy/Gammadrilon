@@ -850,6 +850,39 @@ QTest.keyClick(_item, Qt.Key_Space)
 check("сайдбар: Enter и Space на пункте работают как клик",
       _hits == [_item.key, _item.key], str(_hits))
 
+# --- 4.3.1 стоп-кран: клавиша правится в диалоге, команда есть в палитре ----
+_hk_dlg = gd_main.HotkeySettingsDialog(win.config.get("settings", {}).get("hotkeys") or {})
+check("клавиши: стоп-кран есть в диалоге",
+      "reset_everything" in _hk_dlg.inputs
+      and _hk_dlg.inputs["reset_everything"].text()
+      == gd_main.DEFAULT_CONFIG["settings"]["hotkeys"]["reset_everything"],
+      f"{_hk_dlg.inputs.get('reset_everything')!r}")
+_hk_saved = _hk_dlg.result_hotkeys()
+check("клавиши: правка стоп-крана возвращается в настройки",
+      _hk_saved.get("reset_everything") == _hk_dlg.inputs["reset_everything"].text(),
+      str(_hk_saved.get("reset_everything")))
+_hk_dlg.close()
+
+import gd_palette  # noqa: E402
+
+_pal = gd_palette.CommandPalette(win)
+_pal_titles = [_pal.list.item(i).text() for i in range(_pal.list.count())]
+check("палитра: стоп-кран есть в списке команд",
+      i18n.t("pal.stop_crane") in _pal_titles,
+      f"первая: {_pal_titles[0] if _pal_titles else None!r}")
+_pal.input.setText("стоп")
+_pal_titles = [_pal.list.item(i).text() for i in range(_pal.list.count())]
+check("палитра: поиск «стоп» находит стоп-кран в первых строках",
+      i18n.t("pal.stop_crane") in _pal_titles[:3], str(_pal_titles[:3]))
+
+_stop_item = next((_pal.list.item(i) for i in range(_pal.list.count())
+                   if _pal.list.item(i).text() == i18n.t("pal.stop_crane")), None)
+check("палитра: команда стоп-крана ведёт к подтверждению, а не на пустую заглушку",
+      _stop_item is not None and callable(_stop_item.data(Qt.UserRole)),
+      repr(_stop_item.text() if _stop_item is not None else None))
+_pal.close()
+_pal.deleteLater()
+
 
 
 win.hide()
