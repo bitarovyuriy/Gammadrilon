@@ -106,10 +106,33 @@ def fetch_latest(timeout: float = TIMEOUT) -> dict:
     tag = str(data.get("tag_name") or "").strip()
     if not tag:
         return {"ok": False, "error": i18n.t("в ответе GitHub нет тега версии")}
+
+    # Ассеты нужны автообновлению: имя, ссылка, размер и sha256 от GitHub.
+    # Без них проверка умеет только открыть страницу релиза.
+    assets = []
+    for raw in data.get("assets") or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or "").strip()
+        url = str(raw.get("browser_download_url") or "").strip()
+        if not name or not url:
+            continue
+        try:
+            size = int(raw.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        assets.append({
+            "name": name,
+            "url": url,
+            "size": max(0, size),
+            "digest": str(raw.get("digest") or "").strip(),
+        })
+
     return {
         "ok": True,
         "tag": tag,
         "name": str(data.get("name") or tag),
         "url": str(data.get("html_url") or PAGE_URL),
         "published": str(data.get("published_at") or "")[:10],
+        "assets": assets,
     }

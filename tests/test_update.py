@@ -52,6 +52,12 @@ def test_fetch_latest_parses_release(monkeypatch):
         "name": "v9.9",
         "html_url": "https://example.invalid/rel",
         "published_at": "2026-02-03T04:05:06Z",
+        "assets": [{
+            "name": "Gammadrilon-portable.zip",
+            "browser_download_url": "https://github.com/x/y/releases/download/v9.9/Gammadrilon-portable.zip",
+            "size": 12345,
+            "digest": "sha256:" + "a" * 64,
+        }],
     }).encode("utf-8")
     monkeypatch.setattr(gd_update.urllib.request, "urlopen", lambda *a, **kw: _Response(body))
 
@@ -60,6 +66,9 @@ def test_fetch_latest_parses_release(monkeypatch):
     assert res["ok"] and res["tag"] == "v9.9"
     assert res["published"] == "2026-02-03"
     assert res["url"] == "https://example.invalid/rel"
+    assert res["assets"][0]["name"] == "Gammadrilon-portable.zip"
+    assert res["assets"][0]["size"] == 12345
+    assert res["assets"][0]["digest"].startswith("sha256:")
 
 
 def test_fetch_latest_speaks_human_without_network(monkeypatch):

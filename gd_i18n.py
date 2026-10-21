@@ -1431,6 +1431,51 @@ DIRECT: dict[str, str] = {
     "Выключено: приложение в сеть не ходит.": "Off: the app does not touch the network.",
     "Проверка обновлений доступна из главного окна.": "Update check is available from the main window.",
     "Галочка не сохранена: {v0}": "The checkbox was not saved: {v0}",
+    # --- автообновление ---
+    "Скачать и обновить": "Download and update",
+    "Обновление Gammadrilon": "Gammadrilon update",
+    "Автообновление работает только в собранной версии. Скачайте архив со страницы релиза.":
+        "Auto-update works only in the packaged build. Download the archive from the release page.",
+    "В релизе нет файла для автообновления — скачайте вручную.":
+        "The release has no auto-update file — download it manually.",
+    "Скачать обновление {v0} ({v1} МБ) и перезапустить приложение? Пресеты, горячие клавиши и настройки сохранятся.":
+        "Download update {v0} ({v1} MB) and restart the app? Presets, hotkeys and settings will be preserved.",
+    "Скачать обновление {v0} и перезапустить приложение? Пресеты, горячие клавиши и настройки сохранятся.":
+        "Download update {v0} and restart the app? Presets, hotkeys and settings will be preserved.",
+    "Скачиваю обновление {v0}…": "Downloading update {v0}…",
+    "Не удалось скачать обновление: {v0}": "Could not download the update: {v0}",
+    "Не удалось запустить обновление: {v0}": "Could not start the update: {v0}",
+    "Обновление {v0} готово. Перезапускаюсь…": "Update {v0} is ready. Restarting…",
+    "Обновление приложения": "App update",
+    "Нет данных о новом релизе.": "No data about the new release.",
+    "Автообновление работает только в собранной версии.":
+        "Auto-update works only in the packaged build.",
+    "В релизе нет контрольной суммы sha256 — автообновление отключено.":
+        "The release has no sha256 digest — auto-update is disabled.",
+    "В релизе нет ссылки на файл обновления.": "The release has no update file link.",
+    "Неожиданный адрес обновления: {v0}": "Unexpected update address: {v0}",
+    "не удалось скачать файл: {v0}": "could not download the file: {v0}",
+    "Файл скачался не целиком: {v0} из {v1} байт.":
+        "The file did not download completely: {v0} of {v1} bytes.",
+    "Размер файла не совпал с релизом.": "The file size does not match the release.",
+    "Контрольная сумма не совпала: файл повреждён или подменён.":
+        "The digest does not match: the file is damaged or replaced.",
+    "В архиве недопустимый путь: {v0}": "Unsafe path in the archive: {v0}",
+    "Архив обновления пуст.": "The update archive is empty.",
+    "В архиве ожидалась папка Gammadrilon, а найдено: {v0}.":
+        "Expected a Gammadrilon folder in the archive, found: {v0}.",
+    "В архиве нет Gammadrilon.exe.": "The archive has no Gammadrilon.exe.",
+    "В архиве нет папки _internal.": "The archive has no _internal folder.",
+    "Архив обновления повреждён.": "The update archive is damaged.",
+    "После распаковки не найден Gammadrilon.exe.": "Gammadrilon.exe was not found after extraction.",
+    "Скачанный файл не похож на exe.": "The downloaded file does not look like an exe.",
+    "не удалось прочитать файл: {v0}": "could not read the file: {v0}",
+    "Не удалось сохранить копию настроек: {v0}": "Could not back up the settings: {v0}",
+    "Мало места на диске: нужно примерно {v0} МБ, свободно {v1} МБ.":
+        "Not enough disk space: about {v0} MB needed, {v1} MB free.",
+    "Файлы обновления не найдены.": "Update files were not found.",
+    "Обновление не запустилось (код {v0}). Скачайте архив вручную.":
+        "The update did not start (code {v0}). Download the archive manually.",
     # --- обход DPI: обновления, служба, списки ---
     "ОБНОВЛЕНИЯ ZAPRET": "ZAPRET UPDATES",
     "Последний релиз берётся с GitHub Flowseal. Перед обновлением Gammadrilon сам останавливает обход, делает резервную копию папки и сохраняет ваши списки и стратегии *.user.bat.":

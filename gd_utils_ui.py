@@ -308,9 +308,16 @@ class UtilsWidget(QWidget):
         self.btn_updates.setEnabled(self._updates_host is not None)
         self.btn_updates.clicked.connect(self._check_updates)
 
+        self.btn_install_update = QPushButton(i18n.t("Скачать и обновить"))
+        self.btn_install_update.setObjectName("PrimaryButton")
+        self.btn_install_update.setEnabled(self._updates_host is not None)
+        self.btn_install_update.clicked.connect(self._install_update)
+        self.btn_install_update.hide()
+
         urow = QHBoxLayout()
         urow.addWidget(self.chk_updates)
         urow.addWidget(self.btn_updates)
+        urow.addWidget(self.btn_install_update)
         urow.addStretch(1)
         lay_upd.addLayout(urow)
 
@@ -598,14 +605,28 @@ class UtilsWidget(QWidget):
         host = self._updates_host
         if host is None:
             return
+        self.btn_install_update.hide()
         host.check_updates(silent=False)
 
-    def set_update_status(self, text: str, ok: bool = True, url: str = "") -> None:
+    def _install_update(self) -> None:
+        """Кнопка есть только у собранной версии и только когда релиз новее."""
+        host = self._updates_host
+        if host is None or not hasattr(host, "install_update"):
+            return
+        self.btn_install_update.setEnabled(False)
+        try:
+            host.install_update()
+        finally:
+            self.btn_install_update.setEnabled(True)
+
+    def set_update_status(self, text: str, ok: bool = True, url: str = "",
+                          can_update: bool = False) -> None:
         """Строка результата: сюда пишут и ручная проверка, и стартовая (тихая)."""
         self.lbl_updates.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
         if url:
             text = f'{text} <a href="{url}">{i18n.t("скачать")}</a>'
         self.lbl_updates.setText(text)
+        self.btn_install_update.setVisible(bool(can_update))
 
     # -- автоочистка: настройки ---------------------------------------------
     def _auto_path(self):

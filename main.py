@@ -76,7 +76,7 @@ from PyQt5.QtWidgets import (
 
 
 APP_NAME = gd_paths.APP_NAME
-APP_VERSION = "v3.3"
+APP_VERSION = "v3.4"
 CONFIG_FILE = "presets.json"
 ICON_FILE = "icon.ico"
 
@@ -4810,16 +4810,18 @@ class MainWindow(QMainWindow):
         self.config.setdefault("settings", {})["check_updates"] = bool(on)
         self._save_config()
 
-    def _set_update_status(self, text: str, ok: bool = True, url: str = "") -> None:
+    def _set_update_status(self, text: str, ok: bool = True, url: str = "",
+                           can_update: bool = False) -> None:
         """Статус проверки обновлений: в карточку или в отложенный слот.
 
         Вкладка «Утилиты» ленивая: тихая проверка при запуске может начаться
         раньше, чем страница собрана. Раньше статус в этом случае терялся.
+        ``can_update`` показывает кнопку установки только там, где она уместна.
         """
-        self._updates_pending_status = (text, ok, url)
+        self._updates_pending_status = (text, ok, url, can_update)
         utils = getattr(self, "_utils_page", None)
         if utils is not None:
-            utils.set_update_status(text, ok=ok, url=url)
+            utils.set_update_status(text, ok=ok, url=url, can_update=can_update)
 
     def check_updates(self, silent: bool = False) -> None:
         """Спросить GitHub о последнем релизе — в фоне, и только по галочке.
@@ -4862,9 +4864,18 @@ class MainWindow(QMainWindow):
                 gd_toast.show_toast(text, "warn")
             return
         tag = str(res.get("tag") or "")
+        self._latest_release = res if res.get("ok") else None
         if gd_update.is_newer(tag, APP_VERSION):
+            import gd_autoupdate
+
+            mode = gd_autoupdate.install_mode()
+            asset = gd_autoupdate.asset_for(mode, res.get("assets"))
+            can_update = (mode in ("onedir", "onefile")
+                          and asset is not None
+                          and bool(gd_autoupdate.digest_hex(asset)))
             text = i18n.t("Доступна новая версия {v0} (установлена {v1}).", v0=tag, v1=APP_VERSION)
-            self._set_update_status(text, ok=True, url=str(res.get("url") or ""))
+            self._set_update_status(text, ok=True, url=str(res.get("url") or ""),
+                                    can_update=can_update)
             gd_toast.show_toast(i18n.t("toast.update_available", v0=tag), "info")
             try:
                 import gd_journal
@@ -4874,10 +4885,114 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
         else:
+            self._latest_release = None
             text = i18n.t("Установлена последняя версия ({v0}).", v0=APP_VERSION)
             self._set_update_status(text, ok=True)
             if not silent:
                 gd_toast.show_toast(text, "ok")
+
+    def install_update(self) -> None:
+        """Скачать новый релиз и перезапуститься через helper.
+
+        Настройки не трогаются: helper меняет только exe и ``_internal``.
+        В исходниках кнопки нет — там обновление нечем применять.
+        """
+        import gd_autoupdate
+        import gd_bg
+        import gd_dialog
+
+        info = getattr(self, "_latest_release", None)
+        if not isinstance(info, dict) or not info.get("ok"):
+            return
+
+        mode = gd_autoupdate.install_mode()
+        if mode == "dev":
+            gd_dialog.notify(
+                self, i18n.t("Обновление Gammadrilon"),
+                i18n.t("Автообновление работает только в собранной версии. "
+                       "Скачайте архив со страницы релиза."))
+            return
+
+        asset = gd_autoupdate.asset_for(mode, info.get("assets"))
+        if asset is None:
+            gd_dialog.notify(
+                self, i18n.t("Обновление Gammadrilon"),
+                i18n.t("В релизе нет файла для автообновления — скачайте вручную."))
+            return
+        if not gd_autoupdate.digest_hex(asset):
+            gd_dialog.notify(
+                self, i18n.t("Обновление Gammadrilon"),
+                i18n.t("В релизе нет контрольной суммы sha256 — автообновление отключено."))
+            return
+
+        version = str(info.get("tag") or "")
+        size_mb = max(0, int(asset.get("size") or 0)) // (1024 * 1024)
+        if size_mb:
+            question = i18n.t(
+                "Скачать обновление {v0} ({v1} МБ) и перезапустить приложение? "
+                "Пресеты, горячие клавиши и настройки сохранятся.",
+                v0=version, v1=size_mb)
+        else:
+            question = i18n.t(
+                "Скачать обновление {v0} и перезапустить приложение? "
+                "Пресеты, горячие клавиши и настройки сохранятся.", v0=version)
+        if not gd_dialog.confirm(
+                self, i18n.t("Обновление Gammadrilon"), question,
+                confirm_text=i18n.t("Обновить")):
+            return
+
+        if gd_bg.is_running(getattr(self, "_update_worker", None)):
+            return
+        self._set_update_status(
+            i18n.t("Скачиваю обновление {v0}…", v0=version), can_update=False)
+        self._update_worker = gd_bg.submit(
+            lambda: gd_autoupdate.prepare_update(info, mode),
+            self._update_prepared, parent=self)
+
+    def _update_prepared(self, res) -> None:
+        """Обновление скачано и проверено: запустить helper и выйти."""
+        import gd_autoupdate
+
+        if not isinstance(res, dict) or not res.get("ok"):
+            error = (res or {}).get("error") if isinstance(res, dict) else str(res)
+            text = i18n.t("Не удалось скачать обновление: {v0}",
+                          v0=error or i18n.t("неизвестная причина"))
+            self._set_update_status(text, ok=False, can_update=True)
+            try:
+                import gd_dialog
+
+                gd_dialog.notify(self, i18n.t("Обновление Gammadrilon"), text)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        plan = res.get("plan") or {}
+        try:
+            gd_autoupdate.launch_helper(plan)
+        except Exception as exc:  # noqa: BLE001
+            text = i18n.t("Не удалось запустить обновление: {v0}", v0=exc)
+            self._set_update_status(text, ok=False, can_update=True)
+            try:
+                import gd_dialog
+
+                gd_dialog.notify(self, i18n.t("Обновление Gammadrilon"), text)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+        version = str(res.get("version") or "")
+        self._set_update_status(
+            i18n.t("Обновление {v0} готово. Перезапускаюсь…", v0=version))
+        try:
+            import gd_journal
+
+            gd_journal.record("update", i18n.t("Обновление приложения"), None,
+                              version, source=i18n.t("Утилиты"))
+        except Exception:  # noqa: BLE001
+            pass
+        # Даём helper-у запуститься и только потом закрываем окно. Он ждёт PID,
+        # поэтому гонки «приложение ещё живо» здесь нет.
+        QTimer.singleShot(500, self.quit_app)
 
     def stop_crane(self) -> None:
         """«Вернуть всё как было» — один вход для трея, палитры и горячей клавиши.
