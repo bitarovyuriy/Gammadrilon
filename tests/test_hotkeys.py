@@ -68,3 +68,50 @@ def test_stop_crane_strings_translated():
 
     assert "pal.stop_crane" in i18n.STRINGS["ru"] and "pal.stop_crane" in i18n.STRINGS["en"]
     assert "Вернуть всё как было (стоп-кран)" in i18n.DIRECT, "нет перевода подписи в диалоге"
+
+
+def test_hotkey_recorder_builds_keyboard_strings():
+    """Запись клавиши даёт ровно ту строку, которую понимает keyboard."""
+    from PyQt5.QtCore import Qt
+
+    mods = Qt.ControlModifier | Qt.AltModifier
+    assert gd_main.hotkey_from_key(Qt.Key_Z, mods) == "ctrl+alt+z"
+    assert gd_main.hotkey_from_key(Qt.Key_1, mods) == "ctrl+alt+1"
+    assert gd_main.hotkey_from_key(Qt.Key_PageUp, Qt.NoModifier) == "page up"
+    assert gd_main.hotkey_from_key(Qt.Key_ScrollLock, Qt.NoModifier) == "scroll lock"
+    assert gd_main.hotkey_from_key(Qt.Key_F12, Qt.ShiftModifier) == "shift+f12"
+    assert gd_main.hotkey_from_key(Qt.Key_S, Qt.MetaModifier) == "windows+s"
+    # Shift меняет Qt-код на символ: shift+1 не должен стать «shift+!»
+    assert gd_main.hotkey_from_key(Qt.Key_Exclam, Qt.ShiftModifier) == "shift+1"
+    # один модификатор — это ещё не сочетание
+    assert gd_main.hotkey_from_key(Qt.Key_Control, Qt.ControlModifier) == ""
+
+
+def test_hotkey_edit_records_and_clears():
+    """Поле само ловит нажатие: вручную название клавиши не пишется."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+
+    edit = gd_main.HotkeyEdit("ctrl+alt+z")
+    edit.show()
+    edit.setFocus()
+    app.processEvents()
+
+    QTest.keyClick(edit, Qt.Key_A, Qt.ControlModifier | Qt.AltModifier)
+    assert edit.text() == "ctrl+alt+a"
+
+    edit.setFocus()
+    app.processEvents()
+    QTest.keyClick(edit, Qt.Key_Backspace, Qt.NoModifier)
+    assert edit.text() == ""
+
+    edit.setFocus()
+    app.processEvents()
+    QTest.keyClick(edit, Qt.Key_F5, Qt.NoModifier)
+    assert edit.text() == "f5"

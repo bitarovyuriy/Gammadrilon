@@ -65,6 +65,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QStyle,
     QSystemTrayIcon,
     QScrollArea,
     QStackedWidget,
@@ -75,7 +76,7 @@ from PyQt5.QtWidgets import (
 
 
 APP_NAME = gd_paths.APP_NAME
-APP_VERSION = "v3.2"
+APP_VERSION = "v3.3"
 CONFIG_FILE = "presets.json"
 ICON_FILE = "icon.ico"
 
@@ -1102,6 +1103,261 @@ class CurveWidget(QWidget):
         painter.drawPath(path)
 
 
+# --------------------------------------------------------------------------
+# Запись горячих клавиш: нажал сочетание — оно и записалось
+# --------------------------------------------------------------------------
+# Раньше в полях надо было вручную писать «ctrl+alt+1»: опечатка молча
+# превращалась в неработающую клавишу. Здесь Qt-нажатие переводится в ту же
+# строку, которую понимает библиотека keyboard (add_hotkey).
+
+_MODIFIER_NAMES = (
+    (Qt.ControlModifier, "ctrl"),
+    (Qt.AltModifier, "alt"),
+    (Qt.ShiftModifier, "shift"),
+    (Qt.MetaModifier, "windows"),
+)
+
+_MODIFIER_KEYS = {Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta, Qt.Key_AltGr}
+
+_SPECIAL_KEY_NAMES = {
+    Qt.Key_Up: "up", Qt.Key_Down: "down", Qt.Key_Left: "left", Qt.Key_Right: "right",
+    Qt.Key_Home: "home", Qt.Key_End: "end",
+    Qt.Key_PageUp: "page up", Qt.Key_PageDown: "page down",
+    Qt.Key_Insert: "insert", Qt.Key_Delete: "delete", Qt.Key_Backspace: "backspace",
+    Qt.Key_Tab: "tab", Qt.Key_Return: "enter", Qt.Key_Enter: "enter",
+    Qt.Key_Space: "space", Qt.Key_Escape: "esc",
+    Qt.Key_Pause: "pause", Qt.Key_Print: "print screen", Qt.Key_SysReq: "print screen",
+    Qt.Key_ScrollLock: "scroll lock", Qt.Key_CapsLock: "caps lock",
+    Qt.Key_NumLock: "num lock", Qt.Key_Menu: "menu", Qt.Key_Help: "help",
+}
+
+_PUNCT_KEYS = {
+    Qt.Key_Comma: ",", Qt.Key_Period: ".", Qt.Key_Semicolon: ";",
+    Qt.Key_Slash: "/", Qt.Key_Backslash: "\\", Qt.Key_Minus: "-",
+    Qt.Key_Equal: "=", Qt.Key_QuoteLeft: "`", Qt.Key_Apostrophe: "'",
+    Qt.Key_QuoteDbl: "'", Qt.Key_BracketLeft: "[", Qt.Key_BracketRight: "]",
+}
+
+# с Shift Qt отдаёт не базовую клавишу, а её символ: shift+1 -> «!» -> «shift+1»
+_SHIFTED_PUNCT_KEYS = {
+    Qt.Key_Exclam: "1", Qt.Key_At: "2", Qt.Key_NumberSign: "3",
+    Qt.Key_Dollar: "4", Qt.Key_Percent: "5", Qt.Key_AsciiCircum: "6",
+    Qt.Key_Ampersand: "7", Qt.Key_Asterisk: "8", Qt.Key_ParenLeft: "9",
+    Qt.Key_ParenRight: "0", Qt.Key_Underscore: "-", Qt.Key_Plus: "=",
+    Qt.Key_BraceLeft: "[", Qt.Key_BraceRight: "]", Qt.Key_Bar: "\\",
+    Qt.Key_Colon: ";", Qt.Key_QuoteDbl: "'", Qt.Key_Less: ",",
+    Qt.Key_Greater: ".", Qt.Key_Question: "/", Qt.Key_AsciiTilde: "`",
+}
+
+
+def hotkey_modifier_names(modifiers) -> list:
+    """Имена модификаторов в порядке, привычном для keyboard: ctrl+alt+shift."""
+    return [name for flag, name in _MODIFIER_NAMES if modifiers & flag]
+
+
+def _keyboard_understands(token: str) -> bool:
+    """Поймёт ли keyboard такое имя клавиши (на всякий случай — да)."""
+    try:
+        import keyboard
+    except Exception:  # noqa: BLE001
+        return True
+    try:
+        keyboard.key_to_scan_codes(token)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def hotkey_key_name(key: int, text: str = "") -> str:
+    """Имя клавиши для keyboard по Qt-коду. "" — клавиша не распознана."""
+    name = _SPECIAL_KEY_NAMES.get(key)
+    if name:
+        return name
+    if Qt.Key_F1 <= key <= Qt.Key_F24:
+        return f"f{key - Qt.Key_F1 + 1}"
+    if Qt.Key_A <= key <= Qt.Key_Z:
+        return chr(key).lower()
+    if Qt.Key_0 <= key <= Qt.Key_9:
+        return chr(key)
+
+    candidate = _SHIFTED_PUNCT_KEYS.get(key) or _PUNCT_KEYS.get(key)
+    if not candidate:
+        return ""
+    if _keyboard_understands(candidate):
+        return candidate
+    # на не-английской раскладке ASCII-пунктуация может не отдавать Vk-код —
+    # берём символ, который реально напечатался («[» на RU — это «х»)
+    typed = (text or "").strip().lower()
+    if len(typed) == 1 and typed.isprintable() and _keyboard_understands(typed):
+        return typed
+    return ""
+
+
+def hotkey_from_key(key: int, modifiers, text: str = "") -> str:
+    """Собрать строку горячей клавиши из Qt-нажатия. "" — только модификаторы."""
+    name = hotkey_key_name(key, text)
+    if not name:
+        return ""
+    return "+".join(hotkey_modifier_names(modifiers) + [name])
+
+
+class HotkeyEdit(QLineEdit):
+    """Поле горячей клавиши: нажми сочетание — оно запишется само.
+
+    Поле только для чтения: ручной ввод названий убран, Esc отменяет запись,
+    Backspace/Delete очищает. Крестик справа делает то же, что Backspace.
+    """
+
+    def __init__(self, value: str = "", parent=None):
+        super().__init__(parent)
+        self._value = str(value or "").strip()
+        self._backup = self._value
+        self._recording = False
+
+        self.setReadOnly(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setToolTip(i18n.t(
+            "Нажмите сочетание — оно запишется само. Esc — отмена, Backspace — очистить."))
+
+        self._clear_action = self.addAction(
+            self.style().standardIcon(QStyle.SP_LineEditClearButton),
+            QLineEdit.TrailingPosition,
+        )
+        self._clear_action.setToolTip(i18n.t("Очистить"))
+        self._clear_action.triggered.connect(self.clear_hotkey)
+        self._show_value()
+
+    def text(self) -> str:
+        return self._value
+
+    def setText(self, value: str) -> None:
+        self._value = str(value or "").strip()
+        self._backup = self._value
+        self._show_value()
+
+    def clear_hotkey(self) -> None:
+        self._value = ""
+        self._backup = ""
+        self._recording = False
+        self._show_value()
+
+    def _show_value(self) -> None:
+        super().setText(self._value)
+        self.setPlaceholderText(i18n.t("Нажмите сочетание клавиш"))
+
+    def _begin(self) -> None:
+        self._recording = True
+        self._backup = self._value
+        super().setText("")
+        self.setPlaceholderText(i18n.t("Нажмите сочетание клавиш…"))
+
+    def _end(self) -> None:
+        self._recording = False
+        self._show_value()
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        if not self._recording:
+            self._begin()
+
+    def focusOutEvent(self, event):
+        self._recording = False
+        self._show_value()
+        super().focusOutEvent(event)
+
+    def keyPressEvent(self, event):
+        if not self._recording:
+            self._begin()
+
+        key = event.key()
+        mods = event.modifiers()
+
+        # без модификаторов Esc и Backspace/Delete — управление, а не клавиша
+        if key == Qt.Key_Escape and mods == Qt.NoModifier:
+            self._value = self._backup
+            self._end()
+            self.clearFocus()
+            event.accept()
+            return
+        if key in (Qt.Key_Backspace, Qt.Key_Delete) and mods == Qt.NoModifier:
+            self._value = ""
+            self._backup = ""
+            self._end()
+            self.clearFocus()
+            event.accept()
+            return
+
+        if key in _MODIFIER_KEYS:
+            names = hotkey_modifier_names(mods)
+            super().setText("+".join(names) + ("+" if names else "") + "…")
+            event.accept()
+            return
+
+        combo = hotkey_from_key(key, mods, event.text())
+        if not combo:
+            super().setText("")
+            self.setPlaceholderText(i18n.t("Клавиша не распознана — попробуйте другую"))
+            event.accept()
+            return
+
+        self._value = combo
+        self._backup = combo
+        self._end()
+        self.clearFocus()
+        event.accept()
+
+    def keyReleaseEvent(self, event):
+        # отпустил модификатор, ничего больше не нажав — возвращаем подсказку
+        if self._recording and event.key() in _MODIFIER_KEYS and not event.modifiers():
+            super().setText("")
+            self.setPlaceholderText(i18n.t("Нажмите сочетание клавиш…"))
+        super().keyReleaseEvent(event)
+
+
+class HotkeyPromptDialog(QDialog):
+    """Запись одной горячей клавиши (например, для пресета гаммы)."""
+
+    def __init__(self, title: str, prompt: str, value: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(380)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(*th.DIALOG_MARGINS)
+        root.setSpacing(th.DIALOG_SPACING)
+
+        label = QLabel(prompt)
+        label.setWordWrap(True)
+        root.addWidget(label)
+
+        self.edit = HotkeyEdit(value)
+        root.addWidget(self.edit)
+
+        hint = QLabel(i18n.t(
+            "Нажмите сочетание — оно запишется само. Esc — отмена, Backspace — очистить."))
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_button = QPushButton(i18n.t("Отмена"))
+        save_button = QPushButton(i18n.t("Сохранить"))
+        save_button.setObjectName("PrimaryButton")
+        cancel_button.clicked.connect(self.reject)
+        save_button.clicked.connect(self.accept)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(save_button)
+        root.addLayout(buttons)
+
+        self.setStyleSheet(APP_STYLESHEET)
+
+    def hotkey(self) -> str:
+        return self.edit.text().strip()
+
+
 class HotkeySettingsDialog(QDialog):
     def __init__(self, hotkeys: dict, perf: dict | None = None,
                  sound: bool = True, parent=None):
@@ -1137,16 +1393,15 @@ class HotkeySettingsDialog(QDialog):
 
         for row, (key, label_text) in enumerate(items):
             label = QLabel(label_text)
-            edit = QLineEdit(hotkeys.get(key, ""))
-            edit.setPlaceholderText(i18n.t("например: ctrl+alt+1"))
-
+            edit = HotkeyEdit(hotkeys.get(key, ""))
             self.inputs[key] = edit
 
             form.addWidget(label, row, 0)
             form.addWidget(edit, row, 1)
 
         hint = QLabel(
-            i18n.t("Примеры: page up, page down, scroll lock, ctrl+alt+z, ctrl+shift+1.")
+            i18n.t("Нажмите сочетание прямо в поле — оно запишется само. "
+                   "Esc — отмена, Backspace — очистить.")
         )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
@@ -4124,20 +4379,17 @@ class MainWindow(QMainWindow):
 
         preset = self.config["presets"][index]
 
-        hotkey, ok = QInputDialog.getText(
-            self,
+        dialog = HotkeyPromptDialog(
             i18n.t("Клавиша пресета"),
-            i18n.t(
-                "Горячая клавиша для «{v0}»: пример ctrl+alt+1",
-                v0=preset.get("name", "Unnamed"),
-            ),
-            text=preset.get("hotkey", ""),
+            i18n.t("Нажмите сочетание для «{v0}».", v0=preset.get("name", "Unnamed")),
+            preset.get("hotkey", ""),
+            self,
         )
 
-        if not ok:
+        if dialog.exec_() != QDialog.Accepted:
             return
 
-        preset["hotkey"] = hotkey.strip()
+        preset["hotkey"] = dialog.hotkey()
 
         self._save_config()
         self.refresh_preset_combo()

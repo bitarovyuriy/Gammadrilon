@@ -48,6 +48,15 @@ SETTINGS = {
 #: отличить от пользовательской — она осталась бы в системе навсегда и молча.
 CLONE_MARK = "Gammadrilon"
 
+#: стандартные схемы Windows. Нужны как последний вариант, когда свою копию
+#: надо убрать, а исходную схему по имени уже не узнать (её переименовали или
+#: удалили): активную копию Windows не даёт удалить, пока не выбран другой план.
+DEFAULT_SCHEMES = (
+    "381B4222-F694-41F0-9685-FF5BB260DF2E",  # Сбалансированная
+    "8C5E7FDA-E8BF-4A96-9A85-A6E23A8C635C",  # Высокая производительность
+    "A1841308-3541-4FAB-BC81-F71556F20B4A",  # Экономия энергии
+)
+
 # --------------------------------------------------------------------------
 # Профили
 # --------------------------------------------------------------------------
@@ -290,27 +299,102 @@ def _is_own_clone(scheme_guid: str) -> bool:
         return False
 
 
-def list_clones() -> list[dict]:
-    """Свои копии схем питания, оставшиеся в системе: ``[{guid, name, active}]``.
+def list_clones(include_tracked: bool = False) -> list[dict]:
+    """Наши копии схем питания, оставшиеся без присмотра: ``[{guid, name, active}]``.
 
-    Нужны ровно для одного случая: файл состояния пропал или повреждён, и копия
-    осталась жить. Раньше о ней никто и никогда не узнавал — приложение считало,
-    что профиль не применён, а схема с нашими настройками висела в списке Windows.
+    Копию, которую помнит целый файл состояния (``clone_scheme``), остатком не
+    считаем: это рабочий профиль, его нельзя ни показывать как мусор, ни убирать.
+    Иначе вкладка CPU каждый раз сообщала бы о копии, которую сама же и создала.
+
+    ``include_tracked=True`` — перечислить все копии, включая рабочую (нужно
+    уборке после применения профиля: прошлая копия как раз числится в state).
     """
     active = ""
     try:
         active = get_active_scheme()
     except OSError:
         pass
+    keep = ""
+    if not include_tracked:
+        keep = str((load_state() or {}).get("clone_scheme") or "").upper()
     out = []
     for guid in list_schemes():
         try:
             name = scheme_name(guid)
         except OSError:
             continue
-        if name.startswith(CLONE_MARK):
+        if name.startswith(CLONE_MARK) and guid.upper() != keep:
             out.append({"guid": guid, "name": name, "active": guid == active})
     return out
+
+
+def _scheme_name_safe(scheme_guid: str) -> str:
+    """Имя схемы или "" — для выбора исходной, где отказ не должен ронять уборку."""
+    try:
+        return scheme_name(scheme_guid)
+    except OSError:
+        return ""
+
+
+def original_for_clone(clone_guid: str, state: Optional[dict] = None) -> str:
+    """Обычная схема, в которую вернуться, если копия осталась без state.
+
+    Порядок: исходная из state (если жива и сама не наша копия) → схема с тем же
+    именем без метки → стандартная схема Windows → любая не наша. Пустая строка —
+    в системе не осталось ни одной обычной схемы (крайний случай).
+    """
+    st = state or {}
+    try:
+        schemes = list_schemes()
+    except OSError:
+        schemes = []
+    if not schemes:
+        return ""
+    by_guid = {g.upper(): g for g in schemes}
+
+    def usable(guid: str) -> bool:
+        real = by_guid.get((guid or "").upper())
+        return bool(real) and not _is_own_clone(real)
+
+    orig = str(st.get("original_scheme") or "")
+    if usable(orig):
+        return by_guid[orig.upper()]
+
+    # имя копии помнит, от какой схемы она сделана: «Gammadrilon — X» -> «X»
+    base = display_scheme_name(_scheme_name_safe(clone_guid))
+    if base:
+        for g in schemes:
+            if not _is_own_clone(g) and _scheme_name_safe(g).strip() == base:
+                return g
+    for g in DEFAULT_SCHEMES:
+        if g.upper() in by_guid and not _is_own_clone(by_guid[g.upper()]):
+            return by_guid[g.upper()]
+    for g in schemes:
+        if not _is_own_clone(g):
+            return g
+    return ""
+
+
+def _repair_state_original(st: dict) -> tuple[dict, bool]:
+    """Исправить state, в котором ``original_scheme`` — наша же старая копия.
+
+    Такие state уже живут у пользователей: копия когда-то была сделана с копии, и
+    «исходной» записалась она же. Откат тогда возвращал не обычную схему, а ещё
+    один «Gammadrilon — …», который потом нельзя было удалить. Ищем настоящую
+    исходную: по имени рабочей копии без метки, затем стандартную Windows.
+
+    Возвращает ``(state, исправлен?)`` — новый словарь, если что-то поменялось.
+    """
+    orig = str(st.get("original_scheme") or "")
+    if not orig or not _is_own_clone(orig):
+        return st, False
+    clone = str(st.get("clone_scheme") or "")
+    fixed = original_for_clone(clone or orig, {"original_scheme": ""})
+    if fixed and fixed.upper() != orig.upper() and not _is_own_clone(fixed):
+        out = dict(st)
+        out["original_scheme"] = fixed
+        return out, True
+    return st, False
 
 
 def remove_clone(scheme_guid: str) -> tuple[bool, str]:
@@ -328,15 +412,51 @@ def remove_clone(scheme_guid: str) -> tuple[bool, str]:
 
 
 def cleanup_clones() -> dict:
-    """Убрать все свои оставшиеся копии: ``{removed, failed}`` (guid'ы копий)."""
+    """Убрать все наши копии схем: ``{removed, failed, activated}``.
+
+    Если активна именно наша копия (файл состояния потерян), сначала возвращаем
+    обычную схему: активную схему Windows удалить не даёт, и раньше такая копия
+    оставалась в списке навсегда. ``activated`` — GUID схемы, на которую вернулись.
+    """
     removed, failed = [], {}
-    for clone in list_clones():
+    raw = load_state() or {}
+    old_orig = str(raw.get("original_scheme") or "").upper()
+    st, repaired = _repair_state_original(raw)
+    if repaired:
+        try:
+            save_state(st)
+        except OSError:
+            # файл не обновился — старую «исходную» копию не удаляем, иначе
+            # откат по state будет ссылаться на несуществующую схему
+            repaired = False
+    keep = {str(st.get("clone_scheme") or "").upper(),
+            str(st.get("original_scheme") or "").upper()}
+    if not repaired and old_orig and _is_own_clone(old_orig):
+        keep.add(old_orig)
+    targets = [c for c in list_clones(include_tracked=True)
+               if c["guid"].upper() not in keep]
+    activated = ""
+    if targets:
+        try:
+            active = get_active_scheme()
+        except OSError:
+            active = ""
+        active_clone = next((c for c in targets if c["guid"] == active), None)
+        if active_clone is not None:
+            orig = original_for_clone(active_clone["guid"], st)
+            if orig and orig != active and set_active_scheme(orig):
+                activated = orig
+            else:
+                failed[active_clone["guid"]] = i18n.t(
+                    "копия сейчас активна, а вернуть обычную схему не удалось")
+                targets = [c for c in targets if c["guid"] != active_clone["guid"]]
+    for clone in targets:
         ok, note = remove_clone(clone["guid"])
         if ok:
             removed.append(clone["guid"])
         else:
             failed[clone["guid"]] = note
-    return {"removed": removed, "failed": failed}
+    return {"removed": removed, "failed": failed, "activated": activated}
 
 
 # --------------------------------------------------------------------------
@@ -425,6 +545,10 @@ def state_snapshot() -> dict:
     active = get_active_scheme()
     state, problem = read_state_report()
     state = state or {}
+    if state:
+        # state мог записать «исходной» нашу же старую копию — показываем
+        # настоящую исходную, иначе описание профиля сравнивает не с тем
+        state = _repair_state_original(state)[0]
     data: dict = {
         "active_scheme": active,
         "active_is_clone": _is_own_clone(active),
@@ -478,21 +602,20 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
 
     prev = load_state() or {}
     current = get_active_scheme()
-    prev_clone = prev.get("clone_scheme")
-    prev_original = prev.get("original_scheme")
 
-    # активна наша копия, а state знает, от какой схемы она сделана:
-    # не клонируем клон, а обновляем его — имя и original_scheme не портятся
-    reuse = bool(
-        prev_clone
-        and prev_clone == current
-        and prev_original
-        and not _is_own_clone(prev_original)
-    )
-    if reuse:
-        original, clone = prev_original, prev_clone
-        rename_scheme(clone, clone_name(original))
+    if _is_own_clone(current):
+        # активна наша копия, а state её не помнит (потерян/повреждён) или помнит:
+        # профиль пишем в неё саму, а не клонируем клон. Иначе имя растёт
+        # гармошкой «Gammadrilon — Gammadrilon — …», а в списке схем Windows
+        # копится по схеме на каждое применение.
+        reuse = True
+        clone = current
+        original = original_for_clone(current, prev)
+        if original.upper() == clone.upper():
+            original = ""       # исходную узнать не удалось — вернёмся к переименованию
+        rename_scheme(clone, clone_name(original or clone))
     else:
+        reuse = False
         original = current
         clone = duplicate_scheme(original)
         # метка в имени копии: её видно в панели управления Windows и по ней потом
@@ -518,16 +641,6 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
             delete_scheme(clone)
         raise
 
-    # прошлая копия больше не активна — убираем её, чтобы система не копила
-    # схемы после каждого применения профиля
-    if (
-        not reuse
-        and prev_clone
-        and prev_clone not in (clone, original)
-        and _is_own_clone(prev_clone)
-    ):
-        delete_scheme(prev_clone)
-
     state = {
         "version": 1,
         "original_scheme": original,
@@ -538,6 +651,17 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
         "applied_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     save_state(state)
+
+    # В системе не должно оставаться других наших копий. Одну прошлую копию
+    # убирал и прежний код, но остатки от старых версий и потерянного state
+    # оставались жить в списке схем Windows — теперь вычищаем всё лишнее.
+    try:
+        for leftover in list_clones(include_tracked=True):
+            guid = leftover["guid"]
+            if guid.upper() not in (clone.upper(), (original or "").upper()):
+                delete_scheme(guid)
+    except Exception:  # noqa: BLE001
+        pass
     return state
 
 
@@ -568,13 +692,30 @@ def restore_report(state: Optional[dict] = None) -> dict:
             note = f"{note}. {extra}" if note else extra
         return {"ok": not note, "applied": False, "note": note, "clones": clones}
 
+    st, repaired = _repair_state_original(st)
+    if repaired:
+        try:
+            save_state(st)
+        except OSError:
+            pass        # откат важнее: файл обновится при следующей уборке
+
     problems = []
     orig = st.get("original_scheme")
     clone = st.get("clone_scheme")
     if orig and not set_active_scheme(orig):
         problems.append(i18n.t("не удалось вернуть исходную схему {v0}", v0=orig))
-    if clone and clone != orig and not delete_scheme(clone):
-        problems.append(i18n.t("не удалось удалить клон схемы {v0}", v0=clone))
+    if clone and clone != orig:
+        if delete_scheme(clone):
+            pass
+        elif not orig:
+            # исходную схему узнать не удалось, а копию нельзя удалить, пока она
+            # активна: снимаем метку, чтобы она осталась обычной схемой, а не
+            # вечным «Gammadrilon — …» в списке Windows
+            base = display_scheme_name(_scheme_name_safe(clone)) or i18n.t("схема питания")
+            if not rename_scheme(clone, base):
+                problems.append(i18n.t("не удалось удалить клон схемы {v0}", v0=clone))
+        else:
+            problems.append(i18n.t("не удалось удалить клон схемы {v0}", v0=clone))
     if problems:
         # state не трогаем: попробуем откатить снова, а не «забудем» остаток
         return {"ok": False, "applied": True, "note": "; ".join(problems), "clones": []}

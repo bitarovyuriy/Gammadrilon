@@ -968,6 +968,10 @@ class PowerWindow(QWidget):
             self.btn_clean_clones.setVisible(False)
             return
         self._show_clones(self._clones)
+        # Свои копии схем — мусор приложения, а не выбор пользователя: убираем
+        # сразу, не заставляя искать мелкую кнопку. Если что-то не удалится
+        # (например, не нашлась обычная схема), кнопка останется для повтора.
+        self._clean_clones()
 
     def _show_clones(self, rows) -> None:
         """Показать, что в системе остались наши копии схем питания."""
@@ -1015,29 +1019,36 @@ class PowerWindow(QWidget):
         rep = rep if isinstance(rep, dict) else {"removed": [], "failed": {}}
         removed = list(rep.get("removed") or [])
         failed = dict(rep.get("failed") or {})
+        activated = rep.get("activated") or ""
         if failed:
             reasons = "; ".join(f"{guid}: {note}" for guid, note in failed.items())
             self._set_bottom_status(
                 i18n.t("Убрано копий: {v0}. Не убрано: {v1}", v0=len(removed), v1=reasons),
                 ok=False,
             )
+        elif not removed:
+            # нечего убирать (или осталась только рабочая копия профиля) —
+            # не засоряем строку статуса пустой уборкой
+            self.btn_clean_clones.setVisible(False)
         else:
-            self._set_bottom_status(
-                i18n.t("Убрано своих копий схем: {v0}.", v0=len(removed)), ok=True
-            )
+            text = i18n.t("Убрано своих копий схем: {v0}.", v0=len(removed))
+            if activated:
+                text += " " + i18n.t("Активной снова стала обычная схема.")
+            self._set_bottom_status(text, ok=True)
         # остались неубранные копии — кнопка нужна для повторной попытки
         self.btn_clean_clones.setVisible(bool(failed))
-        try:
-            import gd_journal
+        if removed or failed:
+            try:
+                import gd_journal
 
-            gd_journal.record("cpu_profile", i18n.t("уборка копий схем питания"),
-                              i18n.t("копий: {v0}", v0=len(removed) + len(failed)),
-                              i18n.t("убрано: {v0}", v0=len(removed)),
-                              why=i18n.t("явная уборка остатков") if not failed
-                              else "; ".join(failed.values()),
-                              source=i18n.t("вкладка CPU"), reversible=False)
-        except Exception:  # noqa: BLE001
-            pass
+                gd_journal.record("cpu_profile", i18n.t("уборка копий схем питания"),
+                                  i18n.t("копий: {v0}", v0=len(removed) + len(failed)),
+                                  i18n.t("убрано: {v0}", v0=len(removed)),
+                                  why=i18n.t("явная уборка остатков") if not failed
+                                  else "; ".join(failed.values()),
+                                  source=i18n.t("вкладка CPU"), reversible=False)
+            except Exception:  # noqa: BLE001
+                pass
         if removed:
             import gd_toast
 

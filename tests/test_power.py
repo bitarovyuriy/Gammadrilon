@@ -24,6 +24,7 @@ def _fake_system(monkeypatch):
 
     monkeypatch.setattr(gd_power, "load_state", lambda: holder["state"])
     monkeypatch.setattr(gd_power, "save_state", lambda st: holder.__setitem__("state", st))
+    monkeypatch.setattr(gd_power, "clear_state", lambda: True)
     monkeypatch.setattr(gd_power, "get_active_scheme", lambda: calls["active"])
     monkeypatch.setattr(gd_power, "scheme_name", lambda guid: schemes.get(guid, ""))
     monkeypatch.setattr(gd_power, "list_schemes", lambda: list(schemes))
@@ -152,3 +153,120 @@ def test_display_name_drops_cut_marker_tail():
 def test_clone_name_fits_windows_limit(monkeypatch):
     monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "Д" * 200)
     assert len(gd_power.clone_name("X")) <= 80
+
+
+def test_apply_on_orphan_clone_reuses_it(monkeypatch):
+    """State потерян, но активна наша копия: пишем в неё, а не клонируем клон."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    schemes["CLONE-OLD"] = "Gammadrilon — Сбалансированная"
+    calls["active"] = "CLONE-OLD"
+    holder["state"] = None
+
+    state = gd_power.apply_profile("eco")
+
+    assert calls["duplicate"] == [], "новую копию из старой копии делать нельзя"
+    assert state["clone_scheme"] == "CLONE-OLD"
+    assert state["original_scheme"] == "ORIG", "исходную нашли по имени без метки"
+    assert schemes["CLONE-OLD"].count(gd_power.CLONE_MARK) == 1
+    assert schemes["CLONE-OLD"] == "Gammadrilon — Сбалансированная"
+
+
+def test_apply_sweeps_orphan_clones(monkeypatch):
+    """Применение профиля убирает все чужие наши копии, а не только прошлую."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    schemes["CLONE-OLD-1"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-OLD-2"] = "Gammadrilon — Сбалансированная"
+    holder["state"] = None
+
+    state = gd_power.apply_profile("normal")
+
+    assert sorted(calls["deleted"]) == ["CLONE-OLD-1", "CLONE-OLD-2"]
+    assert state["clone_scheme"] in schemes
+    assert [g for g in schemes if g.startswith("CLONE-")] == [state["clone_scheme"]]
+
+
+def test_cleanup_switches_away_from_active_clone(monkeypatch):
+    """Активную копию Windows не удаляет: сначала возвращаем обычную схему."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    schemes["CLONE-1"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-2"] = "Gammadrilon — Сбалансированная"
+    calls["active"] = "CLONE-2"
+    holder["state"] = None
+
+    rep = gd_power.cleanup_clones()
+
+    assert rep["activated"] == "ORIG"
+    assert calls["active"] == "ORIG"
+    assert sorted(rep["removed"]) == ["CLONE-1", "CLONE-2"]
+    assert not rep["failed"]
+    assert "CLONE-1" not in schemes and "CLONE-2" not in schemes
+    assert "ORIG" in schemes
+
+
+def test_cleanup_keeps_working_clone(monkeypatch):
+    """Копию применённого профиля уборка не трогает: по ней делается откат."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    state = gd_power.apply_profile("eco")
+    schemes["CLONE-OLD"] = "Gammadrilon — Сбалансированная"
+
+    rep = gd_power.cleanup_clones()
+
+    assert rep["removed"] == ["CLONE-OLD"]
+    assert state["clone_scheme"] in schemes
+    assert holder["state"]["clone_scheme"] == state["clone_scheme"]
+
+
+def test_list_clones_hides_tracked_clone(monkeypatch):
+    """Рабочая копия профиля — не «остаток», её не показываем и не считаем мусором."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    state = gd_power.apply_profile("eco")
+    schemes["CLONE-OLD"] = "Gammadrilon — Сбалансированная"
+
+    rows = gd_power.list_clones()
+    assert [r["guid"] for r in rows] == ["CLONE-OLD"]
+    assert [r["guid"] for r in gd_power.list_clones(include_tracked=True)] == [
+        state["clone_scheme"], "CLONE-OLD"]
+
+
+def test_cleanup_repairs_state_pointing_to_clone(monkeypatch):
+    """Старый state записал «исходной» нашу же копию: уборка чинит её и удаляет."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    gd_power.apply_profile("eco")
+    schemes["CLONE-BAD"] = "Gammadrilon — Gammadrilon — Gammadrilo"
+    bad_state = dict(holder["state"])
+    bad_state["original_scheme"] = "CLONE-BAD"
+    holder["state"] = bad_state
+
+    rep = gd_power.cleanup_clones()
+
+    assert rep["removed"] == ["CLONE-BAD"]
+    assert holder["state"]["original_scheme"] == "ORIG"
+    assert "CLONE-BAD" not in schemes
+
+
+def test_apply_repairs_original_that_is_clone(monkeypatch):
+    """Повторное применение не тащит дальше испорченную «исходную» из state."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    gd_power.apply_profile("eco")
+    schemes["CLONE-BAD"] = "Gammadrilon — Сбалансированная"
+    bad_state = dict(holder["state"])
+    bad_state["original_scheme"] = "CLONE-BAD"
+    holder["state"] = bad_state
+
+    state = gd_power.apply_profile("normal")
+
+    assert state["original_scheme"] == "ORIG"
+    assert "CLONE-BAD" in calls["deleted"]
+
+
+def test_restore_without_original_strips_mark(monkeypatch):
+    """Исходную схему не вернуть, а копию нельзя удалить — снимаем метку."""
+    schemes, holder, calls = _fake_system(monkeypatch)
+    schemes["CLONE-1"] = "Gammadrilon — Сбалансированная"
+    calls["active"] = "CLONE-1"
+    monkeypatch.setattr(gd_power, "delete_scheme", lambda guid: False)
+
+    rep = gd_power.restore_report({"clone_scheme": "CLONE-1", "original_scheme": ""})
+
+    assert rep["ok"] is True, rep
+    assert schemes["CLONE-1"] == "Сбалансированная"
