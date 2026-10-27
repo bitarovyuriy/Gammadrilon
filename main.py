@@ -2988,7 +2988,7 @@ class MainWindow(QMainWindow):
         if load is not None:
             cpu += f" · {load:.0f}%"
         if s.get("temp_c"):
-            cpu += f" · {s['temp_c']:.0f}°C"
+            cpu += f" · {s['temp_c']:.0f} °C"
         self._sb_cpu.setText(cpu)
 
         ram_pct = snap.get("ram")
