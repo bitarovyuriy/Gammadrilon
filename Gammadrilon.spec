@@ -20,7 +20,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('icon.ico', '.')],
+    datas=[('icon.ico', '.'), ('vendor/lhm', 'vendor/lhm')],
     hiddenimports=MODULES,
     hookspath=[],
     hooksconfig={},

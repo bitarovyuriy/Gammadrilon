@@ -50,7 +50,8 @@ _activity = {"visible": True, "gpu_focus": False}
 _dns_request = False          # кто-то попросил разово прочитать DNS (см. request_dns)
 
 _EMPTY = {
-    "cpu": {"mhz": None, "perf_pct": None, "load_pct": None, "temp_c": None},
+    "cpu": {"mhz": None, "perf_pct": None, "load_pct": None,
+            "temp_c": None, "vrm_c": None},
     "ram": None,
     "gpu": None,
     "dns": None,

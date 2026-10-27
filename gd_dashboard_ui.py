@@ -332,6 +332,8 @@ class CpuTile(Tile):
             parts.append(i18n.t("{v0:.2f} ГГц", v0=cpu["mhz"] / 1000))
         if cpu.get("temp_c"):
             parts.append(i18n.t("w.gpu.temp", v0=cpu["temp_c"]))
+        if cpu.get("vrm_c"):
+            parts.append(i18n.t("w.vrm.temp", v0=cpu["vrm_c"]))
         self.line.setText(" · ".join(parts) or i18n.t("home.no_data"))
 
 

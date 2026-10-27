@@ -16,6 +16,21 @@ if ($mainSource -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') {
 $appVersion = $Matches[1]
 Write-Host "Версия: $appVersion" -ForegroundColor Cyan
 
+# Хелпер датчиков: C# + LibreHardwareMonitor. Собирается тут же, чтобы exe в
+# vendor/lhm не мог разойтись с исходником.
+Write-Host "== Хелпер датчиков (C#) ==" -ForegroundColor Cyan
+# csc ищем, а не прописываем путём: номер версии .NET в тексте сборки
+# ломает проверку «версия живёт только в APP_VERSION» (tests/test_meta.py).
+$csc = (Get-ChildItem (Join-Path $env:WINDIR "Microsoft.NET/Framework64") -Filter csc.exe -Recurse -ErrorAction SilentlyContinue |
+    Sort-Object FullName -Descending | Select-Object -First 1).FullName
+$sensorSrc = Join-Path $projectRoot "sensors\GammadrilonSensors.cs"
+$sensorOut = Join-Path $projectRoot "vendor/lhm\GammadrilonSensors.exe"
+$sensorLib = Join-Path $projectRoot "vendor/lhm\LibreHardwareMonitorLib.dll"
+if (-not (Test-Path $csc)) { throw "Не найден csc.exe (нужен .NET Framework 4.x)" }
+if (-not (Test-Path $sensorSrc)) { throw "Не найден $sensorSrc" }
+& $csc /nologo /target:exe /platform:x64 "/out:$sensorOut" "/r:$sensorLib" $sensorSrc
+if ($LASTEXITCODE -ne 0) { throw "Хелпер датчиков не собрался" }
+
 Write-Host "== Портативная сборка (onedir) ==" -ForegroundColor Cyan
 & $py -m PyInstaller --clean --noconfirm Gammadrilon.spec
 if ($LASTEXITCODE -ne 0) { throw "Сборка onedir завершилась с ошибкой" }

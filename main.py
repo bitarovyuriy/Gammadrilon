@@ -458,6 +458,10 @@ RUNTIME_SETTINGS: dict = {
     "language": None,          # None — язык по системе (см. i18n.detect)
     "theme": "dark",
     "agent_api": False,
+    # температуры через LibreHardwareMonitor: хелпер поднимается отдельно
+    "sensors": True,
+    # какой канал платы считать VRM (0 — не показывать)
+    "sensors_vrm_channel": 0,
     "zapret_path": "",
 }
 
@@ -1795,10 +1799,10 @@ class MainWindow(QMainWindow):
         home_idx = self._key_to_index.get("tab.home")
         if home_idx is not None and home_idx != self.tabs.currentIndex():
             self.tabs.setCurrentIndex(home_idx)
+        self._start_sensor_helper()
 
         # автолимит GPU: после старта вернуть лимит по настройке (фон, один раз)
         QTimer.singleShot(1500, self._gpu_autostart_check)
-
         # локальный API: поднимаем только если пользователь включал его сам
         if bool(self.config.get("settings", {}).get("agent_api", False)):
             QTimer.singleShot(1200, self._agent_autostart)
@@ -2983,6 +2987,8 @@ class MainWindow(QMainWindow):
             cpu += i18n.t(" {v0:.2f} ГГц", v0=mhz / 1000)
         if load is not None:
             cpu += f" · {load:.0f}%"
+        if s.get("temp_c"):
+            cpu += f" · {s['temp_c']:.0f}°C"
         self._sb_cpu.setText(cpu)
 
         ram_pct = snap.get("ram")
@@ -3550,8 +3556,8 @@ class MainWindow(QMainWindow):
             "cpu_perf_pct": cpu.get("perf_pct"),
             "cpu_load_pct": cpu.get("load_pct"),
             "ram_pct": gd_metrics.ram(),
-            "temp_c": None,
-            "note": i18n.t("температура CPU на этой системе недоступна без доп. ПО"),
+            "temp_c": cpu.get("temp_c"),
+            "vrm_c": cpu.get("vrm_c"),
         }}
 
     def _agent_journal(self, params: dict, req) -> dict:
@@ -4014,6 +4020,28 @@ class MainWindow(QMainWindow):
         if idx is not None:
             self.tabs.setCurrentIndex(idx)
         self.show_window()
+
+    def _start_sensor_helper(self):
+        """Поднять хелпер температур (LibreHardwareMonitor + драйвер PawnIO).
+
+        Отдельный процесс, потому что драйвер требует прав администратора, а окно
+        работает обычным пользователем: хелпер сам уходит, когда процесс окна
+        завершится (получает наш PID через `--parent`). Если драйвера нет или
+        настройка выключена — молча живём без температур, CPU-плитка покажет «—».
+        """
+        settings = self.config.get("settings", {}) or {}
+        try:
+            import gd_sensors
+
+            gd_sensors.set_vrm_channel(int(settings.get("sensors_vrm_channel") or 0))
+            if not bool(settings.get("sensors", True)):
+                return
+            if not gd_sensors.driver_present():
+                gd_boot.mark("sensors:no-driver")
+                return
+            gd_boot.mark("sensors:started" if gd_sensors.start() else "sensors:failed")
+        except Exception:  # noqa: BLE001 — без температур приложение обязано работать
+            gd_boot.mark("sensors:error")
 
     def _gpu_autostart_check(self):
         """Старт приложения: вернуть лимит GPU по настройке «применять при запуске».
