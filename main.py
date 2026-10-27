@@ -76,7 +76,7 @@ from PyQt5.QtWidgets import (
 
 
 APP_NAME = gd_paths.APP_NAME
-APP_VERSION = "v3.4"
+APP_VERSION = "v3.5"
 CONFIG_FILE = "presets.json"
 ICON_FILE = "icon.ico"
 
@@ -111,6 +111,7 @@ CONFIG_SAVE_DELAY_MS = 400
 
 # иконки пунктов сайдбара (gd_icons)
 SIDE_ICONS = {
+    "tab.home": "home",
     "tab.cpu": "cpu",
     "tab.gpu": "gpu",
     "tab.gamma": "gamma",
@@ -2265,6 +2266,11 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.left_panel)
 
         # ---------- вкладки ----------
+        # главный экран — первым: он стартовый, а порядок вызовов _add_page
+        # задаёт индекс в стеке
+        self._add_page(None, "tab.home", factory=self._make_home_page)
+        gd_boot.mark("page:home")
+
         self._add_page(gamma_page, "tab.gamma")
         gd_boot.mark("page:gamma")
 
@@ -2340,6 +2346,7 @@ class MainWindow(QMainWindow):
                 w.deleteLater()
         self._nav_items = {}
         layout = (
+            ("page", "tab.home"),
             ("grp", "side.power"), ("page", "tab.cpu"), ("page", "tab.gpu"),
             ("grp", "side.system"), ("page", "tab.gamma"), ("page", "tab.rules"),
             ("page", "tab.utils"), ("page", "tab.dns"), ("page", "tab.zapret"),
@@ -2361,8 +2368,10 @@ class MainWindow(QMainWindow):
         if tools is not None:
             # под пунктами меню, над индикатором службы питания
             self._side_layout.addWidget(tools)
-        # бейдж GPU берётся из общего кэша: даём фоновому сборщику прогреться
-        QTimer.singleShot(1500, self._refresh_gpu_badge)
+            # пункты меню пересозданы — цепочку Tab надо собрать заново
+            self._fix_tab_order()
+            # бейдж GPU берётся из общего кэша: даём фоновому сборщику прогреться
+            QTimer.singleShot(1500, self._refresh_gpu_badge)
 
     def _key_for_widget(self, widget) -> str:
         """Ключ пункта сайдбара для виджета (обёртки) страницы."""
@@ -2781,6 +2790,13 @@ class MainWindow(QMainWindow):
         return widget
 
     # -- фабрики ленивых страниц: импорт модуля вкладки и сборка экрана ----
+    def _make_home_page(self):
+        """Главный экран: сетка виджетов поверх подсистем (gd_dashboard_ui)."""
+        from gd_dashboard_ui import DashboardWidget
+
+        self._home_page = DashboardWidget(host=self)
+        return self._home_page
+
     def _make_rules_page(self):
         from gd_rules_ui import RulesWidget
 
@@ -2846,9 +2862,12 @@ class MainWindow(QMainWindow):
             keep.append(w)
             ring.append(w)
         # isVisibleTo(self), а не isVisible(): в __init__ окно ещё не показано, и все
-        # дети «невидимы». isVisibleTo учитывает только явное скрытие — скрытые
-        # страницы стека (isHidden) отсеиваются, а видимые виджеты остаются.
-        stops = [x for x in ring if x.focusPolicy() != Qt.NoFocus and x.isVisibleTo(self)]
+        # дети «невидимы». isVisibleTo учитывает только явное скрытие.
+        # виджеты невидимых страниц стека тоже входят в кольцо: иначе порядок
+        # чинится только у стартовой вкладки, а у остальных Tab уходит в кнопки окна
+        stops = [x for x in ring
+                 if x.focusPolicy() != Qt.NoFocus
+                 and (self.tabs.isAncestorOf(x) or x.isVisibleTo(self))]
         page = [x for x in stops if self.tabs.isAncestorOf(x)]
         tail = [x for x in stops if x.objectName() == "ModeChip"
                 or x.objectName().startswith("Win") or x.objectName() == "TitleBtn"]

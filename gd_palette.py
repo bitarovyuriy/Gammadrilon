@@ -117,22 +117,24 @@ class CommandPalette(QDialog):
              lambda: mw.on_gpu_profile("restore")),
             (i18n.t("pal.perf_toggle"), "performance toggle boost eco ограничение производительность переключить",
              lambda: mw._on_perf_toggle()),
+            (i18n.t("pal.open_home"), "home главный старт экран виджеты плитки dashboard start",
+             lambda: self._open_tab_key("tab.home")),
             (i18n.t("pal.open_gamma"), "open tab gamma гамма цвет окно",
-             lambda: self._open_tab(0)),
+             lambda: self._open_tab_key("tab.gamma")),
             (i18n.t("pal.open_cpu"), "open tab cpu питание процессор",
-             lambda: self._open_tab(1)),
+             lambda: self._open_tab_key("tab.cpu")),
             (i18n.t("pal.open_gpu"), "open tab gpu питание видеокарта",
-             lambda: self._open_tab(2)),
+             lambda: self._open_tab_key("tab.gpu")),
             (i18n.t("pal.open_rules"), "open tab rules правила",
-             lambda: self._open_tab(3)),
+             lambda: self._open_tab_key("tab.rules")),
             (i18n.t("pal.open_utils"), "open tab utils утилиты очистка память",
-             lambda: self._open_tab(4)),
+             lambda: self._open_tab_key("tab.utils")),
             (i18n.t("pal.open_dns"), "open tab dns резолвер латентность",
-             lambda: self._open_tab(5)),
+             lambda: self._open_tab_key("tab.dns")),
             (i18n.t("pal.open_zapret"), "open tab zapret dpi обход discord youtube winws",
-             lambda: self._open_tab(6)),
+             lambda: self._open_tab_key("tab.zapret")),
             (i18n.t("pal.open_agent"), "open tab agent api агент локальный инструменты шлюз",
-             lambda: self._open_tab(7)),
+             lambda: self._open_tab_key("tab.agent")),
             (i18n.t("pal.theme"), "theme тема светлая тёмная оформление",
              lambda: self.mw.toggle_theme()),
             (i18n.t("pal.language"), "language язык english русский",
@@ -228,6 +230,19 @@ class CommandPalette(QDialog):
     def _open_tab(self, index: int):
         self.mw.tabs.setCurrentIndex(index)
         self.mw.show_window()
+
+    def _open_tab_key(self, key: str):
+        """Открыть вкладку по ключу, а не по индексу.
+
+        Индекс меняется, как только перед существующими появляется новая
+        страница (так случилось с главным экраном), ключ — нет.
+        """
+        mw = self.mw
+        idx = mw._key_to_index.get(key)
+        if idx is None:
+            return
+        mw.tabs.setCurrentIndex(idx)
+        mw.show_window()
 
     def _goto(self, page_key: str, attr: str = ""):
         """Поиск по настройкам: открыть страницу и поставить фокус в поле.

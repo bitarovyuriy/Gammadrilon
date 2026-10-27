@@ -336,6 +336,32 @@ QLabel#StatusDot {
     font-size: 10px;
 }
 
+/* === главный экран: плитки ================================================ */
+QFrame#Card[edit="true"] {
+    border: 1px dashed @INK2@;
+}
+
+QFrame#Card[edit="true"]:hover {
+    border-color: @INK@;
+}
+
+/* ручка ширины: полоса у правого края плитки, видна только в правке */
+QFrame#TileResize {
+    background: @TRACK@;
+    border: none;
+    border-radius: @RADIUS_SMALL@;
+}
+
+QFrame#TileResize:hover {
+    background: @INK2@;
+}
+
+/* место вставки при перетаскивании: вертикальная линия в строке */
+QFrame#DropLine {
+    background: @INK@;
+    border: none;
+}
+
 /* === титлбар ============================================================== */
 QWidget#TitleBar {
     background: @SURFACE@;

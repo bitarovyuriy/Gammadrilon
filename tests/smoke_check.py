@@ -45,6 +45,8 @@ except Exception:  # noqa: BLE001
 from PyQt5.QtGui import QFontDatabase  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
+import gd_dashboard  # noqa: E402
+import gd_dashboard_ui  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 import gd_metrics  # noqa: E402
 import gd_rules  # noqa: E402
@@ -317,6 +319,32 @@ try:
     pump(400)
 finally:
     gd_dns.current_state = _real_dns_state
+
+# --- главный экран: стартовая вкладка с плитками ----------------------------
+home_idx = win._key_to_index.get("tab.home")
+check("главный экран: вкладка есть и стоит первой", home_idx == 0, f"индекс={home_idx}")
+win.tabs.setCurrentIndex(home_idx or 0)
+pump(500)
+home = win._ensure_page("tab.home")
+check("главный экран: экран собран", isinstance(home, gd_dashboard_ui.DashboardWidget),
+      type(home).__name__)
+assert home is not None, "главный экран не собрался — дальше проверять нечего"
+check("главный экран: плитки на месте", len(getattr(home, "_tiles", {})) >= 4,
+      f"плиток={len(getattr(home, '_tiles', {}))}")
+_sums = [sum(int(t["w"]) for t in row["tiles"]) for row in home.layout_model["rows"]]
+check("главный экран: каждая строка набрана ровно на 12 колонок",
+      bool(_sums) and all(s == gd_dashboard.COLUMNS for s in _sums), str(_sums))
+check("главный экран: в обычном режиме кнопки правки скрыты",
+      not home.btn_add.isVisible() and not home.btn_reset.isVisible(),
+      f"каталог={home.btn_add.isVisible()}, сброс={home.btn_reset.isVisible()}")
+home.set_edit(True)
+pump(120)
+check("главный экран: «Правка» показывает каталог и сброс",
+      home.btn_add.isVisible() and home.btn_reset.isVisible(), "")
+home.set_edit(False)
+pump(120)
+win.tabs.setCurrentIndex(win._key_to_index["tab.gamma"])
+pump(300)
 
 # --- вкладка «Утилиты»: карточка обновлений ---
 try:
@@ -839,7 +867,10 @@ def _oname(x) -> str:
 
 check("обход Tab: меню первым, кнопки шапки и окна — последними",
       len(_ring) >= 8 and all(isinstance(x, gd_main.NavItem) for x in _ring[:6])
-      and _oname(_ring[-1]) == "WinClose" and _oname(_ring[-7]) == "ModeChip",
+      and _oname(_ring[-1]) == "WinClose"
+      and "ModeChip" in [_oname(x) for x in _ring[-9:]],
+      # число пунктов меню растёт (появился «Главный»), поэтому хвост проверяем
+      # поиском по окну, а не привязкой к конкретному индексу
       f"{[_oname(x) for x in _ring[:3]]} … {[_oname(x) for x in _ring[-3:]]}")
 
 _hits = []
