@@ -297,6 +297,9 @@ try:
     win.resize(win.compact_size)
     win.show()
     pump(1500)
+    check("окно: стартует на главном экране (прежняя вкладка не восстанавливается)",
+          win.tabs.currentIndex() == win._key_to_index.get("tab.home"),
+          f"индекс={win.tabs.currentIndex()}, home={win._key_to_index.get('tab.home')}")
     check("окно: при сборке окна DNS не читается (на старте нет netsh)",
           dns_reads["n"] == 0, f"чтений: {dns_reads['n']}")
     check("статусбар: DNS пуст, пока не спросили", win._sb_dns.text() == "DNS —",
@@ -331,6 +334,18 @@ check("главный экран: экран собран", isinstance(home, gd_
 assert home is not None, "главный экран не собрался — дальше проверять нечего"
 check("главный экран: плитки на месте", len(getattr(home, "_tiles", {})) >= 4,
       f"плиток={len(getattr(home, '_tiles', {}))}")
+_zap = getattr(home, "_tiles", {}).get("w.zapret")
+check("обход DPI: на плитке тумблер, список стратегий и три фильтра",
+      isinstance(_zap, gd_dashboard_ui.ZapretTile)
+      and isinstance(_zap.combo, gd_dashboard_ui.QComboBox)
+      and isinstance(_zap.btn_toggle, gd_dashboard_ui.QPushButton)
+      and set(_zap.chips) == {"ipset", "tcp", "udp"},
+      f"плитка={type(_zap).__name__}, "
+      f"фильтры={sorted(getattr(_zap, 'chips', {}) or {})}")
+check("обход DPI: плитка стоит широкой строкой (иначе контролы не влезают)",
+      _zap is not None and _zap.width() > _zap.minimumSizeHint().width(),
+      f"ширина={getattr(_zap, 'width', lambda: 0)()}, "
+      f"минимум={getattr(_zap, 'minimumSizeHint', lambda: None)()}")
 _sums = [sum(int(t["w"]) for t in row["tiles"]) for row in home.layout_model["rows"]]
 check("главный экран: каждая строка набрана ровно на 12 колонок",
       bool(_sums) and all(s == gd_dashboard.COLUMNS for s in _sums), str(_sums))
@@ -925,9 +940,9 @@ check("палитра: «яркость» открывает гамму и ст�
       f"вкладка={win._key_for_widget(win.tabs.currentWidget())!r}, "
       f"фокус={win.focusWidget() is win.brightness_slider}")
 _pal_g.deleteLater()
-check("вкладки: последняя вкладка запомнена в настройках",
-      win.config["settings"].get("last_page") == "tab.gamma",
-      repr(win.config["settings"].get("last_page")))
+check("вкладки: last_page больше не копится (старт всегда «Главный»)",
+      win.config["settings"].get("last_page") is None,
+      f"last_page={win.config['settings'].get('last_page')!r}")
 
 # --- 4.3.2 журнал: путь и записи копируются без перепечатки ------------------
 from gd_journal_ui import JournalDialog  # noqa: E402

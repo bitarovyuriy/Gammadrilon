@@ -30,6 +30,8 @@ ROW_HEIGHTS = {"S": 104, "M": 140, "L": 208}
 
 #: Каталог виджетов главного экрана. min_w/max_w — в колонках, kind — метрика,
 #: действие или список. max_w у всех плиток 12 (весь ряд), min_w — 3..6.
+#: min_h — минимальная высота строки: у плитки с управлением (обход DPI) внутри
+#: четыре ряда контролов, в короткую строку она не влезает.
 CATALOG: dict[str, dict] = {
     "w.cpu": {"min_w": 4, "max_w": 12, "kind": "metric"},
     "w.gpu": {"min_w": 4, "max_w": 12, "kind": "metric"},
@@ -38,14 +40,18 @@ CATALOG: dict[str, dict] = {
     "w.gpu_limit": {"min_w": 3, "max_w": 12, "kind": "action"},
     "w.gamma": {"min_w": 3, "max_w": 12, "kind": "action"},
     "w.dns": {"min_w": 4, "max_w": 12, "kind": "metric"},
-    "w.zapret": {"min_w": 4, "max_w": 12, "kind": "metric"},
+    "w.zapret": {"min_w": 5, "max_w": 12, "kind": "action", "min_h": "L"},
     "w.rules": {"min_w": 4, "max_w": 12, "kind": "list"},
     "w.journal": {"min_w": 4, "max_w": 12, "kind": "list"},
 }
 
 
 def default_layout() -> Layout:
-    """Раскладка по умолчанию: три строки, сумма ширин в каждой строке — 12."""
+    """Раскладка по умолчанию: три строки, сумма ширин в каждой — 12.
+
+    Обход DPI стоит отдельной строкой: у плитки четыре ряда контролов (тумблер,
+    стратегия, фильтры), рядом с чем-то ещё она обрезается.
+    """
     return {
         "version": 1,
         "rows": [
@@ -59,7 +65,7 @@ def default_layout() -> Layout:
                 {"id": "w.dns", "w": 6},
             ]},
             {"h": "M", "tiles": [
-                {"id": "w.gamma", "w": 12},
+                {"id": "w.zapret", "w": 12},
             ]},
         ],
     }

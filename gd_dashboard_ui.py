@@ -16,6 +16,7 @@ from typing import Any
 from PyQt5.QtCore import QPoint, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -578,29 +579,180 @@ class DnsTile(Tile):
 
 @_tile("w.zapret")
 class ZapretTile(Tile):
-    """Служба обхода DPI: работает или нет."""
+    """Обход DPI с управлением: тумблер, стратегия, GameFilter и IPSet.
+
+    Своей логики у плитки нет: действия уходят в экран «Обход DPI»
+    (:meth:`ZapretWidget.quick_start` и родня) — он держит хелпер, переосвоение и
+    перезапуск winws. Чтение — `gd_zapret.snapshot()` в фоне: на GUI-потоке он
+    подвесил бы весь главный экран.
+    """
 
     def build(self) -> None:
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(th.SPACE_S)
         self.value = QLabel(_dash())
         self.value.setObjectName("Value")
+        head.addWidget(self.value, 1)
+        self.btn_toggle = QPushButton(i18n.t("Включить"))
+        self.btn_toggle.setObjectName("Segment")
+        self.btn_toggle.setFixedHeight(24)
+        self.btn_toggle.clicked.connect(self._toggle)
+        head.addWidget(self.btn_toggle)
+        self.body.addLayout(head)
+
         self.line = QLabel(i18n.t("w.zapret.hint"))
         self.line.setObjectName("Hint")
-        self.body.addWidget(self.value)
-        self.body.addStretch(1)
         self.body.addWidget(self.line)
 
-    def refresh_slow(self) -> None:
-        try:
-            import gd_zapret
+        self.combo = QComboBox()
+        self.combo.setFixedHeight(26)
+        self.combo.setToolTip(i18n.t("Стратегия обхода: список general*.bat из папки zapret"))
+        # activated, а не currentIndexChanged: программная подстановка текущего
+        # значения не должна выглядеть как выбор человека
+        self.combo.activated[int].connect(self._pick_strategy)
+        self.body.addWidget(self.combo)
 
-            status = gd_zapret.service_status()
-            procs = gd_zapret.processes()
-        except Exception:  # noqa: BLE001 — sc query не ответил
-            self.value.setText(_dash())
+        row, self.chips = _chips(
+            [("ipset", "IPSet", False), ("tcp", "TCP", False), ("udp", "UDP", False)],
+            self._filter_pick,
+        )
+        self.chips["tcp"].setToolTip(i18n.t("GameFilter TCP: порты игр из general*.bat"))
+        self.chips["udp"].setToolTip(i18n.t("GameFilter UDP: порты игр из general*.bat"))
+        self.chips["ipset"].setToolTip(i18n.t("IPSet: список адресов lists\\ipset-all.txt"))
+        self.body.addLayout(row)
+
+        self._state: dict[str, Any] = {}
+        self._worker = None
+        self._loading = False
+        self._combo_ids: list[str] = []
+
+    # -- данные -------------------------------------------------------------
+    def _path(self) -> str:
+        """Папка zapret из настроек приложения (та же, что у вкладки)."""
+        host = getattr(self.board, "host", None)
+        try:
+            settings = (getattr(host, "config", {}) or {}).get("settings") or {}
+            return str(settings.get("zapret_path") or "")
+        except Exception:  # noqa: BLE001 — у тестового хоста конфига может не быть
+            return ""
+
+    def refresh_slow(self) -> None:
+        import gd_bg
+        import gd_zapret
+
+        if gd_bg.is_running(self._worker):
             return
-        running = status.get("state") == "running" or bool(procs)
+        path = self._path()
+        self._worker = gd_bg.submit(lambda: gd_zapret.snapshot(path),
+                                    self._state_done, parent=self)
+
+    def _state_done(self, snap) -> None:
+        if not isinstance(snap, dict):
+            return
+        self._state = snap
+        self._render_state()
+
+    def _running(self) -> bool:
+        snap = self._state or {}
+        return bool(snap.get("ours")) or snap.get("service_zapret") == "RUNNING"
+
+    def _render_state(self) -> None:
+        snap = self._state or {}
+        running = self._running()
         self.value.setText(i18n.t("w.zapret.on") if running else i18n.t("w.zapret.off"))
-        self.line.setText(i18n.t("w.zapret.processes", v0=len(procs)))
+        self.btn_toggle.setText(i18n.t("Выключить") if running else i18n.t("Включить"))
+
+        ours = snap.get("ours") or {}
+        current = str(ours.get("strategy") or snap.get("service_strategy") or "")
+        strategies = snap.get("strategies") or []
+        self._fill_combo(strategies, current)
+        names = {str(st.get("id")): str(st.get("name")) for st in strategies}
+
+        bits = []
+        if current:
+            bits.append(names.get(current, current))
+        if running and snap.get("service_zapret") == "RUNNING" and not snap.get("ours"):
+            bits.append(i18n.t("w.zapret.service"))
+        gf = str(snap.get("game_filter") or "off")
+        if gf != "off":
+            bits.append("GF " + gf.upper())
+        ipset_on = str((snap.get("ipset") or {}).get("mode") or "") == "loaded"
+        if ipset_on:
+            bits.append("IPSet")
+        if not strategies and not self._path():
+            bits.append(i18n.t("w.zapret.no_path"))
+        self.line.setText("  ·  ".join(bits) if bits else i18n.t("w.zapret.hint"))
+
+        self.chips["tcp"].setChecked(gf in ("tcp", "all"))
+        self.chips["udp"].setChecked(gf in ("udp", "all"))
+        self.chips["ipset"].setChecked(ipset_on)
+
+    def _fill_combo(self, strategies: list[dict], current: str) -> None:
+        ids = [str(st.get("id")) for st in strategies]
+        if ids != self._combo_ids:
+            self._loading = True
+            self.combo.clear()
+            for st in strategies:
+                self.combo.addItem(str(st.get("name")), str(st.get("id")))
+            self._combo_ids = ids
+            self._loading = False
+        index = self.combo.findData(current) if current else -1
+        if index >= 0 and index != self.combo.currentIndex():
+            # выбор программы не должен выглядеть как выбор человека
+            self._loading = True
+            self.combo.setCurrentIndex(index)
+            self._loading = False
+
+    # -- действия -----------------------------------------------------------
+    def _page(self):
+        return self.board.ensure_page("tab.zapret")
+
+    def _toggle(self) -> None:
+        page = self._page()
+        if page is None:
+            return
+        snap = self._state or {}
+        self.btn_toggle.setEnabled(False)
+        if snap.get("service_zapret") == "RUNNING":
+            # обход поднят службой — приложению он не принадлежит, гасим службу
+            page.quick_service("stop")
+        elif self._running():
+            page.quick_stop()
+        else:
+            page.quick_start()
+        QTimer.singleShot(2000, self._after_action)
+
+    def _pick_strategy(self, index: int) -> None:
+        if self._loading or index < 0:
+            return
+        strategy_id = self.combo.itemData(index)
+        page = self._page()
+        if page is None or not strategy_id:
+            return
+        page.quick_strategy(str(strategy_id))
+        snap = self._state or {}
+        if snap.get("service_zapret") == "RUNNING" and not snap.get("ours"):
+            # обход держит служба: winws у неё свой, новая стратегия заработает
+            # только после переустановки службы
+            self.line.setText(i18n.t("служба: ставлю выбранную стратегию…"))
+            page.quick_service("install")
+        QTimer.singleShot(1500, self._after_action)
+
+    def _filter_pick(self, key: str) -> None:
+        page = self._page()
+        if page is None:
+            return
+        if key == "ipset":
+            page.quick_ipset(self.chips["ipset"].isChecked())
+        else:
+            page.quick_game_filter(self.chips["tcp"].isChecked(),
+                                   self.chips["udp"].isChecked())
+        QTimer.singleShot(1500, self._after_action)
+
+    def _after_action(self) -> None:
+        self.btn_toggle.setEnabled(True)
+        self.refresh_slow()
 
 
 @_tile("w.rules")
@@ -790,10 +942,24 @@ class DashboardWidget(QWidget):
                     continue
                 items.append((tile, int(tile_spec.get("w", 4))))
                 self._tiles[tile.tile_id] = tile
-            row_widget = RowWidget(items, model.ROW_HEIGHTS.get(row.get("h"), 140))
+            row_widget = RowWidget(items, self._row_height(row))
             self.rows_layout.insertWidget(self.rows_layout.count() - 1, row_widget)
             self._row_widgets.append(row_widget)
         self._retranslate_empty()
+
+    def _row_height(self, row: dict) -> int:
+        """Высота строки: S/M/L из модели, но не меньше, чем просит плитка.
+
+        Управляющая плитка (обход DPI) несёт четыре ряда контролов и в короткой
+        строке обрезается. Минимум объявлен в каталоге (`CATALOG[...]["min_h"]`),
+        модель раскладки про пиксели не знает — это дело отрисовки.
+        """
+        height = model.ROW_HEIGHTS.get(str(row.get("h") or "M"), 140)
+        for tile_spec in row.get("tiles", []):
+            need = model.CATALOG.get(str(tile_spec.get("id")), {}).get("min_h")
+            if need:
+                height = max(height, model.ROW_HEIGHTS.get(str(need), height))
+        return height
 
     def _clear_rows(self) -> None:
         while self.rows_layout.count() > 1:

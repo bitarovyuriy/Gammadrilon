@@ -947,6 +947,61 @@ class ZapretWidget(QWidget):
         except Exception:  # noqa: BLE001
             return ""
 
+    # -- API главного экрана --------------------------------------------------
+    def quick_ready(self) -> None:
+        """Дожать первый снимок синхронно.
+
+        Плитка главного экрана может дёрнуть действие раньше, чем вкладка успела
+        опросить состояние: без снимка список стратегий пуст, а решение
+        «перезапускать ли winws» принимается по пустому словарю.
+        """
+        if not self._snap:
+            self._on_snap(self._snap_job())
+
+    def quick_start(self) -> None:
+        self.quick_ready()
+        self._on_click()
+
+    def quick_stop(self) -> None:
+        self.quick_ready()
+        self._off()
+
+    def quick_strategy(self, strategy_id: str) -> None:
+        """Выбрать стратегию: наш работающий обход переосваивается и перезапускается."""
+        self.quick_ready()
+        picked = False
+        for index in range(self.list.count()):
+            item = self.list.item(index)
+            if item.data(Qt.UserRole) == strategy_id:
+                self.list.setCurrentItem(item)      # _on_sel запомнит выбор
+                picked = True
+                break
+        if not picked:
+            self._save_strategy(strategy_id)        # списка ещё нет — хотя бы запомним
+        ours = self._snap.get("ours") or {}
+        if ours and not ours.get("external"):
+            self._recon()
+
+    def quick_service(self, op: str) -> None:
+        """Служба zapret с главного экрана: start/stop автозапуска.
+
+        Обход, поднятый службой, приложению не принадлежит — `quick_stop` его не
+        тронет, останавливать нужно именно службу.
+        """
+        self.quick_ready()
+        self._service_action(op)
+
+    def quick_game_filter(self, tcp: bool, udp: bool) -> None:
+        self.quick_ready()
+        self.chk_tcp.setChecked(bool(tcp))
+        self.chk_udp.setChecked(bool(udp))
+        self._on_toggle_gf()
+
+    def quick_ipset(self, enabled: bool) -> None:
+        self.quick_ready()
+        self.chk_ipset.setChecked(bool(enabled))
+        self._on_toggle_ipset()
+
     def _ensure(self):
         if self.client is None:
             import gd_gpu

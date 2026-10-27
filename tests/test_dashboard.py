@@ -37,7 +37,7 @@ def test_default_layout_is_valid():
 
 def test_default_layout_ids_match_catalog():
     assert gd_dashboard.tile_ids(gd_dashboard.default_layout()) == [
-        "w.cpu", "w.gpu", "w.ram", "w.power", "w.dns", "w.gamma",
+        "w.cpu", "w.gpu", "w.ram", "w.power", "w.dns", "w.zapret",
     ]
 
 
@@ -294,13 +294,13 @@ def test_remove_tile():
     layout = gd_dashboard.default_layout()
     removed = gd_dashboard.remove_tile(layout, "w.dns")
     assert gd_dashboard.tile_ids(removed) == [
-        "w.cpu", "w.gpu", "w.ram", "w.power", "w.gamma",
+        "w.cpu", "w.gpu", "w.ram", "w.power", "w.zapret",
     ]
     row1 = removed["rows"][1]
     assert row1["tiles"] == [{"id": "w.power", "w": 12}]
     assert _all_rows_sum(removed)
     # вход не мутирован
-    assert len(gd_dashboard.tile_ids(layout)) == 6
+    assert gd_dashboard.tile_ids(layout) == gd_dashboard.tile_ids(gd_dashboard.default_layout())
 
 
 def test_remove_last_tile_gives_default():
