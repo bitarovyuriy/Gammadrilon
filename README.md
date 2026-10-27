@@ -1,7 +1,7 @@
 <h1 align="center">Gammadrilon</h1>
 
 <p align="center">
-  <a href="https://github.com/bonzeros/Gammadrilon/releases/latest">
+  <a href="https://github.com/bitarovyuriy/Gammadrilon/releases/latest">
     <img src="https://img.shields.io/badge/Download%20EXE-latest-blue?style=for-the-badge" alt="Download.EXE">
   </a>
 </p>
@@ -56,7 +56,7 @@
 
 ## Скачать EXE
 
-[Скачать последнюю версию](https://github.com/bonzeros/Gammadrilon/releases/latest) — `Gammadrilon.exe` (один файл) или `Gammadrilon-portable.zip` (портативная папка).
+[Скачать последнюю версию](https://github.com/bitarovyuriy/Gammadrilon/releases/latest) — `Gammadrilon.exe` (один файл) или `Gammadrilon-portable.zip` (портативная папка).
 
 ## Требования
 
