@@ -2149,6 +2149,8 @@ AIDA64 читает их своим `kerneld-x64.sys` — закрытым и с
 - README: раздел «Если что-то не работает» (7 реальных жалоб → причина → что делать),
   убран устаревший `keyboard` из требований.
 - `RELEASE_CHECKLIST.md`: добавлены прогоны visual/pages/lang/soak и порог старта.
+- Набор для тестировщика: `WHAT-TO-TEST.md` (20 шагов, форма отчёта) и
+  `dist/Gammadrilon-test-kit-3.5.zip` — можно отдавать человеку на другой машине.
 - Трей: `TaskbarCreated` в `nativeEvent` — значок возвращается после перезапуска Explorer.
 - Тесты: 305 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
 - Сборка: `Gammadrilon.exe` sha256 `8adbb0be…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
