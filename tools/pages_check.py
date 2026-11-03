@@ -12,10 +12,12 @@
 Запуск:
   python tools/pages_check.py            # русский интерфейс
   python tools/pages_check.py --lang en  # английский: у него свои строки и формат
+  python tools/pages_check.py --no-sensors  # как на машине без драйвера датчиков
 Код 1, если что-то упало.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -34,6 +36,18 @@ if os.path.isdir("C:/Windows/Fonts"):
 _TEMP = Path(tempfile.mkdtemp(prefix="gd_pages_"))
 os.environ["LOCALAPPDATA"] = str(_TEMP)
 os.environ["GD_PORTABLE"] = "0"
+
+# Профиль всё равно пустой (нет пресетов, нет zapret, нет истории), но
+# `first_run_done` ставим: иначе приложение честно открывает диалог первого
+# запуска, а его `exec_()` в offscreen блокирует проверку навсегда.
+_cfg = _TEMP / "Gammadrilon"
+_cfg.mkdir(parents=True, exist_ok=True)
+_settings = {"first_run_done": True}
+if "--no-sensors" in sys.argv:
+    # профиль «чужой ПК без драйвера PawnIO»: пустые температуры не должны
+    # ни падать, ни врать нулями
+    _settings["sensors"] = False
+(_cfg / "presets.json").write_text(json.dumps({"settings": _settings}), encoding="utf-8")
 
 import main as gd_main  # noqa: E402  (импорт после подмены окружения)
 
