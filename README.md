@@ -105,6 +105,24 @@ $env:GD_SMOKE=1; .venv\Scripts\python.exe -m pytest tests\test_smoke.py   # по
 профили и не поднимает компаньонов; отчёт — `build/shots/verify.log`, при провале
 код возврата 1. Тот же CI гоняет на каждый пуш: линтер и `pytest` (смоук — по кнопке).
 
+Отдельные проверки того, что юнит-тестами не поймать (`tools\`):
+
+```
+python tools\pages_check.py                 # все вкладки на пустом профиле
+python tools\pages_check.py --lang en       # то же в английском интерфейсе
+python tools\pages_check.py --no-sensors    # профиль без драйвера датчиков
+python tools\lang_check.py                  # смена языка и темы на живом окне
+python tools11y_check.py                  # у кнопок и списков есть имя и Tab
+python toolsisual_check.py                # страницы против эталонов (--update обновить)
+python toolsisual_check.py --theme light --suffix @light    # светлая тема
+python tools\soak_check.py --minutes 6      # память за 6 минут кругов по вкладкам
+python tools\make_version_info.py           # метаданные версии для сборки
+```
+
+Визуальные эталоны лежат в `build/shots/baseline` (в репозиторий не попадают):
+прогон сравнивает снимки с шагом 4 px и порогом 2 %, страницы с живыми данными
+(CPU, GPU, DNS, обход, диагностика) снимаются без сравнения.
+
 ## Сборка
 
 - `Gammadrilon.spec` — портативная сборка в папку: `dist/Gammadrilon/`
