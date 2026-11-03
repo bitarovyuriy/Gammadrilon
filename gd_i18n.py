@@ -941,6 +941,9 @@ DIRECT: dict[str, str] = {
         "Which monitor to adjust — DDC/CI talks to each one separately",
     "Монитор {v0}": "Monitor {v0}",
     "читаем яркость…": "reading brightness…",
+    "Открыть папку данных": "Open data folder",
+    "Проводник откроется там, где лежат настройки и журналы.":
+        "Explorer opens where the settings and logs live.",
     "Время старта": "Startup time",
     "ещё не измерялось": "not measured yet",
     "долгий старт: проверьте антивирус и папку данных":

@@ -161,6 +161,11 @@ class ExtraPanel(QWidget):
             "Рядом с программой появится portable.txt: данные и настройки будут "
             "храниться в её папке — удобно унести на флешке."))
         self.btn_portable.clicked.connect(self._make_portable)
+        self.btn_open_data = QPushButton(i18n.t("Открыть папку данных"))
+        self.btn_open_data.setObjectName("Segment")
+        self.btn_open_data.setToolTip(i18n.t(
+            "Проводник откроется там, где лежат настройки и журналы."))
+        self.btn_open_data.clicked.connect(self._open_data_folder)
         self.btn_suitcase = QPushButton(i18n.t("Чемоданчик…"))
         self.btn_suitcase.setObjectName("Segment")
         self.btn_suitcase.setToolTip(i18n.t(
@@ -171,6 +176,7 @@ class ExtraPanel(QWidget):
         r4.addWidget(self.btn_reset)
         r4.addWidget(self.btn_portable)
         r4.addWidget(self.btn_suitcase)
+        r4.addWidget(self.btn_open_data)
         r4.addStretch(1)
         c4.addLayout(r4)
         self.lbl_prof = QLabel(i18n.t("Один файл переносит настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистку; профили CPU/GPU встроенные. Настройки применятся после перезапуска."))
@@ -394,6 +400,14 @@ class ExtraPanel(QWidget):
         report = self.host.reset_everything()
         self._set_status(self.lbl_prof, i18n.t("Сброшено: ") + (", ".join(report) if report else i18n.t("нечего сбрасывать")) + ".")
         self.refresh()
+
+    def _open_data_folder(self):
+        """Открыть папку с настройками в Проводнике."""
+        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QDesktopServices
+
+        folder = gd_paths.ensure(gd_paths.config_path().parent)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _make_suitcase(self):
         """Собрать папку переноса настроек: presets.json + portable.txt."""
