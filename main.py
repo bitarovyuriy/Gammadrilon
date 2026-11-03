@@ -504,11 +504,24 @@ RUNTIME_SETTINGS: dict = {
 #: человека, а не настройка («первый запуск пройден здесь» — и должен остаться;
 #: «когда последний раз стучались в GitHub» — тоже: на новой машине проверка
 #: должна пройти сама, а не ждать сутки из-за чужой отметки).
-SETTINGS_NOT_TRANSFERABLE = ("first_run_done", "updates_last_check", "last_boot_ms")
+SETTINGS_NOT_TRANSFERABLE = ("first_run_done", "updates_last_check", "last_boot_ms",
+                             # выбор монитора — про конкретную машину: на другой
+                             # индекс укажет в пустоту
+                             "ddc_monitor")
 
 
 def _good_copy_path(path: Path) -> Path:
     return path.with_name(path.name + ".good")
+
+
+def usable_monitors(ddc) -> list:
+    """Мониторы, которые реально умеют яркость по DDC/CI.
+
+    Отдельной функцией: список нужен и выпадашке, и обработчику выбора, а
+    проверять его в тесте без Qt проще, чем виджет.
+    """
+    monitors = getattr(ddc, "monitors", None) or []
+    return [item for item in monitors if getattr(item, "supported", False)]
 
 
 _TASKBAR_CREATED: int | None = None
@@ -2457,6 +2470,15 @@ class MainWindow(QMainWindow):
         self.ddc_hint.setObjectName("CardHint")
         self.ddc_hint.setWordWrap(True)
         ddc_layout.addWidget(self.ddc_hint)
+
+        # у кого два монитора — выбираем, какой регулировать: DDC/CI работает
+        # с каждым отдельно, а первый по списку может быть не тем
+        self.ddc_pick = QComboBox()
+        self.ddc_pick.setObjectName("Segment")
+        self.ddc_pick.setVisible(False)
+        self.ddc_pick.setToolTip(i18n.t("Какой монитор регулировать — DDC/CI работает с каждым отдельно"))
+        self.ddc_pick.currentIndexChanged.connect(self.on_ddc_monitor_picked)
+        ddc_layout.addWidget(self.ddc_pick)
 
         self.ddc_slider = QSlider(Qt.Horizontal)
         self.ddc_slider.setMinimum(0)
@@ -5126,6 +5148,7 @@ class MainWindow(QMainWindow):
         if monitor is None or level is None:
             self._ddc_failed(ddc.problem)
             return
+        self._fill_ddc_pick(ddc)
         self._ddc_monitor = monitor
         self._ddc_last_ok = int(level)
         self.ddc_slider.blockSignals(True)
@@ -5137,6 +5160,53 @@ class MainWindow(QMainWindow):
             self.bind_text(self.ddc_hint, monitor.description)
         else:
             self.bind_text(self.ddc_hint, "яркость самой матрицы по DDC/CI")
+
+    def _fill_ddc_pick(self, ddc) -> None:
+        """Заполнить выбор монитора: только те, что реально умеют яркость.
+
+        Один монитор — список прячем: выбирать нечего.
+        """
+        usable = usable_monitors(ddc)
+        self.ddc_pick.blockSignals(True)
+        self.ddc_pick.clear()
+        for monitor in usable:
+            self.ddc_pick.addItem(monitor.description or i18n.t("Монитор {v0}", v0=len(usable)))
+        self.ddc_pick.blockSignals(False)
+        if len(usable) > 1:
+            saved = int((self.config.get("settings") or {}).get("ddc_monitor") or 0)
+            index = saved if 0 <= saved < len(usable) else 0
+            self.ddc_pick.setCurrentIndex(index)
+            self.ddc_pick.setVisible(True)
+        else:
+            self.ddc_pick.setVisible(False)
+
+    def on_ddc_monitor_picked(self, index: int) -> None:
+        """Переключились на другой монитор: читаем его яркость, не гадаем."""
+        monitors = usable_monitors(self._ddc)
+        if not (0 <= int(index) < len(monitors)):
+            return
+        self.config.setdefault("settings", {})["ddc_monitor"] = int(index)
+        self._save_config()
+        monitor = monitors[int(index)]
+        self._ddc_monitor = monitor
+        self.ddc_slider.setEnabled(False)
+        self.bind_text(self.ddc_hint, "читаем яркость…")
+        gd_bg.submit(monitor.brightness, self._ddc_level_read, parent=self)
+
+    def _ddc_level_read(self, level) -> None:
+        if isinstance(level, Exception) or level is None:
+            self._ddc_failed(str(level or ""))
+            return
+        self._ddc_last_ok = int(level)
+        self.ddc_slider.blockSignals(True)
+        self.ddc_slider.setValue(int(level))
+        self.ddc_slider.blockSignals(False)
+        self.set_value_text(self.ddc_value, int(level), "%")
+        self.ddc_slider.setEnabled(True)
+        monitor = self._ddc_monitor
+        self.bind_text(self.ddc_hint,
+                       monitor.description if monitor and monitor.description
+                       else "яркость самой матрицы по DDC/CI")
 
     def _ddc_failed(self, reason: str):
         self.ddc_slider.setEnabled(False)

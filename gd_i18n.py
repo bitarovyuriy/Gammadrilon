@@ -937,6 +937,10 @@ DIRECT: dict[str, str] = {
     "файла ещё нет": "file not created yet",
     "файл распух: почистите историю автопрофилей": "file is bloated: trim the auto-profile history",
     "КБ": "KB",
+    "Какой монитор регулировать — DDC/CI работает с каждым отдельно":
+        "Which monitor to adjust — DDC/CI talks to each one separately",
+    "Монитор {v0}": "Monitor {v0}",
+    "читаем яркость…": "reading brightness…",
     "Время старта": "Startup time",
     "ещё не измерялось": "not measured yet",
     "долгий старт: проверьте антивирус и папку данных":
