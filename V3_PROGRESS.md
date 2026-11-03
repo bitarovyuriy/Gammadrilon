@@ -2180,8 +2180,8 @@ AIDA64 читает их своим `kerneld-x64.sys` — закрытым и с
   тёмная и светлая различаются на 33 % — тема действительно применяется.
 - `lang_check` теперь гоняет и смену темы: 10 вкладок на light и dark без падений.
 - Трей: `TaskbarCreated` в `nativeEvent` — значок возвращается после перезапуска Explorer.
-- Тесты: 312 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
-- Сборка: `Gammadrilon.exe` sha256 `03c660b7…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
+- Тесты: 316 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
+- Сборка: `Gammadrilon.exe` sha256 `a1dd8e55…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
   `release_check` (установка → 13 проверок → удаление) зелёный.
 
 ## 2026-11-03 — API агентов вырезан
