@@ -15,6 +15,8 @@
   python tools/visual_check.py --update   # перезаписать эталоны
   QT_SCALE_FACTOR=1.5 python tools/visual_check.py --suffix @150
                                          # тот же набор при масштабе 150 %
+  python tools/visual_check.py --theme light --suffix @light
+                                         # светлая тема: свои цвета и отступы
 Код возврата: 0 — всё совпало (или эталоны обновлены), 1 — есть расхождения.
 """
 from __future__ import annotations
@@ -107,10 +109,20 @@ def _suffix(argv: list[str]) -> str:
 def main(argv: list[str]) -> int:
     update = "--update" in argv
     suffix = _suffix(argv)
+    theme = ""
+    if "--theme" in argv:
+        index = argv.index("--theme")
+        if index + 1 < len(argv):
+            theme = argv[index + 1]
     app()
     app().setStyleSheet(gd_main.build_app_stylesheet())
 
     window = gd_main.MainWindow()
+    if theme:
+        try:
+            window.apply_theme(theme)
+        except Exception as exc:  # noqa: BLE001
+            print(f"тема {theme} не применилась: {exc}")
     window.resize(window.compact_size)
     window.show()
     pump(1500)

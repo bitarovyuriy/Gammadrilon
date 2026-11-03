@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Смена языка на живом окне: ни одна вкладка не падает и не остаётся пустой.
+"""Смена языка и темы на живом окне: ни одна вкладка не падает и не пустеет.
 
 Проверяет то, что не проверит юнит-тест: `set_language` переписывает подписи
 уже собранных виджетов. Если где-то строку забудут связать с переводом —
@@ -68,6 +68,21 @@ def main() -> int:
             pump(150)
         mark = "ок " if len(ERRORS) == before else "ПАДЕНИЕ"
         print(f"{mark:<10} язык {lang}: {len(pages)} вкладок")
+
+    # тема перекрашивает всё приложение целиком — вкладки должны пережить
+    for theme in ("light", "dark"):
+        before = len(ERRORS)
+        try:
+            window.apply_theme(theme)
+        except AttributeError:
+            print("тема: метод apply_theme не найден — пропуск")
+            break
+        pump(400)
+        for key, index in pages:
+            window.tabs.setCurrentIndex(index)
+            pump(150)
+        mark = "ок " if len(ERRORS) == before else "ПАДЕНИЕ"
+        print(f"{mark:<10} тема {theme}: {len(pages)} вкладок")
 
     window.close()
     if ERRORS:
