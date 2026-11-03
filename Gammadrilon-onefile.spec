@@ -45,6 +45,9 @@ exe = EXE(
     # UPX выключен: упаковка Qt-DLL — классическая причина ложных срабатываний
     # антивирусов и лишних предупреждений SmartScreen. Экономия размера того не стоит.
     upx=False,
+    # метаданные версии: build_release.ps1 генерирует файл из APP_VERSION
+    version=str(SPEC_DIR / "build" / "version_info.txt")
+    if (SPEC_DIR / "build" / "version_info.txt").is_file() else None,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

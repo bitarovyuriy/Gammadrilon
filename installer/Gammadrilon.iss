@@ -1,4 +1,4 @@
-; Установщик Gammadrilon: per-user по умолчанию, без запроса прав.
+﻿; Установщик Gammadrilon: per-user по умолчанию, без запроса прав.
 ;
 ; Почему так: приложение должно ставиться «из коробки» на чужой ПК, где у
 ; человека нет прав администратора. В {autopf} при обычных правах Inno
@@ -22,6 +22,8 @@ AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
+; версия в метаданных setup.exe: без неё «Свойства → Подробно» пустые
+VersionInfoVersion={#AppVersion}.0.0
 AppPublisher=Gammadrilon
 AppPublisherURL=https://github.com/bitarovyuriy/Gammadrilon
 AppSupportURL=https://github.com/bitarovyuriy/Gammadrilon

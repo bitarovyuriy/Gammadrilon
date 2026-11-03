@@ -2181,9 +2181,13 @@ AIDA64 читает их своим `kerneld-x64.sys` — закрытым и с
 - `lang_check` теперь гоняет и смену темы: 10 вкладок на light и dark без падений.
 - Трей: пункт «Диагностика» — из меню значка сразу на вкладку проверок.
 - Удалён мёртвый хвост вырезанного API агентов: `gd_journal.state_note()`.
+- Метаданные версии закрыты: раньше «версия файла» была пустой у exe и установщика.
+  `tools/make_version_info.py` генерирует `build/version_info.txt` из `APP_VERSION`,
+  spec подключает его, Inno ставит `VersionInfoVersion`. Теперь setup — 3.5.0.0, exe — 3.5;
+  `release_check` падает, если версия пустая.
 - Трей: `TaskbarCreated` в `nativeEvent` — значок возвращается после перезапуска Explorer.
 - Тесты: 319 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
-- Сборка: `Gammadrilon.exe` sha256 `c1d18011…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
+- Сборка: `Gammadrilon.exe` sha256 `f4202b2d…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
   `release_check` (установка → 13 проверок → удаление) зелёный.
 
 ## 2026-11-03 — API агентов вырезан

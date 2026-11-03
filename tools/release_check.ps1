@@ -56,6 +56,9 @@ $unins = Join-Path $installDir "unins000.exe"
 if (-not (Test-Path $unins)) { Fail "нет unins000.exe — установка неполная" }
 $version = (Get-Item $exe).VersionInfo.ProductVersion
 Write-Host "версия файла: $version"
+if ([string]::IsNullOrWhiteSpace($version)) {
+    throw "у exe пустые метаданные версии - сборка без version_info.txt"
+}
 
 if ($KeepInstalled) {
     Write-Host ""

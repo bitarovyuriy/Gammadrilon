@@ -15,6 +15,11 @@ if ($mainSource -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') {
 }
 $appVersion = $Matches[1]
 Write-Host "Версия: $appVersion" -ForegroundColor Cyan
+
+# Метаданные exe: без них «Свойства → Подробно» пустые, а SmartScreen и
+# антивирусы смотрят на версию файла как на признак живой сборки.
+& $py tools/make_version_info.py
+if ($LASTEXITCODE -ne 0) { throw "Метаданные версии не сгенерированы" }
 # Хелпер датчиков: C# + LibreHardwareMonitor. Собирается тут же, чтобы exe в
 # vendor/lhm не мог разойтись с исходником.
 Write-Host "== Хелпер датчиков (C#) ==" -ForegroundColor Cyan
