@@ -2182,8 +2182,8 @@ AIDA64 читает их своим `kerneld-x64.sys` — закрытым и с
 - Трей: пункт «Диагностика» — из меню значка сразу на вкладку проверок.
 - Удалён мёртвый хвост вырезанного API агентов: `gd_journal.state_note()`.
 - Трей: `TaskbarCreated` в `nativeEvent` — значок возвращается после перезапуска Explorer.
-- Тесты: 316 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
-- Сборка: `Gammadrilon.exe` sha256 `a1dd8e55…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
+- Тесты: 319 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
+- Сборка: `Gammadrilon.exe` sha256 `c1d18011…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
   `release_check` (установка → 13 проверок → удаление) зелёный.
 
 ## 2026-11-03 — API агентов вырезан
