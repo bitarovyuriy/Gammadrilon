@@ -31,6 +31,28 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# QML и Quick в программе не используются (интерфейс на виджетах), но PyInstaller
+# тянет их как зависимости PyQt5 — 7,5 МБ в каждой сборке. Выкидываем по имени:
+# список проверяется при сборке, и `build_release.ps1` всё равно гоняет --selftest,
+# так что забытая зависимость всплывёт сразу, а не у пользователя.
+_UNUSED_QT = ("Qt5Quick.dll", "Qt5Qml.dll", "Qt5QmlModels.dll", "Qt5QuickWidgets.dll")
+
+
+def _drop_unused_qt(entries):
+    kept = []
+    for entry in entries:
+        name = entry[0].replace("\\", "/")
+        if any(name.endswith(item) for item in _UNUSED_QT):
+            continue
+        if "/qml/" in name:
+            continue
+        kept.append(entry)
+    return kept
+
+
+a.binaries = _drop_unused_qt(a.binaries)
+a.datas = _drop_unused_qt(a.datas)
+
 exe = EXE(
     pyz,
     a.scripts,
