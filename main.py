@@ -1949,6 +1949,25 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 — замер не повод не запуститься
             pass
 
+    def _sync_startup(self) -> None:
+        """Привести файл автозапуска в соответствие с настройкой и текущим путём.
+
+        Бывает два расхождения, и оба тихие: галочка выключена, а файл в
+        «Автозагрузке» остался от прошлой версии; галочка включена, а файл
+        ссылается на старую сборку (`C:/gd_build/dist/...`), потому что
+        программу установили в другое место. `enable_startup` идемпотентен —
+        переписывает файл под текущий exe.
+        """
+        settings = self.config.get("settings") or {}
+        wanted = bool(settings.get("start_with_windows"))
+        try:
+            if wanted:
+                enable_startup()
+            else:
+                disable_startup()
+        except Exception:  # noqa: BLE001 — автозапуск не повод не запуститься
+            pass
+
     def _write_rights_note(self) -> None:
         """Настройки, которые некуда сохранить, — тихая беда: сказать вслух.
 
@@ -1957,6 +1976,7 @@ class MainWindow(QMainWindow):
         """
         if CONFIG_RECOVERY == "restored":
             return                      # уже сказали про восстановление
+        self._sync_startup()
         ok, detail = gd_paths.can_write_data()
         if not ok:
             self.set_status(i18n.t(

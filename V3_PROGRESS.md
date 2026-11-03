@@ -2185,6 +2185,9 @@ AIDA64 читает их своим `kerneld-x64.sys` — закрытым и с
   `tools/make_version_info.py` генерирует `build/version_info.txt` из `APP_VERSION`,
   spec подключает его, Inno ставит `VersionInfoVersion`. Теперь setup — 3.5.0.0, exe — 3.5;
   `release_check` падает, если версия пустая.
+- Автозапуск синхронизируется при старте: если галочка выключена, а файл в «Автозагрузке»
+  остался от прошлой версии — он убирается; если включена, файл перезаписывается под
+  текущий путь (раньше мог ссылаться на старую сборку `C:/gd_build/dist`).
 - Трей: `TaskbarCreated` в `nativeEvent` — значок возвращается после перезапуска Explorer.
 - Тесты: 319 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
 - Сборка: `Gammadrilon.exe` sha256 `f4202b2d…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
