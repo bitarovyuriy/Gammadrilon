@@ -101,9 +101,10 @@ class TrayAssistant(QSystemTrayIcon):
 
     # -- меню (режим-мастер) ----------------------------------------------
     def _build_menu(self):
-        # родитель обязателен: меню перестраивается при смене языка, и без
-        # родителя старый QMenu оставался в памяти до выхода
-        menu = QMenu(self)
+        # родителя дать нельзя (TrayAssistant не QWidget), поэтому старый
+        # QMenu удаляем сами: меню перестраивается при смене языка, иначе
+        # копилось бы по одному на каждое переключение
+        menu = QMenu()
 
         act = menu.addAction(i18n.t("tray.open"))
         act.triggered.connect(self.showRequested.emit)
@@ -166,8 +167,11 @@ class TrayAssistant(QSystemTrayIcon):
         act = menu.addAction(i18n.t("tray.quit"))
         act.triggered.connect(self.quitRequested.emit)
 
+        previous = getattr(self, "_menu", None)
         self._menu = menu
         self.setContextMenu(menu)
+        if previous is not None:
+            previous.deleteLater()
 
     # -- иконка ------------------------------------------------------------
     def set_theme_checked(self, light: bool):
