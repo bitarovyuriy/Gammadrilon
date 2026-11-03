@@ -2170,7 +2170,7 @@ AIDA64 читает их своим `kerneld-x64.sys` — закрытым и с
   получили английский перевод — непереведённых `i18n.t(...)` в коде больше нет.
 - Трей: `TaskbarCreated` в `nativeEvent` — значок возвращается после перезапуска Explorer.
 - Тесты: 308 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
-- Сборка: `Gammadrilon.exe` sha256 `200569dd…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
+- Сборка: `Gammadrilon.exe` sha256 `bc06cc01…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
   `release_check` (установка → 13 проверок → удаление) зелёный.
 
 ## 2026-11-03 — API агентов вырезан
