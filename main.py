@@ -505,6 +505,9 @@ RUNTIME_SETTINGS: dict = {
 #: «когда последний раз стучались в GitHub» — тоже: на новой машине проверка
 #: должна пройти сама, а не ждать сутки из-за чужой отметки).
 SETTINGS_NOT_TRANSFERABLE = ("first_run_done", "updates_last_check", "last_boot_ms",
+                             # размер окна — про экран этой машины: на другом
+                             # мониторе окно окажется больше рабочего стола
+                             "window_size", "window_maximized",
                              # выбор монитора — про конкретную машину: на другой
                              # индекс укажет в пустоту
                              "ddc_monitor")
@@ -1858,6 +1861,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(self.compact_size)
         self.setMinimumSize(self.min_window_size)
+        self._restore_window_size()
         self._setup_frameless()
         self._text_bindings = []
         self._tooltip_bindings = []
@@ -1948,6 +1952,34 @@ class MainWindow(QMainWindow):
             self._save_config(now=True)
         except Exception:  # noqa: BLE001 — замер не повод не запуститься
             pass
+
+    def _restore_window_size(self) -> None:
+        """Вернуть размер окна из прошлого запуска.
+
+        Размер — не настройка, а привычка окна: человек растянул под себя и
+        ждёт того же в следующий раз. Сохраняем только обычный режим; свёрнутое
+        и развёрнутое состояние восстанавливаем флагом.
+        """
+        settings = self.config.get("settings") or {}
+        saved = settings.get("window_size")
+        if isinstance(saved, (list, tuple)) and len(saved) == 2:
+            try:
+                width, height = int(saved[0]), int(saved[1])
+            except (TypeError, ValueError):
+                width = height = 0
+            if width > 0 and height > 0:
+                self.resize(max(width, self.min_window_size.width()),
+                            max(height, self.min_window_size.height()))
+        if bool(settings.get("window_maximized")):
+            self.showMaximized()
+
+    def _remember_window_size(self) -> None:
+        """Запомнить размер окна перед выходом (в трей тоже)."""
+        settings = self.config.setdefault("settings", {})
+        settings["window_maximized"] = bool(self.isMaximized())
+        if not self.isMaximized() and not self.isFullScreen():
+            size = self.size()
+            settings["window_size"] = [size.width(), size.height()]
 
     def _sync_startup(self) -> None:
         """Привести файл автозапуска в соответствие с настройкой и текущим путём.
@@ -5758,11 +5790,14 @@ class MainWindow(QMainWindow):
             self.quit_app()
             return
 
+        self._remember_window_size()
+        self._save_config(now=True)
         event.ignore()
         self.hide()
 
     def quit_app(self):
         self.is_quitting = True
+        self._remember_window_size()
 
         # отложенная запись конфига не должна потеряться при выходе
         self._save_config(now=True)
