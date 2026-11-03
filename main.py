@@ -42,7 +42,54 @@ except Exception:  # noqa: BLE001
     pass
 
 
-from PyQt5.QtCore import (
+# --- Понятный отказ вместо системного диалога Qt -----------------------------
+# Если запустить исходники чужим интерпретатором (без PyQt5) или из папки, где
+# плагинов нет, Qt показывает модальное «no Qt platform plugin could be
+# initialized» — по нему невозможно понять, что делать. Проверяем до импорта
+# Qt и говорим человеческим языком.
+def _qt_ready() -> tuple[bool, str]:
+    """Есть ли PyQt5 и плагин qwindows.dll; без них запуск бессмысленен."""
+    if getattr(sys, "frozen", False):
+        return True, ""          # в сборке плагины лежат внутри, проверять нечего
+    try:
+        import sysconfig
+
+        site = sysconfig.get_paths().get("purelib", "")
+    except Exception:  # noqa: BLE001
+        site = ""
+    if not site:
+        return True, ""          # не смогли понять — пусть решает Qt
+    pyqt_dir = Path(site) / "PyQt5"
+    if not pyqt_dir.is_dir():
+        return False, "\n".join((
+            "Для запуска из исходников нужен PyQt5 в этом же окружении.",
+            f"Интерпретатор: {sys.executable}",
+            "Создайте окружение и установите зависимости:",
+            "  python -m venv .venv",
+            "  .venv/Scripts/python.exe -m pip install -r requirements.txt",
+            "или запустите готовый Gammadrilon.exe (ему Python не нужен).",
+        ))
+    platform_dirs = [Path(os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH", "")),
+                     pyqt_dir / "Qt5" / "plugins" / "platforms"]
+    if not any(str(folder) and (folder / "qwindows.dll").is_file() for folder in platform_dirs):
+        return False, "\n".join((
+            "PyQt5 установлен, но плагин платформы (qwindows.dll) не найден —",
+            "обычно это чужой или повреждённый интерпретатор.",
+            f"Интерпретатор: {sys.executable}",
+            "Переустановите зависимости: .venv/Scripts/python.exe -m pip install --force-reinstall PyQt5",
+        ))
+    return True, ""
+
+
+_qt_ok, _qt_reason = _qt_ready()
+if not _qt_ok:
+    print("Gammadrilon: запуск невозможен.")
+    print(_qt_reason)
+    print("\nПодробнее: вкладка «Диагностика» в собранной версии или README, раздел «Если что-то не работает».")
+    raise SystemExit(2)
+
+
+from PyQt5.QtCore import (  # noqa: E402 — проверка окружения выше
     Qt,
     QObject,
     QTimer,
@@ -54,7 +101,7 @@ from PyQt5.QtCore import (
     pyqtSignal,
     QUrl,
 )
-from PyQt5.QtGui import (
+from PyQt5.QtGui import (  # noqa: E402 — проверка окружения выше
     QColor,
     QDesktopServices,
     QFont,
@@ -64,7 +111,7 @@ from PyQt5.QtGui import (
     QPainterPath,
     QPen,
 )
-from PyQt5.QtWidgets import (
+from PyQt5.QtWidgets import (  # noqa: E402 — проверка окружения выше
     QAbstractScrollArea,
     QApplication,
     QComboBox,
