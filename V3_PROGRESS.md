@@ -2207,9 +2207,12 @@ AIDA64 читает их своим `kerneld-x64.sys` — закрытым и с
 - Запуск чужим интерпретатором больше не даёт диалог Qt «no Qt platform plugin»:
   `_qt_ready()` до импорта PyQt5 проверяет наличие PyQt5 и `qwindows.dll`, печатает
   инструкцию (venv + requirements или готовый exe) и выходит с кодом 2.
+- Релиз 3.6 опубликован: тег v3.6, Latest, ассеты Gammadrilon-Setup-3.6.exe (26,9 МБ,
+  sha256 f3b25798…) и Gammadrilon-v3.6-portable.zip (36,0 МБ, sha256 895a9409…).
+  Хэши локальных файлов совпали с загруженными.
 - Трей: `TaskbarCreated` в `nativeEvent` — значок возвращается после перезапуска Explorer.
 - Тесты: 319 passed, 1 skipped; `ruff` чисто; смоук OK; визуальная регрессия 5/5.
-- Сборка: `Gammadrilon.exe` sha256 `29d16523…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
+- Сборка: `Gammadrilon.exe` sha256 `e993e732…`, `Gammadrilon-Setup-3.5.exe` 29,0 МБ,
   `release_check` (установка → 13 проверок → удаление) зелёный.
 
 ## 2026-11-03 — API агентов вырезан
