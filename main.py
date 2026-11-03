@@ -138,7 +138,7 @@ from PyQt5.QtWidgets import (  # noqa: E402 — проверка окружен�
 
 
 APP_NAME = gd_paths.APP_NAME
-APP_VERSION = "v3.5"
+APP_VERSION = "v3.6"
 CONFIG_FILE = "presets.json"
 ICON_FILE = "icon.ico"
 
