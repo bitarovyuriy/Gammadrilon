@@ -308,6 +308,10 @@ try:
     pump(1500)
     check("окно: открытие вкладки «DNS» → одно чтение в фоне", dns_reads["n"] == 1,
           f"чтений: {dns_reads['n']}")
+    # netsh под нагрузкой отвечает дольше 1.5 с — ждём факта, а не таймера
+    _deadline = time.monotonic() + 5.0
+    while time.monotonic() < _deadline and not gd_metrics.dns():
+        pump(100)
     win._refresh_statusbar()
     exp = (gd_metrics.dns() or {}).get("servers") or []
     check("статусбар: DNS подтянулся из кэша вкладки (без второго netsh)",
@@ -908,6 +912,10 @@ check("клавиши: правка стоп-крана возвращается
       _hk_saved.get("reset_everything") == _hk_dlg.inputs["reset_everything"].text(),
       str(_hk_saved.get("reset_everything")))
 _hk_dlg.close()
+
+# RegisterHotKey проверяем в юнит-тестах с заглушкой user32: в offscreen-окне
+# Qt подставляет фиктивный HWND (=1), и настоящая регистрация там невозможна
+# по определению — проверка мерила бы не то.
 
 import gd_palette  # noqa: E402
 

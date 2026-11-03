@@ -59,7 +59,7 @@ def test_fetch_latest_parses_release(monkeypatch):
             "digest": "sha256:" + "a" * 64,
         }],
     }).encode("utf-8")
-    monkeypatch.setattr(gd_update.urllib.request, "urlopen", lambda *a, **kw: _Response(body))
+    monkeypatch.setattr(gd_update.gd_net, "open_url", lambda *a, **kw: _Response(body))
 
     res = gd_update.fetch_latest(timeout=0.01)
 
@@ -77,14 +77,14 @@ def test_fetch_latest_speaks_human_without_network(monkeypatch):
     def boom(*a, **kw):
         raise urllib.error.URLError("нет маршрута")
 
-    monkeypatch.setattr(gd_update.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(gd_update.gd_net, "open_url", boom)
     res = gd_update.fetch_latest(timeout=0.01)
 
     assert not res["ok"] and "нет связи" in res["error"]
 
 
 def test_fetch_latest_reports_missing_tag(monkeypatch):
-    monkeypatch.setattr(gd_update.urllib.request, "urlopen",
+    monkeypatch.setattr(gd_update.gd_net, "open_url",
                         lambda *a, **kw: _Response(b'{"name": "release"}'))
 
     res = gd_update.fetch_latest(timeout=0.01)

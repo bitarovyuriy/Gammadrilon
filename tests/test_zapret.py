@@ -51,3 +51,42 @@ def test_valid_argv_rejects_quotes_and_newlines():
     assert not gd_zapret._valid_argv(["--hostlist=x\n--new"])
     assert not gd_zapret._valid_argv([])
     assert gd_zapret._valid_argv(["--wf-tcp=80,443", "--hostlist=C:\\x\\list.txt"])
+
+
+def test_needs_ascii_move_only_for_existing_non_ascii(tmp_path):
+    ascii_dir = tmp_path / "zapret"
+    ascii_dir.mkdir()
+    assert not gd_zapret.needs_ascii_move(str(ascii_dir))
+
+    cyrillic = tmp_path / "кириллица"
+    cyrillic.mkdir()
+    assert gd_zapret.needs_ascii_move(str(cyrillic)), "не-ASCII путь требует переноса"
+    assert not gd_zapret.needs_ascii_move(str(tmp_path / "нет_папки"))
+
+
+def test_move_to_ascii_copies_and_keeps_source(tmp_path, monkeypatch):
+    """Перенос — это копия: рабочая папка остаётся, пока не проверено новое место."""
+    src = tmp_path / "кириллица"
+    (src / "bin").mkdir(parents=True)
+    (src / "bin" / "winws.exe").write_bytes(b"MZ")
+    (src / "service.bat").write_text("rem", encoding="utf-8")
+    dst = tmp_path / "ascii" / "zapret"
+    monkeypatch.setattr(gd_zapret, "processes", lambda: [])
+
+    ok, message, new_path = gd_zapret.move_to_ascii(str(src), str(dst))
+
+    assert ok, message
+    assert new_path == str(dst)
+    assert (dst / "bin" / "winws.exe").is_file()
+    assert src.is_dir(), "исходная папка должна остаться на месте"
+
+
+def test_move_to_ascii_refuses_while_winws_running(tmp_path, monkeypatch):
+    """Занятые файлы дают битую копию — сначала остановить обход."""
+    src = tmp_path / "кириллица"
+    src.mkdir()
+    monkeypatch.setattr(gd_zapret, "processes", lambda: [{"pid": 1}])
+
+    ok, message, _ = gd_zapret.move_to_ascii(str(src), str(tmp_path / "dst"))
+
+    assert not ok and "winws" in message

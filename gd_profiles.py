@@ -119,6 +119,30 @@ def export_all(path: str | Path, app_settings: dict | None = None) -> tuple[bool
         return False, i18n.t("не удалось записать файл: {v0}", v0=exc)
 
 
+def make_suitcase(destination: str | Path, app_settings: dict | None = None) -> tuple[bool, str]:
+    """«Чемоданчик»: папка для переноса настроек на другой ПК.
+
+    Кладём туда `presets.json` (именно его читает приложение) и маркер
+    `portable.txt` — запущенная из этой папки программа берёт настройки
+    рядом с собой. Правила, тихий час и DNS живут в профиле Windows и
+    переносятся отдельным экспортом: смешивать их в один файл значит
+    обещать перенос, которого не будет.
+    """
+    try:
+        target = Path(destination) / "Gammadrilon-portable"
+        target.mkdir(parents=True, exist_ok=True)
+        if isinstance(app_settings, dict) and app_settings:
+            (target / "presets.json").write_text(
+                json.dumps(app_settings, ensure_ascii=False, indent=4), encoding="utf-8")
+        (target / "portable.txt").write_text(
+            "Портативный режим Gammadrilon: настройки читаются из этой папки.\n"
+            "Положите presets.json рядом с Gammadrilon.exe и запустите программу.\n",
+            encoding="utf-8")
+        return True, i18n.t("Чемоданчик собран: {v0}", v0=str(target))
+    except (OSError, ValueError) as exc:      # ValueError — кривой путь с нулём
+        return False, i18n.t("не удалось записать файл: {v0}", v0=exc)
+
+
 def _read_autoclean() -> dict:
     data = gd_state.read_json(_base_dir() / "autoclean.json", {})
     return data if isinstance(data, dict) else {}

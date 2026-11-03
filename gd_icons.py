@@ -65,6 +65,12 @@ _SVG = {
         '<path d="M9.5 8.5 13 12l-3.5 3.5"/>'
         '<path d="M18 5.5v13"/>'
     ),
+    # прицел: вкладка «Оптимизация CS2»
+    "cs2": (
+        '<circle cx="12" cy="12" r="7"/>'
+        '<path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>'
+        '<circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>'
+    ),
     "journal": '<path d="M5 4h11l3 3v13H5z"/><path d="M8 9h8M8 13h8M8 17h5"/>',
     "theme": '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/>',
 }

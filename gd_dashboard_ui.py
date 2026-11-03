@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+import gd_cs2
 import gd_dashboard as model
 import gd_i18n as i18n
 import gd_metrics
@@ -40,6 +41,7 @@ TAB_FOR = {
     "w.ram": "tab.utils",
     "w.power": "tab.cpu",
     "w.gpu_limit": "tab.gpu",
+    "w.cs2": "tab.cs2",
     "w.gamma": "tab.gamma",
     "w.dns": "tab.dns",
     "w.zapret": "tab.zapret",
@@ -492,6 +494,13 @@ class GammaTile(Tile):
         self.value = QLabel(_dash())
         self.value.setObjectName("Value")
         self.body.addWidget(self.value)
+        # что применено вокруг гаммы: подсветка матрицы и частота. Раньше это
+        # было видно только на вкладке — а после автопрофиля хочется проверить
+        # с главного экрана, что именно включилось
+        self.line = QLabel("")
+        self.line.setObjectName("Hint")
+        self.line.setWordWrap(True)
+        self.body.addWidget(self.line)
         self.body.addStretch(1)
         presets = self._presets()
         self._index: dict[str, int] = {}
@@ -535,6 +544,77 @@ class GammaTile(Tile):
             self.value.setText(i18n.t("w.gamma.current", v0=float(brightness)))
         index = getattr(host, "current_preset_index", 0)
         self._sync_checked(index)
+        self.line.setText(self._applied_line(host, config, index))
+
+    @staticmethod
+    def _applied_line(host, config: dict, index: int) -> str:
+        """Короткая строка «что сейчас применено»: пресет, подсветка, частота."""
+        parts: list[str] = []
+        presets = config.get("presets") or []
+        if 0 <= index < len(presets):
+            name = str((presets[index] or {}).get("name") or "").strip()
+            if name:
+                parts.append(name)
+        try:
+            if getattr(host, "_ddc_monitor", None) is not None:
+                parts.append(i18n.t("подсветка {v0}%", v0=host.ddc_slider.value()))
+        except Exception:  # noqa: BLE001 — плитка не должна падать из-за DDC
+            pass
+        try:
+            import gd_hz
+
+            rate = gd_hz.refresh_rate()
+            if rate:
+                parts.append(f"{rate} Гц")
+        except Exception:  # noqa: BLE001
+            pass
+        return " · ".join(parts)
+
+
+@_tile("w.cs2")
+class Cs2Tile(Tile):
+    """Рычаг «Оптимизация CS2» прямо с главного экрана: включить и выключить.
+
+    Своей правки у плитки нет: тумблер дёргает экран вкладки (`toggle()`), он
+    один знает про бэкап и сохранение настроек. Чтение — `gd_cs2.snapshot()`:
+    реестр отвечает мгновенно, фоновый поток здесь не нужен.
+    """
+
+    def build(self) -> None:
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(th.SPACE_S)
+        self.value = QLabel(_dash())
+        self.value.setObjectName("Value")
+        head.addWidget(self.value, 1)
+        self.btn = QPushButton(i18n.t("Включить"))
+        self.btn.setObjectName("Segment")
+        self.btn.setFixedHeight(24)
+        self.btn.clicked.connect(self._toggle)
+        head.addWidget(self.btn)
+        self.body.addLayout(head)
+
+        self.line = QLabel(i18n.t("w.cs2.hint"))
+        self.line.setObjectName("Hint")
+        self.line.setWordWrap(True)
+        self.body.addWidget(self.line)
+
+    def _toggle(self) -> None:
+        page = self.board.ensure_page("tab.cs2")
+        if page is None:
+            return
+        page.toggle()
+        QTimer.singleShot(300, self.refresh_slow)
+
+    def refresh_slow(self) -> None:
+        snap = gd_cs2.snapshot()
+        items = snap.get("items") or {}
+        on = bool(items) and all(items.values())
+        count = sum(1 for value in items.values() if value)
+        self.value.setText(i18n.t("ВКЛ") if on else i18n.t("ВЫКЛ"))
+        self.btn.setText(i18n.t("Выключить") if on else i18n.t("Включить"))
+        self.line.setText(i18n.t("w.cs2.count", v0=count, v1=len(items)))
+        self.state.setText(i18n.t("w.cs2.hint") if on else "")
 
 
 @_tile("w.dns")
@@ -863,6 +943,28 @@ class CatalogDialog(QDialog):
         return [tile_id for tile_id, box in self.boxes.items() if box.isChecked()]
 
 
+def setup_issues(host) -> list[tuple[str, str]]:
+    """Что не настроено: (текст для человека, ключ вкладки)."""
+    config = getattr(host, "config", None) or {}
+    settings = config.get("settings") or {}
+    issues: list[tuple[str, str]] = []
+    if not str(settings.get("zapret_path") or "").strip():
+        issues.append((i18n.t("обход (вкладка «Обход»)"), "tab.zapret"))
+    if not (settings.get("auto_profiles") or []):
+        issues.append((i18n.t("автопрофили (вкладка «Гамма»)"), "tab.gamma"))
+    return issues
+
+
+def missing_setup(host) -> list[str]:
+    """Что в программе ещё не настроено — коротким списком для главного.
+
+    Не ругаемся на то, что зависит от железа (DDC/CI, датчики): там честный
+    отказ в диагностике. Здесь только то, что человек включает сам и о чём
+    потом забывает — обход и автопрофили.
+    """
+    return [text for text, _key in setup_issues(host)]
+
+
 class DashboardWidget(QWidget):
     """Главный экран целиком: строка кнопок, сетка плиток, режим правки."""
 
@@ -905,6 +1007,14 @@ class DashboardWidget(QWidget):
         bar.addWidget(self.hint)
         bar.addStretch(1)
 
+        self.setup_hint = ClickableLabel("")
+        self.setup_hint.setObjectName("Hint")
+        self.setup_hint.setWordWrap(True)
+        self.setup_hint.setVisible(False)
+        self.setup_hint.setCursor(Qt.PointingHandCursor)
+        self.setup_hint.clicked.connect(self._goto_setup_issue)
+        outer.addWidget(self.setup_hint)
+
         self.btn_edit = QPushButton(i18n.t("home.edit"))
         self.btn_edit.setObjectName("GhostButton")
         self.btn_edit.setFixedHeight(28)
@@ -932,8 +1042,30 @@ class DashboardWidget(QWidget):
         outer.addWidget(self.rows_host, 1)
 
     # -- отрисовка ---------------------------------------------------------
+    def _goto_setup_issue(self) -> None:
+        """Клик по подсказке: открыть вкладку первой недонастройки."""
+        issues = setup_issues(self.host)
+        if not issues:
+            return
+        key = issues[0][1]
+        index = getattr(self.host, "_key_to_index", {}).get(key)
+        try:
+            if index is not None:
+                self.host.tabs.setCurrentIndex(index)
+        except Exception:  # noqa: BLE001 — нет вкладок, остаёмся на главной
+            pass
+
+    def _refresh_setup_hint(self) -> None:
+        missing = missing_setup(self.host)
+        if missing:
+            self.setup_hint.setText(
+                i18n.t("Не настроено: {v0}", v0=" · ".join(missing)))
+        self.setup_hint.setVisible(bool(missing))
+
     def reload(self) -> None:
         """Собрать сетку заново из модели раскладки."""
+        if hasattr(self, "setup_hint"):
+            self._refresh_setup_hint()
         self._clear_rows()
         self._tiles.clear()
         for row in self.layout_model.get("rows", []):

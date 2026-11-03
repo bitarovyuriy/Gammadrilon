@@ -39,7 +39,6 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import gd_bg  # noqa: E402
-import gd_agent  # noqa: E402
 import gd_dns  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_theme as th  # noqa: E402
@@ -267,49 +266,34 @@ class DnsWidget(QWidget):
             self._set_status(i18n.t("Ни один резолвер не ответил."), ok=False)
 
     # -- смена --------------------------------------------------------------
-    def set_provider(self, key: str, source: str = i18n.t("трей"), on_done=None):
-        """Смена DNS на резолвер из списка (трей, палитра, локальный API).
-
-        `on_done(result)` — хук внешних вызовов (ТЗ этап 8): один раз получает
-        ``{"ok", "error"}`` по завершении, включая отказы «занято» и «нет адресов».
-        """
+    def set_provider(self, key: str, source: str = i18n.t("трей")):
+        """Смена DNS на резолвер из списка (трей, палитра)."""
         row = self._row_of(key)
         if row < 0 or key == "custom":
-            gd_agent.finish(on_done, False, i18n.t("неизвестный резолвер: {v0}", v0=key))
             return
         self.table.setCurrentCell(row, 0)
-        self._apply(source=source, on_done=on_done)
+        self._apply(source=source)
 
-    def _apply(self, source=None, on_done=None):
+    def _apply(self, source=None):
         if gd_bg.is_running(self._apply_worker):
-            gd_agent.finish(on_done, False, i18n.t("занято: операция уже выполняется"))
             return
         self._source = source or i18n.t("утилиты")
-        self._ext_done = on_done
-
-        def _fail(msg: str) -> None:
-            gd_agent.finish(self._ext_done, False, msg)
-            self._ext_done = None
 
         key = self._selected_key()
         if key is None:
-            _fail(i18n.t("не выбран резолвер"))
             return
         r = next((x for x in gd_dns.RESOLVERS if x["key"] == key), None)
         if r is None:
-            _fail(i18n.t("неизвестный резолвер: {v0}", v0=key))
             return
         servers = list(r["servers"])
         if key == "custom":
             val = self.ed_custom.text().strip()
             if not val:
                 self._set_status(i18n.t("Укажите адрес для строки «Свой»."), ok=False)
-                _fail(i18n.t("Укажите адрес для строки «Свой»."))
                 return
             servers = [s.strip() for s in val.replace(";", ",").split(",") if s.strip()]
         if not servers:
             self._set_status(i18n.t("У резолвера нет адресов."), ok=False)
-            _fail(i18n.t("У резолвера нет адресов."))
             return
 
         client = self._ensure()
@@ -341,8 +325,6 @@ class DnsWidget(QWidget):
         self.btn_apply.setEnabled(True)
         if not resp.get("ok"):
             self._set_status(i18n.t("DNS не изменён: {v0}", v0=resp.get('error')), ok=False)
-            gd_agent.finish(getattr(self, "_ext_done", None), False, resp.get("error"))
-            self._ext_done = None
             return
         before = resp.get("before") or {}
         doh_msg = resp.get("doh", "")
@@ -361,8 +343,6 @@ class DnsWidget(QWidget):
         import gd_toast
 
         gd_toast.show_toast(i18n.t("toast.dns_apply", name=r["label"]), "ok")
-        gd_agent.finish(getattr(self, "_ext_done", None), True)
-        self._ext_done = None
 
     def _restore(self):
         if gd_bg.is_running(self._apply_worker):

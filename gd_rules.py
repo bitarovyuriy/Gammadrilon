@@ -59,6 +59,7 @@ ACTIONS = {
     "gpu_restore": i18n.t("Вернуть лимит GPU"),
     "purge_standby": i18n.t("Очистить standby list"),
     "set_dns": i18n.t("Сменить DNS"),
+    "gamma_preset": i18n.t("Применить пресет гаммы"),
 }
 
 #: действия, которым нужны права администратора: правило выполняет их только через
@@ -176,6 +177,10 @@ def describe(rule: dict) -> tuple[str, str, str]:
         act = i18n.t("Вернуть схему CPU")
     elif kind == "gpu_restore":
         act = i18n.t("Вернуть лимит GPU")
+    elif kind == "gamma_preset":
+        index = a.get("preset")
+        act = (i18n.t("Профиль гаммы: пресет #{v0}", v0=int(index) + 1)
+               if isinstance(index, int) else i18n.t("Профиль гаммы: не выбран"))
     else:
         act = ACTIONS.get(kind, "—")
     if kind in UNAVAILABLE_ACTIONS:

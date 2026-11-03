@@ -17,6 +17,7 @@ MSR/SMN процессора и Super I/O платы доступны тольк
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
 import json
 import os
 import sys
@@ -24,6 +25,7 @@ import time
 from pathlib import Path
 
 import gd_paths
+import gd_proc
 
 pdh = ctypes.WinDLL("pdh.dll")
 
@@ -42,6 +44,24 @@ _last_good: dict = {"cpu": None, "cpu_max": None, "vrm": None, "board": [], "ok"
 
 class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
     _fields_ = [("CStatus", ctypes.c_ulong), ("doubleValue", ctypes.c_double)]
+
+
+# Явные сигнатуры: без них ctypes на x64 передаёт указатели как 32-битные int,
+# и стек можно испортить (0xC0000409) — ровно та ошибка, что всплывала в смоуке.
+_wt = wintypes
+pdh.PdhOpenQueryW.argtypes = [_wt.LPCWSTR, ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)]
+pdh.PdhOpenQueryW.restype = ctypes.c_long
+pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, _wt.LPCWSTR, ctypes.c_size_t,
+                                      ctypes.POINTER(ctypes.c_void_p)]
+pdh.PdhAddEnglishCounterW.restype = ctypes.c_long
+pdh.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+pdh.PdhCollectQueryData.restype = ctypes.c_long
+pdh.PdhGetFormattedCounterValue.argtypes = [ctypes.c_void_p, _wt.DWORD,
+                                            ctypes.POINTER(_wt.DWORD),
+                                            ctypes.POINTER(_PDH_FMT_COUNTERVALUE)]
+pdh.PdhGetFormattedCounterValue.restype = ctypes.c_long
+pdh.PdhCloseQuery.argtypes = [ctypes.c_void_p]
+pdh.PdhCloseQuery.restype = ctypes.c_long
 
 
 class CpuSensors:
@@ -182,8 +202,30 @@ def service_running() -> bool:
         return False
 
 
+def launch_elevated(parent_pid: int) -> bool:
+    """Запустить хелпер датчиков из уже привилегированного процесса.
+
+    Вызывается общим elevated-компаньоном (``--gpu-service``): он уже с правами,
+    поэтому второго окна UAC не будет. Хелпер сам пишет ``sensors.json``.
+    """
+    helper = helper_path()
+    if helper is None:
+        return False
+    args = ["--stream", "1000", "--out", str(sample_path()), "--parent", str(int(parent_pid))]
+    try:
+        proc = gd_proc.popen([str(helper), *args], cwd=str(helper.parent))
+    except OSError:
+        return False
+    return proc is not None
+
+
 def start(force: bool = False) -> bool:
-    """Поднять хелпер с повышением прав. True — если он уже пишет замеры."""
+    """Поднять хелпер датчиков. True — если он уже пишет замеры.
+
+    Сначала просим общий elevated-компаньон: он один на всё приложение, и
+    датчики не показывают второе окно UAC. Свой ``runas`` остаётся запасным
+    путём — на случай, если компаньон не поднялся.
+    """
     global _start_ts
     if not driver_present():
         return False
@@ -192,6 +234,21 @@ def start(force: bool = False) -> bool:
     now = time.monotonic()
     if not force and now - _start_ts < START_BACKOFF:
         return False
+
+    try:
+        from gd_helper import HelperClient
+
+        resp = HelperClient().call({"cmd": "sensors_start", "parent": os.getpid()}, timeout=20)
+        if resp.get("ok"):
+            _start_ts = now
+            return True
+        # Штатный отказ (нет прав, отменённый UAC): второе окно не показываем —
+        # именно оно и превращало запуск в UAC-шторм.
+        if resp.get("error"):
+            return False
+    except Exception:  # noqa: BLE001 — сломан сам механизм компаньона
+        pass
+
     helper = helper_path()
     if helper is None:
         return False

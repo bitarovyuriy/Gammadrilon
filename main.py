@@ -2,6 +2,7 @@ import ctypes
 import json
 import math
 import os
+import shutil
 import sys
 import time
 from ctypes import wintypes
@@ -17,14 +18,27 @@ import gd_proc
 # окружению содержит не-ASCII символы (например, D:\Сlaude\...), путь к
 # плагинам превращается в мусор и QApplication падает без сообщения об ошибке.
 # Переменную окружения QT_PLUGIN_PATH Qt читает корректно — выставляем заранее.
+# В сборке PyInstaller то же самое случается в onefile: он распаковывается в
+# %TEMP%\_MEIxxxx, а имя пользователя у людей часто русское. Свои плагины
+# важнее чужих: переменная процесса — только наше приложение.
 try:
     import sysconfig as _sysconfig
 
     _site = _sysconfig.get_paths().get("purelib", "")
-    _qt_plugins = os.path.join(_site, "PyQt5", "Qt5", "plugins")
-    if _site and not _site.isascii() and os.path.isdir(_qt_plugins):
-        os.environ.setdefault("QT_PLUGIN_PATH", _qt_plugins)
-except Exception:
+    _qt_candidates = []
+    if _site:
+        _qt_candidates.append(os.path.join(_site, "PyQt5", "Qt5", "plugins"))
+    _meipass = getattr(sys, "_MEIPASS", None)
+    if _meipass:
+        _qt_candidates.append(os.path.join(_meipass, "PyQt5", "Qt5", "plugins"))
+    for _qt_plugins in _qt_candidates:
+        if not _qt_plugins.isascii() and os.path.isdir(_qt_plugins):
+            os.environ["QT_PLUGIN_PATH"] = _qt_plugins
+            _qt_platforms = os.path.join(_qt_plugins, "platforms")
+            if os.path.isdir(_qt_platforms):
+                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _qt_platforms
+            break
+except Exception:  # noqa: BLE001
     pass
 
 
@@ -61,6 +75,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QPushButton,
     QSizePolicy,
@@ -89,10 +104,15 @@ import gd_theme as th  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 import gd_dialog  # noqa: E402
 import gd_icons  # noqa: E402
-import gd_agent  # noqa: E402
 import gd_perf  # noqa: E402
 import gd_display  # noqa: E402
 import gd_update  # noqa: E402
+import gd_hotkeys  # noqa: E402
+import gd_winwatch  # noqa: E402
+import gd_ddc  # noqa: E402
+import gd_hz  # noqa: E402
+import gd_rollback  # noqa: E402
+import gd_bg  # noqa: E402
 
 SLIDER_GROOVE_HEIGHT = 6
 SLIDER_HANDLE_SIZE = 22
@@ -102,6 +122,10 @@ SLIDER_HANDLE_SIZE = 22
 # единицах канала (0..65535): сброс к «ровной» кривой даёт тысячи, квантование
 # драйвера — десятки.
 GAMMA_WATCH_INTERVAL_MS = 4000
+#: WM_QUERYENDSESSION — Windows спрашивает, можно ли завершать сеанс
+WM_QUERYENDSESSION = 0x0011
+#: сколько ждать после смены окна: игра применяет свой цветовой профиль не мгновенно
+GAMMA_EVENT_DELAY_MS = 500
 GAMMA_WATCH_TOLERANCE = 2000
 
 # запись конфига откладывается и схлопывается: перетаскивание слайдера иначе
@@ -119,7 +143,8 @@ SIDE_ICONS = {
     "tab.utils": "utils",
     "tab.dns": "dns",
     "tab.zapret": "zapret",
-    "tab.agent": "api",
+    "tab.cs2": "cs2",
+    "tab.diagnose": "journal",
 }
 
 # --- устойчивость: лог падений и глобальные обработчики -----------------------
@@ -279,7 +304,12 @@ def resource_path(relative: str) -> Path:
 
 
 def config_path() -> Path:
-    return app_dir() / CONFIG_FILE
+    """Настройки живут в gd_paths: портативно — рядом, иначе в ProgramData.
+
+    Обёртка осталась для тестов и для кода, который импортирует её из main:
+    единое правило путей должно быть одно на все процессы.
+    """
+    return gd_paths.config_path()
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
@@ -388,6 +418,7 @@ DEFAULT_CONFIG = {
             "contrast": 1.0,
             "gamma": 1.0,
             "temperature": 6500,
+            "shadow": 0,
         },
         "hotkeys": {
             "next_preset": "page up",
@@ -409,6 +440,11 @@ DEFAULT_CONFIG = {
         # состояние переключателя: True — ограничения включены
         "perf_limited": False,
         "perf_sound": True,
+        # автопрофили гаммы: [{"exe": "cs2.exe", "preset": 2}] — при переходе
+        # в окно игры включается пресет, при выходе возвращается прежний
+        "auto_profiles": [],
+        # автопрофили выключены целиком, пока пользователь не добавит правило
+        "auto_profiles_on": True,
         # автолимит GPU: план (последнее подтверждённое значение) и галочка
         # «применять при запуске» (приложение вернёт план после перезагрузки)
         "gpu_auto_pl": None,
@@ -457,7 +493,6 @@ DEFAULT_CONFIG = {
 RUNTIME_SETTINGS: dict = {
     "language": None,          # None — язык по системе (см. i18n.detect)
     "theme": "dark",
-    "agent_api": False,
     # температуры через LibreHardwareMonitor: хелпер поднимается отдельно
     "sensors": True,
     # какой канал платы считать VRM (0 — не показывать)
@@ -469,7 +504,29 @@ RUNTIME_SETTINGS: dict = {
 #: человека, а не настройка («первый запуск пройден здесь» — и должен остаться;
 #: «когда последний раз стучались в GitHub» — тоже: на новой машине проверка
 #: должна пройти сама, а не ждать сутки из-за чужой отметки).
-SETTINGS_NOT_TRANSFERABLE = ("first_run_done", "updates_last_check")
+SETTINGS_NOT_TRANSFERABLE = ("first_run_done", "updates_last_check", "last_boot_ms")
+
+
+def _good_copy_path(path: Path) -> Path:
+    return path.with_name(path.name + ".good")
+
+
+_TASKBAR_CREATED: int | None = None
+
+
+def _taskbar_created_message() -> int:
+    """Номер сообщения, которое Windows рассылает после перезапуска Explorer.
+
+    Регистрируется один раз на процесс; 0 — если система не ответила (тогда
+    проверка просто не сработает, а не уронит окно).
+    """
+    global _TASKBAR_CREATED
+    if _TASKBAR_CREATED is None:
+        try:
+            _TASKBAR_CREATED = int(ctypes.windll.user32.RegisterWindowMessageW("TaskbarCreated"))
+        except Exception:  # noqa: BLE001
+            _TASKBAR_CREATED = 0
+    return _TASKBAR_CREATED
 
 
 def save_config(data: dict) -> bool:
@@ -481,6 +538,10 @@ def save_config(data: dict) -> bool:
     Qt необработанное исключение завершает приложение (PyQt5), а занятый чужим
     редактором файл — не повод падать. Честный ответ — False; вызывающий сам
     решает, что сказать пользователю.
+
+    Перед заменой текущий файл копируется в `presets.json.good` — одна
+    последняя заведомо целая версия. Из неё восстанавливаются настройки, если
+    файл окажется битым (ручная правка, оборванная запись, антивирус).
     """
     path = config_path()
     tmp = path.with_name(path.name + ".tmp")
@@ -490,6 +551,11 @@ def save_config(data: dict) -> bool:
             json.dump(data, file, indent=4, ensure_ascii=False)
             file.flush()
             os.fsync(file.fileno())
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                shutil.copy2(path, _good_copy_path(path))
+        except OSError:
+            pass          # копия — страховка, а не обязательный шаг записи
         os.replace(tmp, path)
         return True
     except OSError:
@@ -501,6 +567,9 @@ def save_config(data: dict) -> bool:
 
 
 def load_config() -> dict:
+    # Старые сборки держали presets.json рядом с exe. Перед чтением переносим
+    # его в data_dir один раз — иначе установленная версия начинает с дефолтов.
+    gd_paths.migrate_legacy_config()
     path = config_path()
 
     if not path.exists():
@@ -517,14 +586,31 @@ def load_config() -> dict:
     if not isinstance(data, dict):
         # битый файл (не JSON или не объект — список, строка) не выбрасываем:
         # рядом остаётся копия, а окно честно скажет о замене — иначе пресеты
-        # «тихо исчезают»
+        # «тихо исчезают». Сначала пробуем восстановить из последней целой
+        # копии: потерять наборы пресетов из-за одного битого байта обидно.
         global CONFIG_RECOVERY
         try:
             path.replace(path.with_name(path.name + ".bak"))
             CONFIG_RECOVERY = "backup"
         except OSError:
             CONFIG_RECOVERY = "no_backup"
-        data = json.loads(json.dumps(DEFAULT_CONFIG))
+
+        restored = None
+        try:
+            good = _good_copy_path(path)
+            if good.is_file():
+                with good.open("r", encoding="utf-8") as file:
+                    candidate = json.load(file)
+                if isinstance(candidate, dict):
+                    restored = candidate
+        except Exception:  # noqa: BLE001 — копия тоже может быть битой
+            restored = None
+
+        if restored is not None:
+            CONFIG_RECOVERY = "restored"
+            data = restored
+        else:
+            data = json.loads(json.dumps(DEFAULT_CONFIG))
         save_config(data)
         return data
 
@@ -597,6 +683,8 @@ def load_config() -> dict:
         preset.setdefault("contrast", 1.0)
         preset.setdefault("gamma", 1.0)
         preset.setdefault("temperature", 6500)
+        preset.setdefault("shadow", 0)
+        preset.setdefault("ddc", -1)
         preset.setdefault("hotkey", "")
 
         if not isinstance(preset["name"], str) or not preset["name"].strip():
@@ -608,12 +696,15 @@ def load_config() -> dict:
         preset["contrast"] = clamp(safe_float(preset["contrast"], 1.0), 0.3, 2.0)
         preset["gamma"] = clamp(safe_float(preset["gamma"], 1.0), 0.5, 2.5)
         preset["temperature"] = int(clamp(safe_int(preset["temperature"], 6500), 3000, 10000))
+        preset["shadow"] = int(clamp(safe_int(preset["shadow"], 0), 0, 100))
+        preset["ddc"] = int(clamp(safe_int(preset["ddc"], -1), -1, 100))
 
     current = settings["current"]
     current["brightness"] = clamp(safe_float(current.get("brightness", 1.0), 1.0), 0.5, 2.0)
     current["contrast"] = clamp(safe_float(current.get("contrast", 1.0), 1.0), 0.3, 2.0)
     current["gamma"] = clamp(safe_float(current.get("gamma", 1.0), 1.0), 0.5, 2.5)
     current["temperature"] = int(clamp(safe_int(current.get("temperature", 6500), 6500), 3000, 10000))
+    current["shadow"] = int(clamp(safe_int(current.get("shadow", 0), 0), 0, 100))
 
     if json.dumps(data, sort_keys=True, ensure_ascii=False) != before:
         save_config(data)
@@ -706,11 +797,13 @@ class GammaController:
         contrast: float,
         gamma: float = 1.0,
         temperature: int = 6500,
+        shadow: float = 0.0,
     ) -> tuple[list[int], list[int], list[int]]:
         brightness = clamp(brightness, 0.5, 2.0)
         contrast = clamp(contrast, 0.3, 2.0)
         gamma = clamp(gamma, 0.5, 2.5)
         temperature = int(clamp(temperature, 3000, 10000))
+        shadow = clamp(float(shadow), 0.0, 0.25)
 
         red_multiplier, green_multiplier, blue_multiplier = kelvin_to_rgb_multipliers(temperature)
 
@@ -736,12 +829,19 @@ class GammaController:
                 # реально влияла после умножения на температуру
                 x = x ** (1.0 / gamma)
 
-            # 4) Температура — каждый канал отдельно
+            # 4) Shadow Boost — поднимаем только тени, света не трогаем.
+            # Подъём затухает кубом к белому и потому не даёт изломов и
+            # «серой пелены»: (1-x)^3 на x=0.75 даёт всего 1.5% подъёма.
+            # Максимум 0.25 держит кривую монотонной (производная ≥ 0.25).
+            if shadow > 0.0 and 0.0 <= x < 1.0:
+                x = x + shadow * (1.0 - x) ** 3
+
+            # 5) Температура — каждый канал отдельно
             r_val = x * red_multiplier
             g_val = x * green_multiplier
             b_val = x * blue_multiplier
 
-            # 5) Финальный клип — только сейчас
+            # 6) Финальный клип — только сейчас
             r = int(clamp(r_val, 0.0, 1.0) * 65535)
             g = int(clamp(g_val, 0.0, 1.0) * 65535)
             b = int(clamp(b_val, 0.0, 1.0) * 65535)
@@ -805,8 +905,10 @@ class GammaController:
         contrast: float,
         gamma: float = 1.0,
         temperature: int = 6500,
+        shadow: float = 0.0,
     ) -> bool:
-        gamma_array = self.ramp_array(*self.build_ramp(brightness, contrast, gamma, temperature))
+        gamma_array = self.ramp_array(
+            *self.build_ramp(brightness, contrast, gamma, temperature, shadow))
 
         # 1) прежний путь: DC всего экрана (принимает гамму у большинства систем)
         hdc = self.user32.GetDC(None)
@@ -882,22 +984,16 @@ class HotkeyManager(QObject):
 
     def __init__(self):
         super().__init__()
-        self.handles = []
+        self.hotkeys = gd_hotkeys.Registrar()
+
+    def set_window(self, hwnd: int):
+        """Окно обязательно: WM_HOTKEY приходит именно ему, а не процессу."""
+        self.hotkeys.set_window(hwnd)
 
     def clear(self):
-        import keyboard
-
-        for handle in self.handles:
-            try:
-                keyboard.remove_hotkey(handle)
-            except Exception:
-                pass
-
-        self.handles.clear()
+        self.hotkeys.clear()
 
     def register(self, config: dict):
-        import keyboard
-
         self.clear()
 
         hotkeys = config.get("settings", {}).get("hotkeys", {})
@@ -909,11 +1005,7 @@ class HotkeyManager(QObject):
             if not hotkey:
                 return
 
-            try:
-                handle = keyboard.add_hotkey(hotkey, callback, suppress=False)
-                self.handles.append(handle)
-            except Exception as error:
-                self.error.emit(f"Hotkey error: {hotkey} — {error}")
+            self.hotkeys.register(hotkey, callback)
 
         safe_add(hotkeys.get("next_preset", "page up"), lambda: self.nextPreset.emit())
         safe_add(hotkeys.get("prev_preset", "page down"), lambda: self.prevPreset.emit())
@@ -929,6 +1021,13 @@ class HotkeyManager(QObject):
 
             if preset_hotkey:
                 safe_add(preset_hotkey, lambda i=index: self.presetRequested.emit(i))
+
+        for message in self.hotkeys.errors:
+            self.error.emit(f"Hotkey error: {message}")
+        self.hotkeys.errors.clear()
+
+    def dispatch(self, hotkey_id: int) -> bool:
+        return self.hotkeys.dispatch(hotkey_id)
 
 
 class TickScale(QWidget):
@@ -1051,15 +1150,18 @@ class CurveWidget(QWidget):
         self.contrast = 1.0
         self.gamma = 1.0
         self.temperature = 6500
+        self.shadow = 0.0
 
         self.setMinimumHeight(135)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-    def set_values(self, brightness: float, contrast: float, gamma: float, temperature: int):
+    def set_values(self, brightness: float, contrast: float, gamma: float, temperature: int,
+                   shadow: float = 0.0):
         self.brightness = brightness
         self.contrast = contrast
         self.gamma = gamma
         self.temperature = temperature
+        self.shadow = shadow
         self.update()
 
     def paintEvent(self, event):
@@ -1087,6 +1189,7 @@ class CurveWidget(QWidget):
             self.contrast,
             self.gamma,
             self.temperature,
+            self.shadow,
         )
 
         path = QPainterPath()
@@ -1158,17 +1261,9 @@ def hotkey_modifier_names(modifiers) -> list:
     return [name for flag, name in _MODIFIER_NAMES if modifiers & flag]
 
 
-def _keyboard_understands(token: str) -> bool:
-    """Поймёт ли keyboard такое имя клавиши (на всякий случай — да)."""
-    try:
-        import keyboard
-    except Exception:  # noqa: BLE001
-        return True
-    try:
-        keyboard.key_to_scan_codes(token)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+def _hotkeys_understand(token: str) -> bool:
+    """Разбирает ли наша регистрация такое имя клавиши."""
+    return gd_hotkeys.parse(token) is not None
 
 
 def hotkey_key_name(key: int, text: str = "") -> str:
@@ -1186,12 +1281,12 @@ def hotkey_key_name(key: int, text: str = "") -> str:
     candidate = _SHIFTED_PUNCT_KEYS.get(key) or _PUNCT_KEYS.get(key)
     if not candidate:
         return ""
-    if _keyboard_understands(candidate):
+    if _hotkeys_understand(candidate):
         return candidate
     # на не-английской раскладке ASCII-пунктуация может не отдавать Vk-код —
     # берём символ, который реально напечатался («[» на RU — это «х»)
     typed = (text or "").strip().lower()
-    if len(typed) == 1 and typed.isprintable() and _keyboard_understands(typed):
+    if len(typed) == 1 and typed.isprintable() and _hotkeys_understand(typed):
         return typed
     return ""
 
@@ -1607,17 +1702,6 @@ class NavItem(QWidget):
         super().keyPressEvent(event)
 
 
-class AgentBridge(QObject):
-    """Мост «поток API-сервера → GUI-поток» (ТЗ, этап 8).
-
-    Сервер живёт в своих потоках и не трогает ни Qt-виджеты, ни PDH-запросы:
-    каждый запрос превращается в сигнал (он thread-safe), GUI-поток выполняет
-    действие и будит ожидающий серверный поток через `threading.Event`.
-    """
-
-    request = pyqtSignal(object)
-
-
 class TitleBar(QWidget):
     """Шапка окна, которую можно тянуть мышью.
 
@@ -1736,6 +1820,28 @@ class MainWindow(QMainWindow):
         self.gamma_watch_timer.setInterval(GAMMA_WATCH_INTERVAL_MS)
         self.gamma_watch_timer.timeout.connect(self.gamma_watch_tick)
 
+        # смена полноэкранного окна: игра выходит вперёд и сбрасывает рампу
+        # своим профилем — ждать очередного тика таймера незачем
+        self._gamma_event_pending = False
+        self._fg_watcher = None
+        self._fg_pid = 0
+        # пресет, который был на экране до входа в игру: его вернём на выходе
+        self._auto_prev_index = None
+        # и частота, которая была до игры
+        self._auto_prev_hz = None
+
+        # подсветка матрицы: dxva2 на первом вызове молчит секунды, поэтому
+        # поиск монитора — в фоне, а запись яркости — с задержкой
+        self._ddc = None
+        self._ddc_monitor = None
+        self._ddc_loading = False
+        self._ddc_pending = 0
+        self._ddc_last_ok = 0
+        self._ddc_timer = QTimer(self)
+        self._ddc_timer.setSingleShot(True)
+        self._ddc_timer.setInterval(300)
+        self._ddc_timer.timeout.connect(self._ddc_apply)
+
         self.setWindowTitle(APP_NAME)
         self.resize(self.compact_size)
         self.setMinimumSize(self.min_window_size)
@@ -1753,27 +1859,13 @@ class MainWindow(QMainWindow):
         # ключ last_page убран из настроек, чтобы не копить мёртвое значение.
         self.build_ui()
         self.build_tray()
+        # RegisterHotKey привязывает сочетания к HWND: без окна WM_HOTKEY не
+        # придёт. winId() создаёт нативное окно, если его ещё нет.
+        self.hotkey_manager.set_window(int(self.winId()))
         gd_boot.mark("init:tray")
         self.start_rules()
         self.start_quiet_hour()
         gd_boot.mark("init:rules")
-        # локальный API для инструментов (ТЗ, этап 8): сервер и обработчики
-        self._agent_server = None
-        self._agent_confirm_open = False
-        self._agent_confirm_dialog = None
-        self._agent_bridge = AgentBridge()
-        self._agent_bridge.request.connect(self._agent_handle)
-        self._agent_handlers = {
-            "status": self._agent_status,
-            "sensors": self._agent_sensors,
-            "journal": self._agent_journal,
-            "rules": self._agent_rules,
-            "zapret": self._agent_zapret,
-            "cpu_profile": self._agent_cpu_profile,
-            "gpu_profile": self._agent_gpu_profile,
-            "gpu_limit": self._agent_gpu_limit,
-            "dns_set": self._agent_dns_set,
-        }
         # тема уже применена до сборки окна (см. main()): страницы собраны со
         # своим QSS. Повторно применяем, только если настройка разошлась с
         # активной палитрой (правка файла между двумя чтениями — редкость).
@@ -1788,25 +1880,29 @@ class MainWindow(QMainWindow):
 
             if gd_onboarding.should_show(self.config):
                 QTimer.singleShot(
-                    500, lambda: gd_onboarding.run(self.config, save_config, self))
+                    500, lambda: gd_onboarding.run(self.config, save_config, self,
+                                     startup_fn=self.set_start_with_windows))
         except Exception:  # noqa: BLE001
             pass
         self.bind_hotkeys()
+        gd_boot.mark("init:hotkeys")
         self._fix_tab_order()
+        gd_boot.mark("init:taborder")
 
         # стартовый экран — «Главный»: индекс 0 задан порядком _add_page, а
         # прежняя вкладка больше не восстанавливается (см. __init__)
         home_idx = self._key_to_index.get("tab.home")
         if home_idx is not None and home_idx != self.tabs.currentIndex():
             self.tabs.setCurrentIndex(home_idx)
+        gd_boot.mark("init:sensors")
         self._start_sensor_helper()
+        gd_boot.mark("init:sensor-helper")
 
         # автолимит GPU: после старта вернуть лимит по настройке (фон, один раз)
         QTimer.singleShot(1500, self._gpu_autostart_check)
         # локальный API: поднимаем только если пользователь включал его сам
-        if bool(self.config.get("settings", {}).get("agent_api", False)):
-            QTimer.singleShot(1200, self._agent_autostart)
 
+        gd_boot.mark("init:setui-before")
         current = self.config["settings"]["current"]
 
         self.set_ui_values(
@@ -1816,13 +1912,44 @@ class MainWindow(QMainWindow):
             current.get("temperature", 6500),
             apply_now=True,
             save=False,
+            shadow=current.get("shadow", 0),
         )
 
+        gd_boot.mark("init:watch")
         self.gamma_watch_timer.start()
+        gd_boot.mark("init:fgwatch")
+        self._start_foreground_watch()
+        gd_boot.mark("init:ddc")
+        self._start_ddc_probe()
+        gd_boot.mark("init:rollback")
+        self._rollback_after_crash()
 
         # честный старт: если конфиг пришлось заменить дефолтом, об этом говорят
         self._config_recovery_note()
+        self._write_rights_note()
         gd_boot.mark("init:done")
+
+        # время старта сохраняем: «тормозит на старте» — это факт, а не ощущение
+        try:
+            self.config.setdefault("settings", {})["last_boot_ms"] = gd_boot.elapsed_ms()
+            self._save_config(now=True)
+        except Exception:  # noqa: BLE001 — замер не повод не запуститься
+            pass
+
+    def _write_rights_note(self) -> None:
+        """Настройки, которые некуда сохранить, — тихая беда: сказать вслух.
+
+        Бывает при установке в `Program Files` без прав администратора:
+        слайдеры двигаются, пресеты «сохраняются», после перезапуска пусто.
+        """
+        if CONFIG_RECOVERY == "restored":
+            return                      # уже сказали про восстановление
+        ok, detail = gd_paths.can_write_data()
+        if not ok:
+            self.set_status(i18n.t(
+                "Папка настроек недоступна для записи ({v0}). Включите портативный "
+                "режим в «Утилитах» или запустите программу от администратора.",
+                v0=detail))
 
     def make_card(self) -> tuple[QFrame, QVBoxLayout]:
         frame = QFrame()
@@ -1899,6 +2026,44 @@ class MainWindow(QMainWindow):
     def tune_button(self, button: QPushButton):
         button.setMinimumHeight(38)
         button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def nativeEvent(self, event_type, message):
+        """WM_HOTKEY от RegisterHotKey: система присылает его окну, а не процессу."""
+        if event_type != b"windows_generic_MSG":
+            return super().nativeEvent(event_type, message)
+        try:
+            from ctypes import wintypes
+
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == gd_hotkeys.WM_HOTKEY:
+                self.hotkey_manager.dispatch(int(msg.wParam))
+                return True, 0
+            taskbar = _taskbar_created_message()
+            if taskbar and msg.message == taskbar:
+                # Explorer перезапустился (обновление, сбой) — трей о нём
+                # забыл, и значок исчез: показываем заново
+                self._restore_tray()
+                return True, 0
+            if msg.message == WM_QUERYENDSESSION:
+                # сеанс завершают (выключение/перезагрузка): временные изменения
+                # лучше вернуть самим — ждать следующего старта некому
+                self._restore_before_shutdown()
+                return True, 1
+        except Exception:  # noqa: BLE001 — не наше сообщение или окно уже закрыто
+            pass
+        return super().nativeEvent(event_type, message)
+
+    def _restore_tray(self) -> None:
+        """Вернуть значок в трей после перезапуска Explorer."""
+        tray = getattr(self, "tray", None)
+        if tray is None:
+            return
+        try:
+            tray.hide()
+            tray.show()
+        except Exception:  # noqa: BLE001 — значок не повод падать
+            return
+        self.set_status(i18n.t("Explorer перезапустился — значок вернулся в трей"))
 
     def build_ui(self):
         self.setStyleSheet(APP_STYLESHEET)
@@ -2107,8 +2272,21 @@ class MainWindow(QMainWindow):
             "%",
         )
 
+        # Shadow Boost: поднимает только тёмные уровни, света не трогает.
+        # Шкала в процентах силы, в кривой это 0..0.25.
+        self.shadow_row, self.shadow_slider, self.shadow_value = self.make_slider_row(
+            "Тени",
+            0,
+            100,
+            0,
+            "%",
+        )
+        self.shadow_slider.setToolTip(i18n.t(
+            "Вытягивает детали в тёмных сценах, не поднимая светлые участки."))
+
         self.brightness_slider.valueChanged.connect(self.on_slider_changed)
         self.contrast_slider.valueChanged.connect(self.on_slider_changed)
+        self.shadow_slider.valueChanged.connect(self.on_slider_changed)
 
         # температура — слайдер поверх градиентной полосы
         temp_block = QWidget()
@@ -2164,6 +2342,7 @@ class MainWindow(QMainWindow):
 
         advanced_layout.addWidget(self.brightness_row)
         advanced_layout.addWidget(self.contrast_row)
+        advanced_layout.addWidget(self.shadow_row)
         advanced_layout.addWidget(temp_block)
 
         # кривая гаммы
@@ -2250,6 +2429,151 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(advanced_card)
 
+        # ---------- подсветка монитора (DDC/CI) ----------
+        # это яркость самой матрицы, а не картинки: гамма может быть сколь угодно
+        # тёмной, а подсветка всё равно светит в глаза
+        ddc_card, ddc_layout = self.make_card()
+
+        ddc_head = QHBoxLayout()
+        ddc_head.setContentsMargins(0, 0, 0, 0)
+        ddc_head.setSpacing(th.SPACE_S)
+
+        ddc_title = QLabel()
+        self.bind_text(ddc_title, "Подсветка монитора")
+        ddc_title.setObjectName("SectionTitle")
+
+        self.ddc_value = QLabel()
+        self.ddc_value.setObjectName("RowValue")
+        self.set_value_text(self.ddc_value, 0, "%")
+
+        ddc_head.addWidget(ddc_title)
+        ddc_head.addStretch()
+        ddc_head.addWidget(self.ddc_value, 0, Qt.AlignBottom)
+
+        ddc_layout.addLayout(ddc_head)
+
+        self.ddc_hint = QLabel()
+        self.bind_text(self.ddc_hint, "ищем монитор…")
+        self.ddc_hint.setObjectName("CardHint")
+        self.ddc_hint.setWordWrap(True)
+        ddc_layout.addWidget(self.ddc_hint)
+
+        self.ddc_slider = QSlider(Qt.Horizontal)
+        self.ddc_slider.setMinimum(0)
+        self.ddc_slider.setMaximum(100)
+        self.ddc_slider.setValue(0)
+        self.ddc_slider.setMinimumHeight(SLIDER_HANDLE_SIZE)
+        self.ddc_slider.setCursor(Qt.PointingHandCursor)
+        self.ddc_slider.setEnabled(False)
+        self.ddc_slider.valueChanged.connect(self.on_ddc_changed)
+        ddc_layout.addWidget(self.ddc_slider)
+
+        left_layout.addWidget(ddc_card)
+
+        # ---------- автопрофиль по игре ----------
+        auto_card, auto_layout = self.make_card()
+
+        auto_head = QHBoxLayout()
+        auto_head.setContentsMargins(0, 0, 0, 0)
+        auto_head.setSpacing(th.SPACE_S)
+
+        auto_title = QLabel()
+        self.bind_text(auto_title, "Автопрофиль по игре")
+        auto_title.setObjectName("SectionTitle")
+
+        self.auto_enabled = QCheckBox()
+        self.bind_text(self.auto_enabled, "включено")
+        self.auto_enabled.setChecked(bool(
+            self.config.get("settings", {}).get("auto_profiles_on", True)))
+        self.auto_enabled.toggled.connect(self.set_auto_profiles_on)
+
+        auto_head.addWidget(auto_title)
+        auto_head.addStretch()
+        auto_head.addWidget(self.auto_enabled, 0, Qt.AlignBottom)
+
+        auto_layout.addLayout(auto_head)
+
+        self.auto_hint = QLabel()
+        self.bind_text(self.auto_hint, "Профиль включается, когда окно игры выходит вперёд.")
+        self.auto_hint.setObjectName("CardHint")
+        self.auto_hint.setWordWrap(True)
+        auto_layout.addWidget(self.auto_hint)
+
+        self.auto_list = QListWidget()
+        self.auto_list.setObjectName("AutoList")
+        self.auto_list.setMaximumHeight(96)
+        auto_layout.addWidget(self.auto_list)
+
+        auto_buttons = QHBoxLayout()
+        auto_buttons.setContentsMargins(0, 0, 0, 0)
+        auto_buttons.setSpacing(th.SPACE_S)
+
+        self.auto_add_button = QPushButton()
+        self.bind_text(self.auto_add_button, "Добавить…")
+        self.tune_button(self.auto_add_button)
+        self.auto_add_button.clicked.connect(self.add_auto_profile)
+
+        self.auto_remove_button = QPushButton()
+        self.bind_text(self.auto_remove_button, "Удалить")
+        self.tune_button(self.auto_remove_button)
+        self.auto_remove_button.clicked.connect(self.remove_auto_profile)
+
+        auto_buttons.addWidget(self.auto_add_button)
+        auto_buttons.addWidget(self.auto_remove_button)
+        auto_buttons.addStretch()
+
+        auto_layout.addLayout(auto_buttons)
+
+        left_layout.addWidget(auto_card)
+        self.refresh_auto_list()
+
+        # ---------- частота обновления ----------
+        hz_card, hz_layout = self.make_card()
+
+        hz_head = QHBoxLayout()
+        hz_head.setContentsMargins(0, 0, 0, 0)
+        hz_head.setSpacing(th.SPACE_S)
+
+        hz_title = QLabel()
+        self.bind_text(hz_title, "Частота обновления")
+        hz_title.setObjectName("SectionTitle")
+
+        self.hz_hint = QLabel()
+        self.hz_hint.setObjectName("RowValue")
+        self.hz_hint.setText("…")
+
+        hz_head.addWidget(hz_title)
+        hz_head.addStretch()
+        hz_head.addWidget(self.hz_hint, 0, Qt.AlignBottom)
+
+        hz_layout.addLayout(hz_head)
+
+        hz_row = QHBoxLayout()
+        hz_row.setContentsMargins(0, 0, 0, 0)
+        hz_row.setSpacing(th.SPACE_S)
+
+        self.hz_combo = QComboBox()
+        self.hz_combo.setMinimumWidth(120)
+
+        self.hz_apply_button = QPushButton()
+        self.bind_text(self.hz_apply_button, "Применить")
+        self.tune_button(self.hz_apply_button)
+        self.hz_apply_button.clicked.connect(self.apply_refresh_rate)
+
+        hz_row.addWidget(self.hz_combo, 1)
+        hz_row.addWidget(self.hz_apply_button)
+
+        hz_layout.addLayout(hz_row)
+
+        self.hz_note = QLabel()
+        self.bind_text(self.hz_note, "Меняется только частота: разрешение и цвет остаются прежними.")
+        self.hz_note.setObjectName("CardHint")
+        self.hz_note.setWordWrap(True)
+        hz_layout.addWidget(self.hz_note)
+
+        left_layout.addWidget(hz_card)
+        self._start_hz_probe()
+
         left_layout.addStretch()
 
         footer = QLabel()
@@ -2288,6 +2612,8 @@ class MainWindow(QMainWindow):
         self._add_page(self._gpu_page, "tab.gpu")
         gd_boot.mark("page:gpu")
 
+        self._add_page(None, "tab.cs2", factory=self._make_cs2_page)
+
         # Остальные страницы ленивые: модуль вкладки импортируется и виджеты
         # строятся при первом открытии вкладки (или первом действии, которому
         # нужен её объект), а не на старте окна — см. `_ensure_page`.
@@ -2295,7 +2621,7 @@ class MainWindow(QMainWindow):
         self._add_page(None, "tab.utils", factory=self._make_utils_page)
         self._add_page(None, "tab.dns", factory=self._make_dns_page)
         self._add_page(None, "tab.zapret", factory=self._make_zapret_page)
-        self._add_page(None, "tab.agent", factory=self._make_agent_page)
+        self._add_page(None, "tab.diagnose", factory=self._make_diagnose_page)
 
         self._retranslate_tabs()
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -2347,9 +2673,10 @@ class MainWindow(QMainWindow):
         layout = (
             ("page", "tab.home"),
             ("grp", "side.power"), ("page", "tab.cpu"), ("page", "tab.gpu"),
+            ("page", "tab.cs2"),
             ("grp", "side.system"), ("page", "tab.gamma"), ("page", "tab.rules"),
             ("page", "tab.utils"), ("page", "tab.dns"), ("page", "tab.zapret"),
-            ("page", "tab.agent"),
+            ("page", "tab.diagnose"),
         )
         for kind, key in layout:
             if kind == "grp":
@@ -2831,11 +3158,18 @@ class MainWindow(QMainWindow):
         self._zapret_page = ZapretWidget(standalone=False, host=self)
         return self._zapret_page
 
-    def _make_agent_page(self):
-        from gd_agent_ui import AgentWidget
+    def _make_diagnose_page(self):
+        from gd_diagnose_ui import DiagnoseWidget
 
-        self._agent_page = AgentWidget(standalone=False, host=self)
-        return self._agent_page
+        self._diagnose_page = DiagnoseWidget(standalone=False, host=self)
+        return self._diagnose_page
+
+    def _make_cs2_page(self):
+        from gd_cs2_ui import Cs2Widget
+
+        self._cs2_page = Cs2Widget(standalone=False, host=self, config=self.config,
+                                   save_fn=save_config)
+        return self._cs2_page
 
     def _fix_tab_order(self) -> None:
         """Порядок обхода Tab: сайдбар → содержимое страницы → кнопки титлбара.
@@ -3246,6 +3580,14 @@ class MainWindow(QMainWindow):
             if kind == "set_dns":
                 self._rule_set_dns(rule)
                 return None
+            if kind == "gamma_preset":
+                index = safe_int(action.get("preset"), -1)
+                presets = self.config.get("presets") or []
+                if not 0 <= index < len(presets):
+                    raise ValueError(i18n.t("пресет №{v0} не найден", v0=index + 1))
+                self.apply_preset_by_index(index, auto=True)
+                return i18n.t("«{v0}»: пресет гаммы «{v1}» включён", v0=name,
+                              v1=presets[index].get("name", f"#{index + 1}"))
         except Exception as exc:  # noqa: BLE001
             detail = i18n.t("«{v0}»: ошибка — {v1}", v0=name, v1=exc)
             self._report_failure(
@@ -3369,258 +3711,6 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self._report_failure(i18n.t("Профиль GPU не применён: {v0}", v0=exc))
 
-    # -- локальный API для инструментов (ТЗ, этап 8) ------------------------
-    def _agent_autostart(self):
-        """Поднять API при старте приложения (только если включал пользователь)."""
-        ok, err = self.start_agent_api()
-        if not ok:
-            try:
-                page = self._ensure_page("tab.agent")
-                if page is not None:
-                    page._show_warn(err)
-            except Exception:  # noqa: BLE001
-                pass
-            self.set_status(i18n.t("Локальный API не запущен: {v0}", v0=err), ok=False)
-
-    def start_agent_api(self) -> tuple[bool, str]:
-        """Включить локальный API: сервер, токен, аудит. → (ок, ошибка)."""
-        if self._agent_server is not None and self._agent_server.running():
-            return True, ""
-        server = gd_agent.AgentServer(runner=self._agent_runner, version=APP_VERSION)
-        ok, err = server.start()
-        if not ok:
-            return False, err
-        self._agent_server = server
-        page = self._ensure_page("tab.agent")  # ленивый экран собирается под действие
-        if page is not None:
-            page.set_running(server.port, server.warn)
-        self.set_agent_autostart(True)
-        self.set_status(i18n.t("Локальный API включён: {v0}", v0=server.endpoint()))
-        return True, ""
-
-    def stop_agent_api(self, remember: bool = True) -> None:
-        """Выключить API: остановить сервер и убрать адрес из конфига."""
-        server, self._agent_server = self._agent_server, None
-        if server is not None:
-            server.stop()
-        try:
-            page = getattr(self, "_agent_page", None)
-            if page is not None:
-                page.set_stopped()
-        except Exception:  # noqa: BLE001
-            pass
-        if remember:
-            self.set_agent_autostart(False)
-            self.set_status(i18n.t("Локальный API выключен."))
-
-    def agent_state(self) -> dict:
-        server = self._agent_server
-        if server is None or not server.running():
-            return {"running": False, "port": 0, "warn": ""}
-        return {"running": True, "port": server.port, "warn": server.warn}
-
-    def agent_autostart(self) -> bool:
-        return bool(self.config.get("settings", {}).get("agent_api", False))
-
-    def set_agent_autostart(self, on: bool) -> None:
-        """Запомнить «поднимать API при старте» (в presets.json).
-
-        Файл пишем только при изменении: `start_agent_api` зовёт это при каждом
-        запуске API, в том числе по автостарту, — иначе каждый старт окна с уже
-        включённым автостартом переписывал бы настройки «в никуда».
-        """
-        settings = self.config.setdefault("settings", {})
-        if bool(settings.get("agent_api", False)) == bool(on):
-            return
-        settings["agent_api"] = bool(on)
-        self._save_config()
-
-    def _agent_runner(self, action: str, params: dict, mutate: bool) -> dict:
-        """Вызов из потока API-сервера: маршалим в GUI-поток и ждём итог.
-
-        Серверные потоки не трогают ни Qt-виджеты, ни PDH-запросы: действие
-        выполняется в GUI-потоке (там же, где кнопки вкладок), а этот поток
-        ждёт результат через event. Не дождались — честная ошибка, не выдумка.
-        """
-        import threading
-
-        req = {"action": action, "params": params, "mutate": mutate,
-               "event": threading.Event(), "result": None}
-        self._agent_bridge.request.emit(req)
-        if not req["event"].wait(gd_agent.action_timeout(action) + 5.0):
-            return {"ok": False, "error": i18n.t(
-                "таймаут: окно не ответило — приложение занято, скрыто в трее или запрос ждёт подтверждения")}
-        return req["result"] or {"ok": False, "error": i18n.t("пустой ответ приложения")}
-
-    def _agent_handle(self, req: dict) -> None:
-        """GUI-поток: подтверждение пользователя (для mutate) и выполнение."""
-        action = req.get("action") or ""
-        spec = gd_agent.find(action)
-        if spec is None:
-            self._agent_reply(req, {"ok": False, "error": i18n.t("неизвестное действие: {v0}", v0=action)})
-            return
-        if spec.kind != "mutate" or not req.get("mutate"):
-            self._agent_execute(req, spec)
-            return
-        if self._agent_confirm_open:
-            self._agent_reply(req, {"ok": False, "error": i18n.t(
-                "уже есть запрос на подтверждение — этот отклонён")})
-            return
-        from gd_agent_ui import AgentConfirmDialog
-
-        self._agent_confirm_open = True
-        self.show_window()          # запрос нужно увидеть: окно могло быть в трее
-        dlg = AgentConfirmDialog(spec, req.get("params") or {}, parent=self)
-        self._agent_confirm_dialog = dlg
-
-        def _decided(res):
-            self._agent_confirm_open = False
-            self._agent_confirm_dialog = None
-            if int(res) == QDialog.Accepted:
-                self._agent_execute(req, spec)
-            else:
-                self._agent_reply(req, {"ok": False, "error": i18n.t("пользователь отклонил запрос")})
-
-        dlg.finished.connect(_decided)
-        dlg.open()
-
-    def _agent_execute(self, req: dict, spec) -> None:
-        """Выполнить действие (после подтверждения) и вернуть итог в поток сервера."""
-        handler = self._agent_handlers.get(spec.name)
-        if handler is None:
-            self._agent_reply(req, {"ok": False, "error": i18n.t("действие не подключено: {v0}", v0=spec.name)})
-            return
-        try:
-            res = handler(req.get("params") or {}, req)
-        except Exception as exc:  # noqa: BLE001
-            self._agent_reply(req, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-            return
-        if res is not None:      # None = асинхронное действие: ответит on_done-хук страницы
-            self._agent_reply(req, res)
-
-    @staticmethod
-    def _agent_reply(req: dict, result: dict) -> None:
-        """Записать итог и разбудить серверный поток (ровно один раз)."""
-        if req["event"].is_set():
-            return
-        req["result"] = result
-        req["event"].set()
-
-    # -- обработчики действий API -------------------------------------------
-    def _agent_status(self, params: dict, req) -> dict:
-        """Сводка: версия, профили, DNS, обход DPI. Только кэши и файлы — без тяжёлых сканов."""
-        import gd_metrics
-        import gd_power
-
-        data = {
-            "app": {"name": APP_NAME, "version": APP_VERSION, "api_protocol": gd_agent.PROTOCOL},
-            "cpu": {
-                "profile": self._power_page.current_profile(),
-                "scheme": gd_power.scheme_name(gd_power.get_active_scheme()),
-            },
-            "gpu": {"profile": self._gpu_page.current_profile()},
-            "dns": gd_metrics.dns(),
-            "zapret": self._agent_zapret_data(),
-        }
-        return {"ok": True, "data": data}
-
-    def _zapret_path(self) -> str:
-        """Папка zapret из настроек — как у вкладки обхода, но без её сборки.
-
-        Нужна локальному API и статусу: значения живут в конфиге, и собирать
-        ленивый экран ради строки пути не нужно (см. gd_zapret_ui._path).
-        """
-        try:
-            return str((self.config.get("settings") or {}).get("zapret_path") or "")
-        except Exception:  # noqa: BLE001
-            return ""
-
-    def _agent_zapret_data(self) -> dict:
-        """Состояние обхода DPI без полного сканирования (файл состояния + PID)."""
-        import gd_zapret
-
-        ours = gd_zapret.our_state()
-        alive = bool(ours) and gd_zapret.pid_alive(ours.get("pid"))
-        return {
-            "path": self._zapret_path(),
-            "ours": ours if alive else None,
-            "our_stale": bool(ours) and not alive,
-        }
-
-    def _agent_sensors(self, params: dict, req) -> dict:
-        import gd_metrics
-
-        cpu = gd_metrics.cpu()
-        return {"ok": True, "data": {
-            "cpu_mhz": cpu.get("mhz"),
-            "cpu_perf_pct": cpu.get("perf_pct"),
-            "cpu_load_pct": cpu.get("load_pct"),
-            "ram_pct": gd_metrics.ram(),
-            "temp_c": cpu.get("temp_c"),
-            "vrm_c": cpu.get("vrm_c"),
-        }}
-
-    def _agent_journal(self, params: dict, req) -> dict:
-        import gd_journal
-
-        report = gd_journal.read_report(int(params.get("n") or 50))
-        return {"ok": True, "data": report["items"], "note": gd_journal.state_note()}
-
-    def _agent_rules(self, params: dict, req) -> dict:
-        import gd_rules
-
-        out = []
-        for r in gd_rules.load_rules():
-            try:
-                trig, cond, act = gd_rules.describe(r)
-            except Exception:  # noqa: BLE001
-                trig = cond = act = ""
-            out.append({"on": bool(r.get("on")), "trigger": trig,
-                        "condition": cond, "action": act})
-        return {"ok": True, "data": out}
-
-    def _agent_zapret(self, params: dict, req) -> dict:
-        import gd_zapret
-
-        return {"ok": True, "data": gd_zapret.snapshot(self._zapret_path())}
-
-    # -- изменяющие действия (после подтверждения) --------------------------
-    def _agent_cpu_profile(self, params: dict, req):
-        self._power_page.apply_profile(
-            params["profile"], source=i18n.t("агент"),
-            on_done=lambda resp: self._agent_reply(req, {
-                "ok": bool(resp.get("ok")), "error": resp.get("error")}))
-        return None            # итог придёт асинхронно через on_done
-
-    def _agent_gpu_profile(self, params: dict, req):
-        def done(resp):
-            self._agent_reply(req, {"ok": bool(resp.get("ok")), "error": resp.get("error")})
-
-        self._gpu_page.apply_profile(params["profile"], source=i18n.t("агент"), on_done=done)
-        return None
-
-    def _agent_gpu_limit(self, params: dict, req):
-        def done(resp):
-            self._agent_reply(req, {"ok": bool(resp.get("ok")), "error": resp.get("error")})
-
-        self._gpu_page.apply_limit(int(params["watts"]), source=i18n.t("агент"), on_done=done)
-        return None
-
-    def _agent_dns_set(self, params: dict, req):
-        dns = self._ensure_page("tab.dns")  # ленивый экран собирается под действие
-        if dns is None:
-            self._agent_reply(req, {"ok": False, "error": i18n.t("вкладка DNS недоступна")})
-            return None
-        dns.set_provider(
-            params["provider"], source=i18n.t("агент"),
-            on_done=lambda resp: self._agent_reply(req, {
-                "ok": bool(resp.get("ok")), "error": resp.get("error")}))
-        return None
-
-
-
-
-
     def open_palette(self):
         from gd_palette import CommandPalette
 
@@ -3632,6 +3722,42 @@ class MainWindow(QMainWindow):
 
         dlg = JournalDialog(self)
         dlg.exec_()
+
+    def open_calibration(self):
+        """Калибровка теней по шагам: итог сразу применяется и сохраняется."""
+        import gd_calibrate
+
+        def apply(gamma: float, shadow: float) -> None:
+            strength = int(round(shadow / 0.25 * 100))
+            self.shadow_slider.blockSignals(True)
+            self.shadow_slider.setValue(strength)
+            self.shadow_slider.blockSignals(False)
+            self.gamma_slider.blockSignals(True)
+            self.gamma_slider.setValue(int(round(gamma * 100)))
+            self.gamma_slider.blockSignals(False)
+            self.update_value_labels()
+            brightness, contrast, _gamma, temperature = self.values_from_ui()
+            self.apply_values(brightness, contrast, gamma, temperature,
+                              save=True, shadow=strength)
+
+        gd_calibrate.run(apply, parent=self,
+                         gamma=self.gamma_slider.value() / 100.0,
+                         shadow=self.shadow_strength() / 100.0 * 0.25)
+
+    def open_white_point(self):
+        """Подбор температуры по серой плитке: нейтраль вместо «на глаз»."""
+        import gd_calibrate
+
+        def apply(temperature: int) -> None:
+            self.temperature_slider.blockSignals(True)
+            self.temperature_slider.setValue(int(temperature))
+            self.temperature_slider.blockSignals(False)
+            self.update_value_labels()
+            brightness, contrast, gamma, _temperature = self.values_from_ui()
+            self.apply_values(brightness, contrast, gamma, int(temperature), save=True)
+
+        gd_calibrate.run_white_point(apply, parent=self,
+                                     temperature=self.temperature_slider.value())
 
     def on_tray_activated(self, reason):
 
@@ -3672,9 +3798,9 @@ class MainWindow(QMainWindow):
         zapret = getattr(self, "_zapret_page", None)
         if zapret is not None:
             (zapret.activate() if page is zapret else zapret.deactivate())
-        agent = getattr(self, "_agent_page", None)
-        if agent is not None:
-            (agent.activate() if page is agent else agent.deactivate())
+        cs2 = getattr(self, "_cs2_page", None)
+        if cs2 is not None:
+            (cs2.activate() if page is cs2 else cs2.deactivate())
         self._sync_metrics_activity()
 
     def open_dns_tab(self):
@@ -3733,7 +3859,8 @@ class MainWindow(QMainWindow):
         """Показать экран первого запуска вручную (из палитры команд)."""
         import gd_onboarding
 
-        gd_onboarding.run(self.config, save_config, self)
+        gd_onboarding.run(self.config, save_config, self,
+                          startup_fn=self.set_start_with_windows)
 
     def set_language(self, name: str) -> str:
         """Сменить язык интерфейса (ТЗ 5). Динамически обновляем оболочку."""
@@ -4039,9 +4166,16 @@ class MainWindow(QMainWindow):
             if not gd_sensors.driver_present():
                 gd_boot.mark("sensors:no-driver")
                 return
-            gd_boot.mark("sensors:started" if gd_sensors.start() else "sensors:failed")
+            # запуск хелпера — до трёх секунд ожидания драйвера: в фоне, иначе
+            # окно уже нарисовано, но не отвечает, и старт «долгий» на пустом месте
+            gd_boot.mark("sensors:submit")
+            gd_bg.submit(gd_sensors.start, self._sensor_helper_done)
         except Exception:  # noqa: BLE001 — без температур приложение обязано работать
             gd_boot.mark("sensors:error")
+
+    def _sensor_helper_done(self, started) -> None:
+        """Хелпер температур поднялся (или нет) — только отметка, окно не трогаем."""
+        gd_boot.mark("sensors:started" if started else "sensors:failed")
 
     def _gpu_autostart_check(self):
         """Старт приложения: вернуть лимит GPU по настройке «применять при запуске».
@@ -4145,6 +4279,15 @@ class MainWindow(QMainWindow):
 
         return brightness, contrast, gamma, temperature
 
+    def shadow_strength(self) -> int:
+        """Сила Shadow Boost в процентах шкалы (0..100), не в единицах кривой."""
+        slider = getattr(self, "shadow_slider", None)
+        return int(slider.value()) if slider is not None else 0
+
+    def shadow_from_ui(self) -> float:
+        """Значение для кривой: 0..0.25."""
+        return self.shadow_strength() / 100.0 * 0.25
+
     def set_ui_values(
         self,
         brightness: float,
@@ -4153,6 +4296,7 @@ class MainWindow(QMainWindow):
         temperature: int,
         apply_now: bool = True,
         save: bool = True,
+        shadow: int | None = None,
     ):
         brightness = clamp(brightness, 0.5, 2.0)
         contrast = clamp(contrast, 0.3, 2.0)
@@ -4164,6 +4308,7 @@ class MainWindow(QMainWindow):
             self.contrast_slider,
             self.gamma_slider,
             self.temperature_slider,
+            self.shadow_slider,
         )
 
         for slider in sliders:
@@ -4173,6 +4318,8 @@ class MainWindow(QMainWindow):
         self.contrast_slider.setValue(int(round(contrast * 100)))
         self.gamma_slider.setValue(int(round(gamma * 100)))
         self.temperature_slider.setValue(int(temperature))
+        if shadow is not None:
+            self.shadow_slider.setValue(int(clamp(int(shadow), 0, 100)))
 
         for slider in sliders:
             slider.blockSignals(False)
@@ -4187,11 +4334,12 @@ class MainWindow(QMainWindow):
 
         self.set_value_text(self.brightness_value, int(round(brightness * 100)), "%")
         self.set_value_text(self.contrast_value, int(round(contrast * 100)), "%")
+        self.set_value_text(self.shadow_value, self.shadow_strength(), "%")
         self.set_value_text(self.gamma_value, int(round(gamma * 100)), "%", big=True)
         self.set_value_text(self.temperature_value, int(temperature), "K")
 
         self.gamma_scale.set_current(int(round(gamma * 100)))
-        self.curve.set_values(brightness, contrast, gamma, temperature)
+        self.curve.set_values(brightness, contrast, gamma, temperature, self.shadow_from_ui())
 
     def on_slider_changed(self):
         # ручная правка при активном «кошачьем зрении» снимает режим без отката:
@@ -4211,13 +4359,16 @@ class MainWindow(QMainWindow):
         gamma: float,
         temperature: int,
         save: bool = True,
+        shadow: int | None = None,
     ):
-        ok = self.gamma_controller.apply(brightness, contrast, gamma, temperature)
+        strength = self.shadow_strength() if shadow is None else int(clamp(shadow, 0, 100))
+        ok = self.gamma_controller.apply(brightness, contrast, gamma, temperature,
+                                         strength / 100.0 * 0.25)
         self._gamma_applied_ok = bool(ok)
         # цель сторожа — что поставлено на экран, а не что в конфиге: «кошачье
         # зрение» меняет гамму без записи в конфиг (save=False), и сторож должен
         # защищать именно его, а не откатывать к сохранённому значению
-        self._gamma_applied_values = (brightness, contrast, gamma, temperature)
+        self._gamma_applied_values = (brightness, contrast, gamma, temperature, strength)
 
         if save:
             self.config["settings"]["current"] = {
@@ -4225,6 +4376,7 @@ class MainWindow(QMainWindow):
                 "contrast": round(contrast, 4),
                 "gamma": round(gamma, 4),
                 "temperature": int(temperature),
+                "shadow": int(strength),
             }
             self._save_config()
 
@@ -4273,7 +4425,7 @@ class MainWindow(QMainWindow):
 
         self.apply_preset_by_index(index)
 
-    def apply_preset_by_index(self, index: int):
+    def apply_preset_by_index(self, index: int, auto: bool = False):
         presets = self.config["presets"]
 
         if not presets:
@@ -4281,6 +4433,11 @@ class MainWindow(QMainWindow):
 
         if index < 0 or index >= len(presets):
             return
+
+        # ручной выбор пресета отменяет авто-возврат: следующая смена окна
+        # не должна «откатывать» то, что человек выбрал сам
+        if not auto:
+            self._auto_prev_index = None
 
         self.current_preset_index = index
 
@@ -4294,13 +4451,29 @@ class MainWindow(QMainWindow):
 
         preset = presets[index]
 
+        # тень — часть пресета: ставим до анимации, чтобы кривая сразу шла
+        # к нужной форме, а не «догоняла» слайдер в конце
+        self.shadow_slider.blockSignals(True)
+        self.shadow_slider.setValue(int(clamp(safe_int(preset.get("shadow", 0), 0), 0, 100)))
+        self.shadow_slider.blockSignals(False)
+
+        # подсветка матрицы из пресета: -1 значит «не трогать» (монитор может
+        # не уметь DDC/CI, а число в пресете всё равно осталось бы)
+        ddc_level = safe_int(preset.get("ddc"), -1)
+        if ddc_level >= 0 and self._ddc_monitor is not None:
+            self.ddc_slider.blockSignals(True)
+            self.ddc_slider.setValue(int(clamp(ddc_level, 0, 100)))
+            self.ddc_slider.blockSignals(False)
+            self._ddc_pending = int(clamp(ddc_level, 0, 100))
+            self._ddc_timer.start()
+
         self.animate_to(
             preset.get("brightness", 1.0),
             preset.get("contrast", 1.0),
             preset.get("gamma", 1.0),
             preset.get("temperature", 6500),
             duration_ms=700,
-            save_at_end=True,
+            save_at_end=not auto,
         )
 
         self.set_status(i18n.t("Пресет: {v0}", v0=preset.get("name", "Unnamed")))
@@ -4354,6 +4527,11 @@ class MainWindow(QMainWindow):
             "contrast": round(contrast, 4),
             "gamma": round(gamma, 4),
             "temperature": int(temperature),
+            "shadow": self.shadow_strength(),
+            # -1 — «подсветку не трогать»: на мониторе без DDC/CI
+            # уровень остался бы выдуманным числом
+            "ddc": (self.ddc_slider.value()
+                    if self._ddc_monitor is not None else -1),
             "hotkey": "",
         }
 
@@ -4459,6 +4637,11 @@ class MainWindow(QMainWindow):
         self.cat_active = False
         self.cat_button.setChecked(False)
         self.cat_previous_values = None
+
+        # тени тоже возвращаем: «сброс» обязан означать ровную кривую
+        self.shadow_slider.blockSignals(True)
+        self.shadow_slider.setValue(0)
+        self.shadow_slider.blockSignals(False)
 
         self.animate_to(
             1.0,
@@ -4630,11 +4813,12 @@ class MainWindow(QMainWindow):
         if applied is None:
             return
 
-        brightness, contrast, gamma, temperature = applied
+        brightness, contrast, gamma, temperature, shadow = applied
         temperature = int(temperature)
+        shadow = float(shadow)
 
         if (abs(brightness - 1.0) < 0.001 and abs(contrast - 1.0) < 0.001
-                and abs(gamma - 1.0) < 0.001 and temperature == 6500):
+                and abs(gamma - 1.0) < 0.001 and temperature == 6500 and shadow <= 0.0):
             return
 
         actual = self.gamma_controller.read_current()
@@ -4642,13 +4826,348 @@ class MainWindow(QMainWindow):
         if actual is None:
             return
 
-        target = self.gamma_controller.build_ramp(brightness, contrast, gamma, temperature)
+        target = self.gamma_controller.build_ramp(brightness, contrast, gamma, temperature,
+                                                  shadow / 100.0 * 0.25)
 
         if self.gamma_controller.ramp_max_diff(actual, target) <= GAMMA_WATCH_TOLERANCE:
             return
 
-        if self.gamma_controller.apply(brightness, contrast, gamma, temperature):
+        if self.gamma_controller.apply(brightness, contrast, gamma, temperature,
+                                       shadow / 100.0 * 0.25):
             self.set_status(i18n.t("Гамма восстановлена после сброса системой."))
+
+    # -- смена активного окна ------------------------------------------------
+    def _start_foreground_watch(self):
+        """Подписка на смену активного окна: гамму возвращаем сразу, без тика.
+
+        Хук ставится из GUI-потока — WinAPI доставляет события в его очередь.
+        Ошибка подписки не повод падать: таймер-сторож продолжает работать.
+        """
+        if self._fg_watcher is not None:
+            return
+        watcher = gd_winwatch.ForegroundWatcher(self._on_foreground_changed)
+        self._fg_watcher = watcher if watcher.start() else None
+
+    # -- автопрофили: список на экране ---------------------------------------
+    def refresh_auto_list(self):
+        if not hasattr(self, "auto_list"):
+            return
+        self.auto_list.clear()
+        presets = self.config.get("presets") or []
+        for rule in self._auto_profiles():
+            index = safe_int(rule.get("preset"), -1)
+            name = presets[index].get("name", "Unnamed") if 0 <= index < len(presets) else "—"
+            hertz = safe_int(rule.get("hz"), 0)
+            suffix = f", {hertz} Гц" if hertz else ""
+            self.auto_list.addItem(f"{rule.get('exe', '?')} → {name}{suffix}")
+
+    def _running_exe_choices(self) -> list[str]:
+        """Запущенные процессы для подсказки: имя игры проще выбрать, чем вспомнить."""
+        names: set[str] = set()
+        try:
+            import psutil
+
+            for proc in psutil.process_iter(["name"]):
+                name = (proc.info.get("name") or "").strip()
+                if not name or name.lower() in {"system", "registry", "memcompression",
+                                                "system idle process"}:
+                    continue
+                if name.lower().startswith("gammadrilon"):
+                    continue
+                names.add(name)
+        except Exception:  # noqa: BLE001 — подсказка не обязана работать
+            pass
+        return sorted(names, key=str.lower)
+
+    def add_auto_profile(self):
+        presets = self.config.get("presets") or []
+        if not presets:
+            self.set_status(i18n.t("сначала сохраните пресет"), ok=False)
+            return
+
+        exe, ok = QInputDialog.getItem(
+            self, i18n.t("Автопрофиль по игре"), i18n.t("Процесс игры:"),
+            self._running_exe_choices(), 0, True)
+
+        if not ok:
+            return
+
+        exe = (exe or "").strip().rsplit("\\", 1)[-1]
+        if not exe:
+            return
+        if "." not in exe:
+            exe += ".exe"
+
+        labels = [preset.get("name", f"#{i + 1}") for i, preset in enumerate(presets)]
+        label, ok = QInputDialog.getItem(
+            self, i18n.t("Автопрофиль по игре"), i18n.t("Пресет:"), labels, 0, False)
+
+        if not ok:
+            return
+
+        index = labels.index(label)
+
+        rates = ["не менять"] + [f"{value} Гц" for value in gd_hz.supported_rates()]
+        hz_label, ok = QInputDialog.getItem(
+            self, i18n.t("Автопрофиль по игре"), i18n.t("Частота в игре:"),
+            rates, 0, False)
+
+        if not ok:
+            return
+
+        hertz = 0 if hz_label == "не менять" else int(hz_label.split()[0])
+
+        rules = self._auto_profiles()
+        for rule in rules:
+            if str(rule.get("exe", "")).lower() == exe.lower():
+                rule["preset"] = index
+                rule["hz"] = hertz
+                break
+        else:
+            rules.append({"exe": exe.lower(), "preset": index, "hz": hertz})
+
+        self.config.setdefault("settings", {})["auto_profiles"] = rules
+        self._save_config()
+        self.refresh_auto_list()
+        self.set_status(i18n.t("автопрофиль: {v0} → {v1}", v0=exe, v1=label))
+
+    def remove_auto_profile(self):
+        row = self.auto_list.currentRow()
+        rules = self._auto_profiles()
+        if row < 0 or row >= len(rules):
+            return
+        removed = rules.pop(row)
+        self.config.setdefault("settings", {})["auto_profiles"] = rules
+        self._save_config()
+        self.refresh_auto_list()
+        self.set_status(i18n.t("автопрофиль убран: {v0}", v0=removed.get("exe", "")))
+
+    def set_auto_profiles_on(self, on: bool):
+        self.config.setdefault("settings", {})["auto_profiles_on"] = bool(on)
+        self._save_config()
+
+    # -- частота обновления ---------------------------------------------------
+    def _start_hz_probe(self):
+        if getattr(self, "_hz_loading", False):
+            return
+        self._hz_loading = True
+        gd_bg.submit(self._hz_probe, self._hz_probe_done, parent=self)
+
+    def _hz_probe(self):
+        return (gd_hz.current_mode_summary(), gd_hz.refresh_rate(),
+                gd_hz.supported_rates())
+
+    def _hz_probe_done(self, result):
+        self._hz_loading = False
+        if isinstance(result, Exception) or not result:
+            self.bind_text(self.hz_note, "частоту прочитать не удалось")
+            return
+        summary, rate, rates = result
+        self.hz_hint.setText(summary)
+        self.hz_combo.clear()
+        for value in rates:
+            self.hz_combo.addItem(f"{value} Гц", value)
+        if rate in rates:
+            self.hz_combo.setCurrentIndex(rates.index(rate))
+        self._hz_current = rate
+
+    def apply_refresh_rate(self):
+        value = self.hz_combo.currentData()
+        if value is None:
+            return
+        self.hz_apply_button.setEnabled(False)
+        gd_bg.submit(lambda: gd_hz.set_refresh(None, int(value)), self._hz_applied,
+                     parent=self)
+
+    def _hz_applied(self, result):
+        self.hz_apply_button.setEnabled(True)
+        if isinstance(result, Exception):
+            self.set_status(i18n.t("частота: {v0}", v0=result), ok=False)
+            return
+        ok, message = result
+        if not ok:
+            self.set_status(i18n.t("частота: {v0}", v0=message), ok=False)
+            return
+        self._hz_current = self.hz_combo.currentData()
+        self.hz_hint.setText(gd_hz.current_mode_summary())
+        self.set_status(i18n.t("частота: {v0}", v0=message))
+
+    # -- откат временных изменений -------------------------------------------
+    def _restore_before_shutdown(self):
+        """Windows завершает сеанс: вернуть частоту, которую поставил автопрофиль."""
+        data = gd_rollback.load()
+        if not data:
+            return
+        hertz = safe_int(data.get("hz"), 0)
+        gd_rollback.clear()
+        if hertz > 0:
+            try:
+                gd_hz.set_refresh(None, hertz)
+            except Exception:  # noqa: BLE001 — на выключении уже всё равно
+                pass
+
+    def _rollback_after_crash(self):
+        """Прошлый запуск не успел вернуть изменения — доделываем сейчас."""
+        data = gd_rollback.orphaned()
+        if not data:
+            return
+        hertz = safe_int(data.get("hz"), 0)
+        gd_rollback.clear()
+        if hertz <= 0:
+            return
+        gd_bg.submit(lambda: gd_hz.set_refresh(None, hertz), self._rollback_done,
+                     parent=self)
+
+    def _rollback_done(self, result):
+        if isinstance(result, Exception):
+            return
+        ok, message = result
+        if ok:
+            self.set_status(i18n.t("после сбоя возвращена частота: {v0}", v0=message))
+
+    def _stop_foreground_watch(self):
+        if self._fg_watcher is not None:
+            self._fg_watcher.stop()
+            self._fg_watcher = None
+
+    def _on_foreground_changed(self, _hwnd: int, pid: int):
+        """Пришла смена окна: одна проверка на пачку событий Alt+Tab."""
+        self._fg_pid = int(pid or 0)
+        if self._gamma_event_pending:
+            return
+        self._gamma_event_pending = True
+        QTimer.singleShot(GAMMA_EVENT_DELAY_MS, self._gamma_event_check)
+
+    def _gamma_event_check(self):
+        self._gamma_event_pending = False
+        self.gamma_watch_tick()
+        self._auto_profile_tick()
+
+    # -- автопрофили по игре -------------------------------------------------
+    def _auto_profiles(self) -> list:
+        value = self.config.get("settings", {}).get("auto_profiles")
+        return value if isinstance(value, list) else []
+
+    def _auto_profile_tick(self):
+        """Пресет по имени процесса в фокусе; на выходе — прежний.
+
+        Работает только когда правило реально есть: иначе хук фокуса ничего
+        не делает и не мешает сторожу гаммы.
+        """
+        if not bool(self.config.get("settings", {}).get("auto_profiles_on", True)):
+            return
+        rules = self._auto_profiles()
+        if not rules:
+            return
+
+        pid = getattr(self, "_fg_pid", 0)
+        exe = gd_winwatch.process_path(pid).rsplit("\\", 1)[-1].lower() if pid else ""
+        presets = self.config.get("presets") or []
+        match = next((rule for rule in rules
+                      if exe and str(rule.get("exe", "")).lower() == exe), None)
+
+        if match is not None:
+            index = safe_int(match.get("preset"), -1)
+            if 0 <= index < len(presets) and index != self.current_preset_index:
+                if self._auto_prev_index is None:
+                    self._auto_prev_index = self.current_preset_index
+                self.apply_preset_by_index(index, auto=True)
+
+            hertz = safe_int(match.get("hz"), 0)
+            now_hz = gd_hz.refresh_rate()
+            if hertz > 0 and now_hz is not None and hertz != now_hz:
+                if self._auto_prev_hz is None:
+                    self._auto_prev_hz = now_hz
+                gd_bg.submit(lambda value=hertz: gd_hz.set_refresh(None, value),
+                             lambda _result: None, parent=self)
+
+            # снимок «как было»: если окно упадёт или выключат ПК, следующий
+            # старт вернёт частоту, а не оставит игровую
+            if self._auto_prev_hz:
+                gd_rollback.merge("hz", {"hz": self._auto_prev_hz})
+            return
+
+        # игра больше не в фокусе — возвращаем пресет и частоту, что были до неё
+        if self._auto_prev_hz is not None:
+            previous_hz = self._auto_prev_hz
+            self._auto_prev_hz = None
+            gd_bg.submit(lambda value=previous_hz: gd_hz.set_refresh(None, value),
+                         lambda _result: None, parent=self)
+            gd_rollback.clear()
+        if self._auto_prev_index is not None:
+            previous = self._auto_prev_index
+            self._auto_prev_index = None
+            if 0 <= previous < len(presets):
+                self.apply_preset_by_index(previous, auto=True)
+
+    # -- подсветка монитора (DDC/CI) -----------------------------------------
+    def _start_ddc_probe(self):
+        """Поиск монитора в фоне: первый вызов dxva2 занимает секунды."""
+        if self._ddc_loading or self._ddc_monitor is not None:
+            return
+        self._ddc_loading = True
+        gd_bg.submit(self._ddc_probe, self._ddc_probe_done, parent=self)
+
+    def _ddc_probe(self):
+        ddc = gd_ddc.Ddc()
+        if not ddc.load():
+            return ddc, None, None
+        monitor = ddc.main()
+        level = monitor.brightness() if monitor is not None else None
+        return ddc, monitor, level
+
+    def _ddc_probe_done(self, result):
+        self._ddc_loading = False
+        if isinstance(result, Exception) or result is None:
+            self._ddc_failed(str(result or ""))
+            return
+        ddc, monitor, level = result
+        self._ddc = ddc
+        if monitor is None or level is None:
+            self._ddc_failed(ddc.problem)
+            return
+        self._ddc_monitor = monitor
+        self._ddc_last_ok = int(level)
+        self.ddc_slider.blockSignals(True)
+        self.ddc_slider.setValue(int(level))
+        self.ddc_slider.blockSignals(False)
+        self.set_value_text(self.ddc_value, int(level), "%")
+        self.ddc_slider.setEnabled(True)
+        if monitor.description:
+            self.bind_text(self.ddc_hint, monitor.description)
+        else:
+            self.bind_text(self.ddc_hint, "яркость самой матрицы по DDC/CI")
+
+    def _ddc_failed(self, reason: str):
+        self.ddc_slider.setEnabled(False)
+        self.bind_text(self.ddc_hint, "монитор не поддерживает DDC/CI")
+        if reason:
+            self.ddc_hint.setToolTip(reason)
+
+    def on_ddc_changed(self, value: int):
+        self.set_value_text(self.ddc_value, int(value), "%")
+        if self._ddc_monitor is None:
+            return
+        self._ddc_pending = int(value)
+        self._ddc_timer.start()
+
+    def _ddc_apply(self):
+        monitor = self._ddc_monitor
+        if monitor is None or self._ddc_pending == self._ddc_last_ok:
+            return
+        value = self._ddc_pending
+        gd_bg.submit(lambda: monitor.set_brightness(value), self._ddc_applied, parent=self)
+
+    def _ddc_applied(self, result):
+        if isinstance(result, Exception) or result is False:
+            # монитор не принял — возвращаем ползунок к тому, что реально стоит
+            self.ddc_slider.blockSignals(True)
+            self.ddc_slider.setValue(self._ddc_last_ok)
+            self.ddc_slider.blockSignals(False)
+            self.set_value_text(self.ddc_value, self._ddc_last_ok, "%")
+            self.set_status(i18n.t("монитор не принял яркость"), ok=False)
+            return
+        self._ddc_last_ok = self._ddc_pending
 
 
     def set_status(self, text: str, ok: bool = True):
@@ -4663,7 +5182,11 @@ class MainWindow(QMainWindow):
 
     def _config_recovery_note(self) -> None:
         """Честный старт: если конфиг пришлось заменить дефолтом — сказать об этом."""
-        if CONFIG_RECOVERY == "backup":
+        if CONFIG_RECOVERY == "restored":
+            self.set_status(i18n.t(
+                "presets.json был повреждён — настройки восстановлены из последней "
+                "целой копии; битый файл сохранён как presets.json.bak"))
+        elif CONFIG_RECOVERY == "backup":
             self.set_status(i18n.t(
                 "presets.json был повреждён — загружены настройки по умолчанию; "
                 "копия сохранена как presets.json.bak"))
@@ -4822,6 +5345,42 @@ class MainWindow(QMainWindow):
             pass
         return True, note
 
+    def reset_app_settings(self) -> tuple[bool, str]:
+        """Вернуть заводские настройки. Копия прежнего файла остаётся рядом."""
+        import shutil
+
+        source = config_path()
+        backup: Path | None = None
+        try:
+            if source.exists():
+                backup = source.with_name("presets.before-reset.json")
+                shutil.copyfile(source, backup)
+        except OSError:
+            backup = None
+
+        fresh = json.loads(json.dumps(DEFAULT_CONFIG))
+        # тема и язык — из RUNTIME_SETTINGS: сброс обязан вернуть их к «как при
+        # первом запуске», иначе окно останется в старой теме до перезапуска
+        fresh["settings"]["theme"] = "dark"
+        fresh["settings"]["language"] = None
+        if not save_config(fresh):
+            return False, i18n.t("не удалось записать файл настроек")
+        self.config.clear()
+        self.config.update(fresh)      # тот же dict: на него смотрят другие модули
+
+        note = i18n.t("Настройки сброшены к заводским. Перезапустите Gammadrilon, "
+                      "чтобы применить всё без остатка.")
+        if backup is not None:
+            note += " " + i18n.t("Копия прежних настроек: {v0}.", v0=backup.name)
+        try:
+            import gd_journal
+
+            gd_journal.record("settings", i18n.t("Сброс настроек"), None, note,
+                              source=i18n.t("Утилиты"))
+        except Exception:  # noqa: BLE001 — журнал не должен ронять сброс
+            pass
+        return True, note
+
     @staticmethod
     def _sanitize_presets(raw) -> tuple[list[dict] | None, int]:
         """Пресеты гаммы из чужого файла: понятные чиним, мусор считаем и отбрасываем."""
@@ -4833,10 +5392,12 @@ class MainWindow(QMainWindow):
             if not isinstance(item, dict) or not str(item.get("name") or "").strip():
                 dropped += 1
                 continue
-            preset = {"name": str(item["name"]).strip()[:40]}
+            preset: dict = {"name": str(item["name"]).strip()[:40]}
             for key in ("brightness", "contrast", "gamma"):
                 preset[key] = clamp(safe_float(item.get(key), 1.0), 0.2, 3.0)
             preset["temperature"] = int(clamp(safe_float(item.get("temperature"), 6500), 3000, 10000))
+            preset["shadow"] = int(clamp(safe_float(item.get("shadow"), 0), 0, 100))
+            preset["ddc"] = int(clamp(safe_float(item.get("ddc"), -1), -1, 100))
             hotkey = item.get("hotkey")
             preset["hotkey"] = hotkey.strip() if isinstance(hotkey, str) else ""
             clean.append(preset)
@@ -4973,6 +5534,12 @@ class MainWindow(QMainWindow):
             question = i18n.t(
                 "Скачать обновление {v0} и перезапустить приложение? "
                 "Пресеты, горячие клавиши и настройки сохранятся.", v0=version)
+
+        # что именно ставим: описание релиза показываем до подтверждения
+        notes = gd_update.release_notes(info)
+        if notes:
+            question += "\n\n" + i18n.t("Что нового:\n{v0}", v0=notes)
+
         if not gd_dialog.confirm(
                 self, i18n.t("Обновление Gammadrilon"), question,
                 confirm_text=i18n.t("Обновить")):
@@ -5107,6 +5674,13 @@ class MainWindow(QMainWindow):
             pass
 
         self.gamma_watch_timer.stop()
+        self._stop_foreground_watch()
+        self._ddc_timer.stop()
+        try:
+            if self._ddc is not None:
+                self._ddc.close()
+        except Exception:
+            pass
 
         try:
             self.gamma_controller.reset()
@@ -5135,12 +5709,6 @@ class MainWindow(QMainWindow):
             zapret_page = getattr(self, "_zapret_page", None)
             if zapret_page is not None and getattr(zapret_page, "client", None) is not None:
                 zapret_page.client.shutdown_async(restore=True)
-        except Exception:
-            pass
-
-        # локальный API: сервер не должен пережить приложение
-        try:
-            self.stop_agent_api(remember=False)
         except Exception:
             pass
 
@@ -5180,23 +5748,22 @@ def main():
 
     gd_boot.mark("main")
 
-    # Таблицы имён keyboard первый add_hotkey строил прямо в GUI-потоке
-    # (замер: ~185 мс), а сам импорт модуля — ещё ~96 мс. Делаем и то и другое
-    # в фоне параллельно сборке окна: к моменту bind_hotkeys таблицы готовы,
-    # add_hotkey только ставит хуки.
-    try:
-        import threading
+    # --selftest: проверка установки без единого окна. Нужна и при сборке
+    # (релиз не уходит, пока провалы), и человеку, у которого «не работает»:
+    # отчёт печатается в консоль, код возврата — 1 при провале.
+    if "--selftest" in sys.argv:
+        import gd_diagnose
 
-        def _kb_prewarm():
-            import keyboard as kb
-
-            _os_kb = getattr(kb, "_os_keyboard", None)
-            if _os_kb is not None:
-                _os_kb.init()
-
-        threading.Thread(target=_kb_prewarm, name="kb-prewarm", daemon=True).start()
-    except Exception:  # noqa: BLE001
-        pass
+        items = gd_diagnose.checks()
+        # консоль Windows часто в cp1251/cp866: печатаем только ASCII-маркеры,
+        # иначе сам отчёт падает с UnicodeEncodeError
+        try:
+            print(gd_diagnose.report_text(items, ascii_only=True))
+            print(f"\nпровалов: {len([i for i in items if i.get('status') == 'fail'])} из {len(items)}")
+        except Exception:  # noqa: BLE001 — отчёт не должен мешать коду возврата
+            pass
+        failed = [item for item in items if str(item.get("status")) == "fail"]
+        sys.exit(1 if failed else 0)
 
     # язык нужен раньше окна: сообщение «уже запущено» тоже должно быть переведено
     i18n.init_for_process()
@@ -5207,6 +5774,14 @@ def main():
     try:
         _boot_cfg = load_config()
         th.apply((_boot_cfg.get("settings") or {}).get("theme", "dark"))
+        # Приложение могло упасть с включённым игровым бустом: приоритеты
+        # фоновых процессов остались изменёнными. Возвращаем до показа окна.
+        try:
+            import gd_boost
+
+            gd_boost.GameBoost().restore_from_disk()
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001
         pass
     APP_STYLESHEET = build_app_stylesheet()

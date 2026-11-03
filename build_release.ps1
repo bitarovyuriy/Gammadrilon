@@ -15,7 +15,6 @@ if ($mainSource -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') {
 }
 $appVersion = $Matches[1]
 Write-Host "Версия: $appVersion" -ForegroundColor Cyan
-
 # Хелпер датчиков: C# + LibreHardwareMonitor. Собирается тут же, чтобы exe в
 # vendor/lhm не мог разойтись с исходником.
 Write-Host "== Хелпер датчиков (C#) ==" -ForegroundColor Cyan
@@ -69,6 +68,38 @@ if (-not (Test-Path $portableExe)) { throw "Не найден портативн
 $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 $zipMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 
+# Самопроверка собранного exe: тот же набор проверок, что видит пользователь
+# в «Диагностике». Провал здесь — стоп релиза, а не «потом посмотрим».
+Write-Host "== Самопроверка собранного exe ==" -ForegroundColor Cyan
+# Через .NET Process, а не Start-Process: у Start-Process -PassThru с редиректом
+# ExitCode остаётся $null (проверено дважды), а `-ne 0` на пустоте — это провал.
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $portableExe
+$psi.Arguments = "--selftest"
+$psi.UseShellExecute = $false
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$psi.CreateNoWindow = $true
+$psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+$selfTestProcess = New-Object System.Diagnostics.Process
+$selfTestProcess.StartInfo = $psi
+$null = $selfTestProcess.Start()
+$selfTestOut = $selfTestProcess.StandardOutput.ReadToEndAsync()
+$selfTestErr = $selfTestProcess.StandardError.ReadToEndAsync()
+if (-not $selfTestProcess.WaitForExit(90000)) {
+    try { $selfTestProcess.Kill() } catch { }
+    throw "Самопроверка не завершилась за 90 с - в exe нет режима --selftest или он завис"
+}
+$selfTestProcess.WaitForExit()
+$selfTestCode = $selfTestProcess.ExitCode
+$selfTestProcess.Dispose()
+($selfTestOut.Result + $selfTestErr.Result).Split("`n") | ForEach-Object {
+    if ($_.Trim()) { Write-Host "   $($_.TrimEnd())" }
+}
+if ($selfTestCode -ne 0) {
+    throw "Самопроверка exe нашла провалы (код $selfTestCode) - релиз остановлен"
+}
+
 # Хэши — в текст релиза: пользователь может сверить скачанное, не гадая.
 $exeHash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 $zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
@@ -80,6 +111,26 @@ $versionedZip = Join-Path $projectRoot "dist\Gammadrilon-$appVersion-portable.zi
 Copy-Item $exe $versionedExe -Force
 Copy-Item $zip $versionedZip -Force
 
+# Установщик: Inno Setup может быть не установлен — тогда шаг пропускаем,
+# а не роняем релиз.
+$iscc = $null
+foreach ($cand in @(
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"))) {
+    if ($cand -and (Test-Path $cand)) { $iscc = $cand; break }
+}
+$setupPath = $null
+if ($iscc) {
+    Write-Host "== Установщик (Inno Setup) ==" -ForegroundColor Cyan
+    $setupVersion = $appVersion -replace '^v', ''
+    & $iscc "/DAppVersion=$setupVersion" (Join-Path $projectRoot "installer\Gammadrilon.iss")
+    if ($LASTEXITCODE -ne 0) { throw "Установщик не собрался" }
+    $setupPath = Join-Path $projectRoot "dist\Gammadrilon-Setup-$setupVersion.exe"
+} else {
+    Write-Host "Inno Setup не найден — установщик пропущен" -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "Готово:" -ForegroundColor Green
 Write-Host "  портативная папка: $portableDir"
@@ -87,5 +138,8 @@ Write-Host "  zip:               $zip ($zipMb МБ)"
 Write-Host "  zip с версией:     $versionedZip"
 Write-Host "  релизный exe:      $exe ($sizeMb МБ)"
 Write-Host "  exe с версией:     $versionedExe"
+if ($setupPath -and (Test-Path $setupPath)) {
+    Write-Host "  установщик:        $setupPath"
+}
 Write-Host "  sha256 exe:        $exeHash"
 Write-Host "  sha256 zip:        $zipHash"

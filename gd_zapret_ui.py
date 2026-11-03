@@ -95,6 +95,7 @@ class ZapretWidget(QWidget):
         self._path_manual = ""
         self._ignored = set()          # «оставить как есть» — до конца сессии
         self._worker = None            # фоновое действие (включить/выключить/…)
+        self._move_worker = None       # перенос комплекта в ASCII-путь
         self._gen = 0                  # поколение состояния: см. _snap_job/_on_snap
         self._update = {"ok": False, "current": None, "latest": None, "newer": False,
                         "release": {}, "checked_at": None, "cached": False, "error": None}
@@ -136,6 +137,12 @@ class ZapretWidget(QWidget):
         self.btn_open.setObjectName("Segment")
         self.btn_open.clicked.connect(self._open_folder)
         prow.addWidget(self.btn_open)
+        # видна только когда путь не-ASCII: тогда winws.exe может не стартовать
+        self.btn_move = QPushButton(i18n.t("Перенести в C:\\Tools\\zapret"))
+        self.btn_move.setObjectName("Segment")
+        self.btn_move.clicked.connect(self._move_ascii)
+        self.btn_move.setVisible(False)
+        prow.addWidget(self.btn_move)
         lay.addLayout(prow)
         self.lbl_path_note = QLabel("")
         self.lbl_path_note.setObjectName("Hint")
@@ -299,6 +306,21 @@ class ZapretWidget(QWidget):
         self.list.setFixedHeight(210)
         self.list.currentItemChanged.connect(lambda *_: self._on_sel())
         lay3.addWidget(self.list)
+
+        # перебор стратегий: проба идёт через компаньон — winws.exe требует прав
+        prow_probe = QHBoxLayout()
+        self.btn_probe = QPushButton(i18n.t("Подобрать стратегию"))
+        self.btn_probe.setObjectName("Segment")
+        self.btn_probe.setToolTip(i18n.t(
+            "Прогоняет стратегии по очереди и оставляет те, где TLS проходит. "
+            "Каждая проба — несколько секунд без обхода."))
+        self.btn_probe.clicked.connect(self._strategies_probe)
+        prow_probe.addWidget(self.btn_probe)
+        self.lbl_probe = QLabel("")
+        self.lbl_probe.setObjectName("Hint")
+        self.lbl_probe.setWordWrap(True)
+        prow_probe.addWidget(self.lbl_probe, 1)
+        lay3.addLayout(prow_probe)
         self.lbl_sel = QLabel("")
         self.lbl_sel.setObjectName("Hint")
         self.lbl_sel.setWordWrap(True)
@@ -1079,6 +1101,7 @@ class ZapretWidget(QWidget):
         self.lbl_path_note.setText("\n".join(notes))
         self.lbl_path_note.setStyleSheet(f"color: {th.WARN if errors else th.MUTED};")
         self.btn_open.setEnabled(bool(path) and os.path.isdir(path))
+        self.btn_move.setVisible(gd_zapret.needs_ascii_move(path))
         self.btn_svc.setEnabled(bool(path)
                                 and os.path.isfile(os.path.join(path, "service.bat")))
 
@@ -1263,6 +1286,8 @@ class ZapretWidget(QWidget):
         self.list.blockSignals(True)
         self.list.clear()
         current_group = None
+        cached = gd_zapret.load_probe_result(self._path()) or {}
+        worked = set(cached.get("passed") or [])
         for st in self._snap.get("strategies") or []:
             if st["group"] != current_group:
                 current_group = st["group"]
@@ -1272,6 +1297,8 @@ class ZapretWidget(QWidget):
             suffix = ""
             if gd_zapret.cache_get(self._path(), st["id"]) is not None:
                 suffix = "  ·  " + i18n.t("освоена")
+            if st["file"] in worked:
+                suffix += "  ·  " + i18n.t("работала в прошлый раз")
             item = QListWidgetItem(f"{st['name']}{suffix}")
             item.setData(Qt.UserRole, st["id"])
             item.setToolTip(st["file"])
@@ -1318,6 +1345,34 @@ class ZapretWidget(QWidget):
 
 
     # -- действия ------------------------------------------------------------
+
+    def _move_ascii(self):
+        """Скопировать комплект туда, где в пути нет кириллицы.
+
+        Копирование папки — секунды, поэтому в фоне: GUI не должен мерзнуть.
+        """
+        path = self._path()
+        if not path or gd_bg.is_running(self._move_worker):
+            return
+        self.btn_move.setEnabled(False)
+        self._set_status(i18n.t("Переношу комплект в C:\\Tools\\zapret…"))
+        self._move_worker = gd_bg.submit(
+            lambda: gd_zapret.move_to_ascii(path), self._move_done, parent=self)
+
+    def _move_done(self, result):
+        self.btn_move.setEnabled(True)
+        ok, message, new_path = result
+        if not ok:
+            self._set_status(message, ok=False)
+            return
+        if new_path and new_path != self._path():
+            self._set_path(new_path)
+            self._ignored.clear()
+            self._gen += 1          # снапшоты старого пути устаревают
+            self.list.clear()
+            self._poll.trigger()
+        self._set_status(message)
+        gd_journal.record("zapret", i18n.t("папка"), after=new_path, why=message)
 
     def _pick_path(self):
         start = self._path() or gd_zapret.guess_path() or os.path.expanduser("~")
@@ -1425,7 +1480,65 @@ class ZapretWidget(QWidget):
         self._poll.trigger()
 
 
-    # -- выключение ----------------------------------------------------------
+    # -- перебор стратегий ---------------------------------------------------
+
+    def _strategies_probe(self):
+        path = self._path()
+        strategies = self._snap.get("strategies") or []
+        if not path or not strategies:
+            self.lbl_probe.setText(i18n.t("Сначала выберите папку zapret со стратегиями."))
+            return
+        if gd_zapret.processes():
+            self.lbl_probe.setText(i18n.t(
+                "Обход уже запущен — остановите его перед подбором."))
+            return
+
+        files = [st["file"] for st in strategies]
+        self.btn_probe.setEnabled(False)
+        self.lbl_probe.setText(i18n.t("Проверяю стратегии: {v0}…", v0=len(files)))
+        self._probe_worker = gd_bg.submit(
+            lambda: self._job_strategies_probe(path, files),
+            self._strategies_probe_done, parent=self)
+
+    def _job_strategies_probe(self, path, files):
+        client = self._ensure()
+        return client.call({"v": 1, "cmd": "zapret_probe", "path": path,
+                            "files": files, "seconds": 3.0}, timeout=600)
+
+    def _strategies_probe_done(self, result):
+        self.btn_probe.setEnabled(True)
+        if not isinstance(result, dict) or not result.get("ok"):
+            error = result.get("error") if isinstance(result, dict) else result
+            self.lbl_probe.setText(i18n.t("Подбор не удался: {v0}", v0=error))
+            return
+        data = result.get("data") or {}
+        passed = data.get("passed") or []
+        results = data.get("results") or []
+        if passed:
+            # запоминаем удачные: следующий перебор начнётся не с чистого листа
+            gd_zapret.save_probe_result(self._path(), results)
+        if not passed:
+            self.lbl_probe.setText(i18n.t(
+                "Ни одна из {v0} стратегий не дала TLS. Проверьте сеть: возможно, "
+                "блокировка не в DPI.", v0=len(results)))
+            return
+        first = passed[0]
+        self.lbl_probe.setText(i18n.t(
+            "Подошли: {v0}. Лучшая — {v1}.", v0=len(passed), v1=first.get("file")))
+        # ставим выбор на первую удачную: человеку остаётся нажать «Включить»
+        want = None
+        for st in self._snap.get("strategies") or []:
+            if st["file"] == first.get("file"):
+                want = st["id"]
+                break
+        if want:
+            for index in range(self.list.count()):
+                item = self.list.item(index)
+                if item.data(Qt.UserRole) == want:
+                    self.list.setCurrentItem(item)
+                    break
+
+
 
     def _off(self):
         if gd_bg.is_running(self._worker):

@@ -113,7 +113,7 @@ def _read_keep_setting() -> bool:
     try:
         import json
 
-        data = json.loads((gd_paths.app_dir() / "presets.json").read_text(encoding="utf-8"))
+        data = json.loads(gd_paths.config_path().read_text(encoding="utf-8"))
         return bool((data.get("settings") or {}).get("gpu_keep_on_exit", True))
     except Exception:  # noqa: BLE001
         return True
@@ -167,8 +167,11 @@ def _clear_kept_original() -> None:
 
 
 def _run_smi(args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
+    path = gd_gpu._smi_path()  # noqa: SLF001 — путь ищется в одном месте
+    if path is None:
+        return False, i18n.t("nvidia-smi не найден")
     try:
-        proc = gd_proc.run([gd_gpu.SMI, *args], text=True, timeout=timeout)
+        proc = gd_proc.run([path, *args], text=True, timeout=timeout)
     except (OSError, gd_proc.TimeoutExpired) as exc:
         return False, str(exc)
     text = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -179,6 +182,22 @@ def _run_smi(args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
     )):
         return False, text or i18n.t("код {v0}", v0=proc.returncode)
     return True, text
+
+
+def _set_power(pl: float) -> tuple[bool, str]:
+    """Лимит мощности: сначала NVML (без процесса), затем nvidia-smi."""
+    try:
+        import gd_nvml
+
+        nv = gd_nvml.Nvml()
+        if nv.available():
+            ok, message = nv.set_power_limit(pl)
+            nv.shutdown()
+            if ok:
+                return True, message
+    except Exception:  # noqa: BLE001 — нет NVML или драйвер старый
+        pass
+    return _run_smi(["-pl", str(int(pl))])
 
 
 # -- операции с GPU ---------------------------------------------------------
@@ -196,7 +215,7 @@ def _apply(pl: float | None, lock_clocks: list | None,
 
     what = []
     if pl is not None:
-        ok, out = _run_smi(["-pl", str(int(pl))])
+        ok, out = _set_power(pl)
         if not ok:
             return False, i18n.t("лимит мощности: {v0}", v0=out)
         what.append(i18n.t("PL {v0} Вт", v0=int(pl)))
@@ -235,7 +254,7 @@ def _restore() -> tuple[bool, str]:
         errors.append(i18n.t("сброс частот: {v0}", v0=out))
     orig_pl = _original.get("pl")
     if orig_pl is not None:
-        ok, out = _run_smi(["-pl", str(int(orig_pl))])
+        ok, out = _set_power(float(orig_pl))
         if not ok:
             errors.append(i18n.t("лимит мощности: {v0}", v0=out))
     _original = None
@@ -386,6 +405,29 @@ def _handle(obj: dict) -> dict:
             sensors.close()
         return {"ok": ok, "data": {"before": before, "after": after, "count": count},
                 "error": None if ok else msg}
+    # -- датчики: запускаются из этого же привилегированного процесса --------
+    # Отдельный runas в gd_sensors — второе окно UAC. Здесь прав уже достаточно,
+    # поэтому датчики стартуют молча и умирают вместе с окном (--parent).
+    if cmd == "sensors_start":
+        import gd_sensors
+
+        parent = int(obj.get("parent") or 0)
+        if not parent:
+            return {"ok": False, "error": i18n.t("не передан pid окна")}
+        ok = gd_sensors.launch_elevated(parent)
+        return {"ok": ok, "data": {"path": str(gd_sensors.sample_path())}}
+    if cmd == "sensors_stop":
+        import psutil
+
+        stopped = 0
+        for proc in psutil.process_iter(["name"]):
+            try:
+                if (proc.info.get("name") or "").lower() == "gammadrilonsensors.exe":
+                    proc.terminate()
+                    stopped += 1
+            except psutil.Error:
+                continue
+        return {"ok": True, "data": stopped}
     if cmd == "dns_apply":
         with _OP_LOCK:
             import gd_dns
@@ -432,6 +474,19 @@ def _handle(obj: dict) -> dict:
             ok, res = _zapret_adopt(int(obj.get("pid") or 0))
         return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
     # -- служба zapret и автообновление (ТЗ 8): без консоли service.bat --------
+    if cmd == "zapret_probe":
+        # перебор стратегий: каждая проба поднимает winws.exe на секунды.
+        # Лок держим на весь перебор: две пробы разом подерутся за WinDivert
+        files = obj.get("files") or []
+        with _OP_LOCK:
+            import gd_zapret
+
+            results = gd_zapret.probe_round(
+                obj.get("path") or "", files or None,
+                seconds=float(obj.get("seconds") or 3.0),
+                limit=int(obj.get("limit") or 0))
+        passed = [item for item in results if item.get("ok")]
+        return {"ok": True, "data": {"results": results, "passed": passed}}
     if cmd == "zapret_service":
         op = str(obj.get("op") or "status")
         with _OP_LOCK:

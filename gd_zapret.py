@@ -106,6 +106,43 @@ def validate(root: str | None) -> dict:
     return {"errors": errors, "warnings": warnings}
 
 
+#: ASCII-путь, куда предлагаем перенести комплект
+ASCII_TARGET = r"C:\Tools\zapret"
+
+
+def needs_ascii_move(root: str | None) -> bool:
+    """Нужен ли перенос: папка есть, а путь не-ASCII."""
+    return bool(root) and os.path.isdir(str(root)) and not str(root).isascii()
+
+
+def move_to_ascii(root: str, target: str | None = None) -> tuple[bool, str, str]:
+    """Скопировать комплект в ASCII-путь. Возврат — (успех, сообщение, новый путь).
+
+    Копируем, а не переносим: рабочая папка остаётся на месте, пока человек не
+    убедится, что обход работает с нового места. При запущенном winws.exe файлы
+    заняты — копия вышла бы битой, поэтому сначала требуем остановить обход.
+    """
+    import shutil
+
+    if not root or not os.path.isdir(str(root)):
+        return False, i18n.t("папка zapret не найдена"), ""
+    if str(root).isascii():
+        return True, i18n.t("путь уже ASCII — перенос не нужен"), str(root)
+    if processes():
+        return False, i18n.t("сначала остановите обход DPI: winws.exe держит файлы"), ""
+    dst = target or ASCII_TARGET
+    if os.path.exists(dst):
+        return False, i18n.t("папка {v0} уже существует", v0=dst), ""
+    try:
+        parent = os.path.dirname(dst)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        shutil.copytree(str(root), dst)
+    except OSError as exc:
+        return False, i18n.t("не удалось скопировать: {v0}", v0=exc), ""
+    return True, i18n.t("комплект перенесён в {v0}", v0=dst), dst
+
+
 def group_of(name: str) -> str:
     """Группа стратегии для списка: BASE / ALT / FAKE TLS AUTO / SIMPLE FAKE / EXP."""
     upper = name.upper()
@@ -405,6 +442,316 @@ def service_state(name: str) -> str | None:
         # Строка «Тип : 10 WIN32_OWN_PROCESS» тоже подходит под шаблон:
         # неизвестный код — не повод считать, что службы нет, читаем дальше.
     return None
+
+
+# --------------------------------------------------------------------------
+# сброс залипшего состояния перед пробами стратегий
+# --------------------------------------------------------------------------
+
+
+def stuck_state() -> dict:
+    """Что залипло: процессы winws.exe, служба zapret, драйверы WinDivert.
+
+    Нужна перед перебором стратегий: драйвер из первой пробы остаётся в
+    STOP_PENDING, следующая стратегия не может его открыть и выглядит
+    «нерабочей» — все дальнейшие пробы дают ложный провал.
+    """
+    info = {"processes": processes(), "service": service_state(SERVICE_NAME),
+            "drivers": {}}
+    for name in _WINDIVERT:
+        state = service_state(name)
+        if state:
+            info["drivers"][name] = state
+    return info
+
+
+def stuck_names() -> list[str]:
+    """Короткий список того, что мешает: для строки статуса и отчёта."""
+    state = stuck_state()
+    names = [f"winws.exe ×{len(state['processes'])}"] if state["processes"] else []
+    if state["service"] in {"START_PENDING", "STOP_PENDING"}:
+        names.append(f"служба zapret: {state['service']}")
+    for name, value in state["drivers"].items():
+        if value in {"START_PENDING", "STOP_PENDING", "DELETE_PENDING"}:
+            names.append(f"драйвер {name}: {value}")
+    return names
+
+
+def reset_stuck(timeout: float = 15.0, kill_alive: bool = False) -> tuple[bool, str]:
+    """Снять залипшее состояние обходчика.
+
+    Порядок важен: сначала процесс (он держит драйвер), затем служба, затем
+    драйвер. `DELETE_PENDING` лечится только ожиданием: заставлять `sc delete`
+    повторно бессмысленно и опасно — команда вернёт ошибку, а драйвер останется.
+
+    Живой `winws.exe` по умолчанию **не убивается**: это может быть рабочий
+    обход пользователя, и молча выключать ему интернет нельзя. Убить можно
+    только явным `kill_alive=True` — из перебора, где процессом управляет
+    само приложение.
+    """
+    import psutil
+
+    report: list[str] = []
+
+    for proc in processes():
+        if not kill_alive:
+            report.append(f"winws.exe {proc['pid']} работает — не трогаем")
+            continue
+        handle = None
+        try:
+            handle = psutil.Process(int(proc["pid"]))
+            handle.terminate()
+            handle.wait(timeout=3)
+            report.append(f"winws.exe {proc['pid']} остановлен")
+        except psutil.TimeoutExpired:
+            try:
+                if handle is not None:
+                    handle.kill()
+                report.append(f"winws.exe {proc['pid']} снят принудительно")
+            except psutil.Error:
+                report.append(f"winws.exe {proc['pid']} не снимается")
+        except psutil.Error:
+            report.append(f"winws.exe {proc['pid']} уже завершился")
+
+    service = service_state(SERVICE_NAME)
+    if service in {"START_PENDING", "STOP_PENDING"}:
+        _run_sc(["stop", SERVICE_NAME])
+        if _service_wait("STOPPED", timeout=timeout):
+            report.append("служба zapret остановлена")
+        else:
+            report.append("служба zapret не остановилась за отведённое время")
+
+    for name in _WINDIVERT:
+        state = service_state(name)
+        if state in {"START_PENDING", "STOP_PENDING"}:
+            _run_sc(["stop", name])
+            if _service_wait("STOPPED", timeout=timeout):
+                report.append(f"драйвер {name} остановлен")
+            else:
+                report.append(f"драйвер {name} не остановился")
+        elif state == "DELETE_PENDING":
+            deadline = time.time() + timeout
+            while time.time() < deadline and service_state(name) == "DELETE_PENDING":
+                time.sleep(0.5)
+            if service_state(name) == "DELETE_PENDING":
+                report.append(f"драйвер {name} всё ещё выгружается — нужна перезагрузка")
+
+    ok = not stuck_names()
+    if not report:
+        report.append("залипшего состояния не было")
+    return ok, "; ".join(report)
+
+
+# --------------------------------------------------------------------------
+# разбор стратегий: что именно запускает .bat
+# --------------------------------------------------------------------------
+
+
+_VAR_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
+
+
+def _bat_vars(root: Path) -> dict:
+    """Переменные, которые .bat выставляет до запуска winws.exe."""
+    return {
+        "BIN": str(root / "bin") + os.sep,
+        "LISTS": str(root / "lists") + os.sep,
+        "GameFilterTCP": GAME_FILTER_DEFAULT_TCP,
+        "GameFilterUDP": GAME_FILTER_DEFAULT_UDP,
+        "dp0": str(root) + os.sep,
+    }
+
+
+def _bat_logical_lines(text: str) -> list[str]:
+    """Склеить строки, разорванные `^` (так zapret переносит длинные argv)."""
+    out: list[str] = []
+    buffer = ""
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if line.endswith("^"):
+            buffer += line[:-1].strip() + " "
+            continue
+        if buffer:
+            out.append((buffer + line.strip()).strip())
+            buffer = ""
+        else:
+            out.append(line)
+    if buffer:
+        out.append(buffer.strip())
+    return out
+
+
+def parse_bat_argv(root: str | None, file_name: str) -> list[str] | None:
+    """Полный argv `winws.exe` из стратегии `.bat`.
+
+    Настоящий запуск .bat тянул бы за собой `chcp`, `service.bat status_zapret`
+    и проверку обновлений — в переборе это лишние секунды и сеть. Поэтому
+    аргументы достаём из файла и запускаем winws.exe напрямую.
+
+    None — в файле нет строки с winws.exe (это не стратегия).
+    """
+    if not root:
+        return None
+    path = Path(root) / file_name
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    variables = _bat_vars(Path(root))
+    for line in _bat_logical_lines(text):
+        low = line.lower()
+        if "winws.exe" not in low:
+            continue
+        rest = line[low.index("winws.exe") + len("winws.exe"):]
+        rest = _VAR_RE.sub(lambda m: variables.get(m.group(1), m.group(0)), rest)
+        args = [part.replace('"', "") for part in rest.split() if part.replace('"', "")]
+        binary = Path(root) / "bin" / "winws.exe"
+        return [str(binary), *args]
+    return None
+
+
+# --------------------------------------------------------------------------
+# проба стратегии: запустить winws.exe на несколько секунд и проверить TLS
+# --------------------------------------------------------------------------
+
+
+#: домен для пробы: HTTPS и стабильно режется DPI без обхода
+PROBE_HOST = "www.youtube.com"
+PROBE_PORT = 443
+
+
+def tls_ok(host: str = PROBE_HOST, timeout: float = 5.0):
+    """Прошло ли TLS-рукопожатие. Возвращает (ok, детали)."""
+    import socket
+    import ssl
+
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((host, PROBE_PORT), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as tls:
+                version = tls.version() or "?"
+                return True, version
+    except Exception as exc:  # noqa: BLE001 — любая сетевая беда = провал пробы
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def probe_strategy(root: str | None, file_name: str, seconds: float = 3.0,
+                   host: str = PROBE_HOST) -> dict:
+    """Одна стратегия: чистый старт → запуск → TLS → остановка.
+
+    Перед запуском снимаем залипший драйвер: иначе первая же неудачная проба
+    оставит WinDivert в STOP_PENDING и все следующие упадут по чужой вине.
+    """
+    if not root:
+        return {"file": file_name, "ok": False, "detail": i18n.t("путь zapret не задан")}
+
+    alive = processes()
+    if alive:
+        return {"file": file_name, "ok": False,
+                "detail": i18n.t("обход уже запущен (pid {v0}) — сначала остановите его",
+                                 v0=alive[0].get("pid"))}
+
+    argv = parse_bat_argv(root, file_name)
+    if not argv:
+        return {"file": file_name, "ok": False, "detail": i18n.t("аргументы не разобраны")}
+
+    reset_stuck(timeout=8)
+
+    try:
+        proc = gd_proc.popen(argv, cwd=str(Path(root) / "bin"))
+    except OSError as exc:
+        return {"file": file_name, "ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        time.sleep(max(0.5, float(seconds)))
+        code = proc.poll()
+        if code is not None:
+            return {"file": file_name, "ok": False,
+                    "detail": i18n.t("winws завершился с кодом {v0}", v0=code)}
+        ok, detail = tls_ok(host)
+        return {"file": file_name, "ok": ok,
+                "detail": (i18n.t("TLS прошёл") if ok else i18n.t("TLS не прошёл"))
+                + f": {detail}"}
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 — процесс мог умереть сам
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+        reset_stuck(timeout=8)
+
+
+def probe_round(root: str | None, files: list[str] | None = None,
+                seconds: float = 3.0, limit: int = 0,
+                on_progress=None) -> list[dict]:
+    """Перебрать стратегии и вернуть те, что прошли (в порядке перебора).
+
+    `limit` ограничивает число проб: полный перебор 20+ файлов по 3 секунды —
+    это минута с перехватом трафика, и запускать его без нужды нехорошо.
+    """
+    root_path = Path(root) if root else None
+    if root_path is None or not root_path.is_dir():
+        return []
+    names = files if files is not None else [item["file"] for item in scan_strategies(root)]
+    if limit:
+        names = names[:int(limit)]
+
+    results = []
+    for index, name in enumerate(names, start=1):
+        result = probe_strategy(root, name, seconds=seconds)
+        results.append(result)
+        if on_progress is not None:
+            on_progress(index, len(names), result)
+    return results
+
+
+def _probe_cache_file():
+    return gd_paths.data_dir() / "zapret_probe.json"
+
+
+def save_probe_result(root: str | None, results: list[dict]) -> bool:
+    """Запомнить, какие стратегии прошли: в следующий раз начинать с них.
+
+    Ключ — папка zapret: у разных сборок разные имена файлов. Провайдер не
+    храним: он меняется чаще, чем папка, и устаревшее «работало» только путает.
+    """
+    import json
+
+    if not root:
+        return False
+    passed = [str(item.get("file")) for item in results if item.get("ok")]
+    if not passed:
+        return False
+    payload = {"root": str(root), "at": time.time(), "passed": passed}
+    try:
+        target = _probe_cache_file()
+        gd_paths.ensure(target.parent)
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def load_probe_result(root: str | None) -> dict | None:
+    """Что проходило в прошлый раз для этой папки (или None)."""
+    import json
+
+    if not root:
+        return None
+    try:
+        data = json.loads(_probe_cache_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or str(data.get("root")) != str(root):
+        return None
+    passed = data.get("passed")
+    return data if isinstance(passed, list) and passed else None
 
 
 # --------------------------------------------------------------------------

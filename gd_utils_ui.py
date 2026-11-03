@@ -43,6 +43,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import gd_bg  # noqa: E402
+import gd_boost  # noqa: E402
 import gd_journal  # noqa: E402
 import gd_memory  # noqa: E402
 import gd_state  # noqa: E402
@@ -171,6 +172,7 @@ class UtilsWidget(QWidget):
         self._worker = None       # фоновая очистка standby
         self._ws_worker = None    # фоновое сжатие рабочих наборов
         self._init_worker = None  # фоновое создание сенсоров/GpuClient (первый вход)
+        self._boost = gd_boost.GameBoost()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(*th.PAGE_MARGINS)
@@ -265,6 +267,39 @@ class UtilsWidget(QWidget):
         self.lbl_auto.setObjectName("Hint")
         lay2.addWidget(self.lbl_auto)
         root.addWidget(card2)
+
+        # --- игровой буст ---
+        # Смысл: не чистить всё подряд, а усмирить фон — браузеры, мессенджеры
+        # и Steam держат гигабайты в активных страницах, и именно их выгодно
+        # вытеснить, не трогая кэш игры.
+        card_boost, lay_boost = make_card(i18n.t("ИГРОВОЙ БУСТ"))
+        boost_row = QHBoxLayout()
+        self.btn_boost = QPushButton(i18n.t("Включить игровой буст"))
+        self.btn_boost.setObjectName("PrimaryButton")
+        self.btn_boost.clicked.connect(self._toggle_boost)
+        boost_row.addWidget(self.btn_boost)
+        self.btn_smart = QPushButton(i18n.t("Сжать фоновые процессы"))
+        self.btn_smart.setObjectName("Segment")
+        self.btn_smart.clicked.connect(self._smart_trim)
+        boost_row.addWidget(self.btn_smart)
+        boost_row.addStretch(1)
+        lay_boost.addLayout(boost_row)
+
+        self.lbl_boost = QLabel(i18n.t("Буст выключен."))
+        self.lbl_boost.setObjectName("Hint")
+        self.lbl_boost.setWordWrap(True)
+        lay_boost.addWidget(self.lbl_boost)
+
+        boost_note = QLabel(i18n.t(
+            "Сжимает рабочие наборы браузеров, мессенджеров и Steam, понижает "
+            "приоритет их страниц и включает EcoQoS. Standby list не трогает — "
+            "кэш игры остаётся на месте. Всё изменённое возвращается при выключении "
+            "буста и после падения приложения."
+        ))
+        boost_note.setObjectName("Hint")
+        boost_note.setWordWrap(True)
+        lay_boost.addWidget(boost_note)
+        root.addWidget(card_boost)
 
         # --- запуск вместе с Windows ---
         # Факт (файл в «Автозагрузке»), а не флаг конфига: ярлык могли удалить
@@ -416,7 +451,10 @@ class UtilsWidget(QWidget):
             return
         standby_mb = (snap.get("Standby") or 0) / 1024 ** 2
         free_mb = (snap.get("Free") or 0) / 1024 ** 2
-        need = standby_mb > self.sp_standby.value() and free_mb < self.sp_free.value()
+        # Правило живёт в gd_boost: там же его проверяют тесты, и игровой буст
+        # не должен чистить standby по другим условиям, чем автоочистка.
+        need = gd_boost.should_purge(free_mb, standby_mb,
+                                     self.sp_free.value(), self.sp_standby.value())
         self.lbl_auto.setText(
             i18n.t("Standby {v0:.0f} МБ, свободно {v1:.0f} МБ — ", v0=standby_mb, v1=free_mb)
             + (i18n.t("условие выполнено, очищаю.") if need else i18n.t("условие не выполнено."))
@@ -470,6 +508,51 @@ class UtilsWidget(QWidget):
             import gd_toast
 
             gd_toast.show_toast(i18n.t("toast.purge", mb=freed), "ok")
+
+    def _toggle_boost(self):
+        """Включить/выключить игровой буст. Тяжёлая работа — в фоне."""
+        if self._boost.active():
+            ok, message = self._boost.stop()
+        else:
+            ok, message = self._boost.start()
+        self._show_boost(message, ok)
+
+    def _show_boost(self, text: str, ok: bool):
+        self.lbl_boost.setText(text)
+        self._set_status(text, ok=ok)
+        self.btn_boost.setText(
+            i18n.t("Выключить игровой буст") if self._boost.active()
+            else i18n.t("Включить игровой буст")
+        )
+        gd_journal.record("game_boost", i18n.t("буст"), None, text, why=text,
+                          source=i18n.t("утилиты"), reversible=True)
+
+    def _smart_trim(self):
+        """Сжать рабочие наборы фонового софта, не трогая standby list."""
+        if gd_bg.is_running(self._ws_worker):
+            return
+        self.btn_smart.setEnabled(False)
+        self._set_status(i18n.t("Сжимаю фоновые процессы…"), ok=True)
+        self._ws_worker = gd_bg.submit(
+            lambda: gd_boost.trim_working_sets(),
+            self._smart_trim_done,
+            parent=self,
+        )
+
+    def _smart_trim_done(self, result):
+        self.btn_smart.setEnabled(True)
+        if not result.get("ok"):
+            text = result.get("message") or i18n.t("Не удалось сжать фоновые процессы.")
+            self.lbl_boost.setText(text)
+            self._set_status(text, ok=False)
+            return
+        text = i18n.t(
+            "Сжато процессов: {v0}. Освободилось {v1:+.0f} МБ физической памяти. "
+            "Кэш игры не тронут.",
+            v0=result.get("count", 0), v1=result.get("freed_mb", 0.0),
+        )
+        self.lbl_boost.setText(text)
+        self._set_status(text, ok=True)
 
     def _pick_and_empty(self):
         if gd_bg.is_running(self._ws_worker) or gd_bg.is_running(self._init_worker):

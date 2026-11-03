@@ -149,6 +149,16 @@ def _iface_native() -> str | None:
 
         iphlpapi = ctypes.WinDLL("iphlpapi.dll")
 
+        # Явные сигнатуры: на x64 необъявленный указатель ctypes передаёт как
+        # 32-битный int — испорченный стек проявляется как 0xC0000409.
+        iphlpapi.GetBestRoute.argtypes = [wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+        iphlpapi.GetBestRoute.restype = wintypes.DWORD
+        iphlpapi.ConvertInterfaceIndexToLuid.argtypes = [wintypes.ULONG, ctypes.c_void_p]
+        iphlpapi.ConvertInterfaceIndexToLuid.restype = wintypes.ULONG
+        iphlpapi.ConvertInterfaceLuidToAlias.argtypes = [ctypes.c_void_p, wintypes.LPWSTR,
+                                                         ctypes.c_size_t]
+        iphlpapi.ConvertInterfaceLuidToAlias.restype = wintypes.ULONG
+
         class MIB_IPFORWARDROW(ctypes.Structure):
             _fields_ = [(field, wintypes.DWORD) for field in (
                 "dwForwardDest", "dwForwardMask", "dwForwardPolicy", "dwForwardNextHop",

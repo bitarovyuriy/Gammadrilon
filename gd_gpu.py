@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 
 import gd_helper
@@ -20,6 +21,58 @@ import gd_i18n as i18n
 import gd_proc
 
 SMI = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe")
+
+#: Запасные места: старые драйверы (до 2019) кладут утилиту в Program Files,
+#: а часть ноутбучных сборок — только туда. System32 остаётся первым: его
+#: современный установщик драйвера обновляет сам.
+SMI_FALLBACKS = (
+    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                 "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe"),
+)
+
+
+def _smi_path() -> str | None:
+    """Где лежит рабочий nvidia-smi, или None."""
+    for candidate in (SMI, *SMI_FALLBACKS):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+#: кэш ответа WMI: спрашиваем один раз за процесс
+_adapter: dict | None = None
+_adapter_checked = False
+
+
+def adapter_info() -> dict | None:
+    """Имя и драйвер любого GPU через WMI — для AMD/Intel и диагностики.
+
+    Нужен, когда nvidia-smi недоступен: пустая вкладка без объяснения выглядит
+    как поломка, а «найдена Radeon RX 6600, управление только для NVIDIA» —
+    честный ответ. PowerShell запускается один раз, результат кэшируется.
+    """
+    global _adapter, _adapter_checked
+    if _adapter_checked:
+        return _adapter
+    _adapter_checked = True
+    try:
+        proc = gd_proc.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_VideoController | Select-Object -First 1 "
+             "Name,DriverVersion | ConvertTo-Json -Compress"],
+            text=True, timeout=12,
+        )
+        data = json.loads((proc.stdout or "").strip() or "null")
+        if isinstance(data, dict) and data.get("Name"):
+            _adapter = {
+                "name": str(data["Name"]).strip(),
+                "driver": str(data.get("DriverVersion") or "").strip(),
+            }
+    except Exception:  # noqa: BLE001 — WMI может быть выключен, это не ошибка приложения
+        pass
+    return _adapter
+
+
 PIPE_NAME = r"\\.\pipe\GammadrilonGpu"
 
 # Связь UI ↔ elevated-хелпер. Именованный канал, созданный процессом с правами
@@ -58,9 +111,31 @@ class GpuUnavailable(RuntimeError):
     pass
 
 
+#: один экземпляр NVML на процесс: nvmlInit не бесплатный
+_NVML: list = []
+
+
+def _nvml():
+    """Ленивая инициализация NVML. None — библиотека недоступна."""
+    import gd_nvml
+
+    if not _NVML:
+        try:
+            _NVML.append(gd_nvml.Nvml())
+        except Exception:  # noqa: BLE001 — нет NVIDIA или драйвера
+            _NVML.append(None)
+    return _NVML[0]
+
+
 def available() -> bool:
-    """Есть ли NVIDIA GPU и рабочий nvidia-smi."""
-    if not os.path.isfile(SMI):
+    """Есть ли NVIDIA GPU: сначала NVML, затем nvidia-smi."""
+    try:
+        instance = _nvml()
+        if instance is not None and instance.available():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    if _smi_path() is None:
         return False
     try:
         return _smi(["--query-gpu=name", "--format=csv,noheader"], timeout=6) is not None
@@ -69,8 +144,11 @@ def available() -> bool:
 
 
 def _smi(args: list[str], timeout: float = 8.0) -> str | None:
+    path = _smi_path()
+    if path is None:
+        return None
     try:
-        proc = gd_proc.run([SMI, *args], text=True, timeout=timeout)
+        proc = gd_proc.run([path, *args], text=True, timeout=timeout)
     except (OSError, gd_proc.TimeoutExpired):
         return None
     if proc.returncode != 0:
@@ -87,7 +165,16 @@ _FIELDS = (
 
 
 def read_state() -> dict | None:
-    """Снимок GPU. None — если nvidia-smi недоступен."""
+    """Снимок GPU: NVML, при недоступности — nvidia-smi. None — нет данных."""
+    try:
+        instance = _nvml()
+        if instance is not None and instance.available():
+            state = instance.read()
+            if state:
+                return state
+    except Exception:  # noqa: BLE001 — NVML может отказать на любом шаге
+        pass
+
     out = _smi([
         f"--query-gpu={','.join(_FIELDS)}",
         "--format=csv,noheader,nounits",

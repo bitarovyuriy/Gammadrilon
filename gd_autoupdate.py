@@ -30,6 +30,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 import gd_i18n as i18n
+import gd_net
+import gd_paths
 
 APP_EXE = "Gammadrilon.exe"
 CONFIG_NAME = "presets.json"
@@ -158,7 +160,7 @@ def download_asset(asset: dict, destination: Path, timeout: float = 30.0) -> Pat
         "Accept": "application/octet-stream",
     })
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with gd_net.open_url(request, timeout=timeout) as response:
             _check_host(response.geturl())
             expected = int(response.headers.get("Content-Length") or 0)
             received = 0
@@ -261,11 +263,16 @@ def _free_space(path: Path) -> int:
 
 
 def _copy_settings_backup(root: Path) -> Path | None:
-    """Копия presets.json до обновления — на случай совсем странного отказа."""
-    source = root / CONFIG_NAME
-    if not source.is_file():
+    """Копия presets.json до обновления — на случай совсем странного отказа.
+
+    Настройки бывают и рядом с exe (portable, старые сборки), и в data_dir
+    (установленная версия) — берём тот файл, который реально существует.
+    """
+    candidates = (root / CONFIG_NAME, gd_paths.config_path())
+    source = next((path for path in candidates if path.is_file()), None)
+    if source is None:
         return None
-    backup = root / CONFIG_BACKUP
+    backup = source.with_name(CONFIG_BACKUP)
     try:
         shutil.copy2(source, backup)
     except OSError as exc:
@@ -566,6 +573,15 @@ if (-not (Test-Path -LiteralPath $presets) -and (Test-Path -LiteralPath $presets
 $ok = $false
 if ($cfg.restart) {
     try {
+        # Самопроверка нового exe: окно может открыться, а подсистемы — нет
+        # (нет плагина Qt, битая _internal). Такой релиз лучше откатить сразу,
+        # пока человек не начал работать.
+        $st = Start-Process -FilePath $exePath -ArgumentList "--selftest" -Wait -PassThru -WindowStyle Hidden
+        if ($st.ExitCode -ne 0) {
+            throw ("selftest exit {0}" -f $st.ExitCode)
+        }
+        Write-Log "selftest ok"
+
         $newProc = Start-Process -FilePath $exePath -WorkingDirectory $target -PassThru
         Start-Sleep -Seconds 6
         if ($newProc.HasExited) {

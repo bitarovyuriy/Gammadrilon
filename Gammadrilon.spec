@@ -10,7 +10,7 @@ from pathlib import Path
 
 SPEC_DIR = Path(SPECPATH)   # каталог spec-файла = корень проекта
 MODULES = sorted(p.stem for p in SPEC_DIR.glob("gd_*.py"))
-if len(MODULES) < 20 or "gd_agent" not in MODULES:
+if len(MODULES) < 20 or "gd_power" not in MODULES:
     raise SystemExit(
         f"gd_*.py не найдены в {SPEC_DIR}: spec должен лежать в корне проекта"
     )

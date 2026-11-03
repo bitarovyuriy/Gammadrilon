@@ -63,7 +63,9 @@ class RuleDialog(QDialog):
         # что было выбрано в правиле: профиль CPU/GPU или провайдер DNS — иначе правка
         # правила молча сбрасывала бы выбор на первый пункт списка
         self._want = {"cpu_profile": act.get("profile"), "gpu_profile": act.get("profile"),
-                      "set_dns": act.get("dns")}
+                      "set_dns": act.get("dns"),
+                      "gamma_preset": (str(act["preset"]) if isinstance(act.get("preset"), int)
+                                       else None)}
 
         root = QVBoxLayout(self)
         form = QFormLayout()
@@ -141,10 +143,17 @@ class RuleDialog(QDialog):
 
         kind = self.act_kind.currentData()
         self.act_profile.clear()
+        host = getattr(self.parent(), "host", None)
+        config = getattr(host, "config", None) if host is not None else None
+        gamma_presets = []
+        if isinstance(config, dict):
+            gamma_presets = [(str(index), str(preset.get("name") or f"#{index + 1}"))
+                             for index, preset in enumerate(config.get("presets") or [])]
         placeholders = {
             "cpu_profile": (gd_rules.CPU_PROFILES, i18n.t("Профиль")),
             "gpu_profile": (gd_rules.GPU_PROFILES, i18n.t("Профиль")),
             "set_dns": (gd_rules.DNS_PROFILES, i18n.t("Провайдер DNS")),
+            "gamma_preset": (tuple(gamma_presets), i18n.t("Пресет гаммы")),
         }
         pairs, label = placeholders.get(kind, ((), i18n.t("Профиль")))
         for key, text in pairs:
@@ -343,6 +352,9 @@ class RulesWidget(QWidget):
             rule["action"]["profile"] = dlg.act_profile.currentData()
         elif kind == "set_dns":
             rule["action"]["dns"] = dlg.act_profile.currentData()
+        elif kind == "gamma_preset":
+            chosen = dlg.act_profile.currentData()
+            rule["action"]["preset"] = int(chosen) if chosen is not None else -1
         return rule
 
     def _add(self):

@@ -18,10 +18,14 @@ state-файлы, токен локального API и логи пишутся
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
 APP_NAME = "Gammadrilon"
+
+#: имя файла настроек (историческое — рядом с exe, теперь в data_dir)
+CONFIG_NAME = "presets.json"
 
 #: имена файла-маркера: достаточно положить любой из них рядом с exe
 MARKER_NAMES = ("portable.txt", "portable.marker", ".portable")
@@ -75,6 +79,24 @@ def log_dir() -> Path:
     return Path(base) / APP_NAME
 
 
+def can_write_data() -> tuple[bool, str]:
+    """Можно ли писать в папку настроек. Возвращает (да/нет, путь или причина).
+
+    Установка «для всех» кладёт программу в `Program Files`, и без прав
+    администратора запись туда молча проваливается: пресеты выглядят
+    сохранёнными и исчезают после перезапуска. Проверяем пробным файлом,
+    а не правами на бумаге.
+    """
+    target = ensure(config_path().parent)
+    probe = Path(target) / ".write_probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True, str(target)
+    except OSError as exc:
+        return False, f"{target}: {exc}"
+
+
 def ensure(path) -> Path:
     """Создать папку, не бросая исключений: отказ прав — дело вызывающего."""
     folder = Path(path)
@@ -83,6 +105,74 @@ def ensure(path) -> Path:
     except OSError:
         pass
     return folder
+
+
+def config_path() -> Path:
+    """Настройки приложения: портативно — рядом с exe, иначе в профиле пользователя.
+
+    Раньше файл лежал рядом с приложением, потом в ``data_dir()`` (ProgramData).
+    Оба места плохи для настроек: в ``Program Files`` писать нельзя, а в
+    ProgramData файл, созданный elevated-процессом, обычный запуск перезаписать
+    не сможет (владелец — администраторы, у Users только чтение). Настройки —
+    личные, поэтому им место в ``%LOCALAPPDATA%``, куда UI пишет без прав.
+    """
+    if portable_enabled():
+        return app_dir() / CONFIG_NAME
+    return log_dir() / CONFIG_NAME
+
+
+def migrate_legacy_config() -> Path | None:
+    """Перенести старый ``presets.json`` в профиль пользователя.
+
+    Смотрим два прежних места: рядом с приложением (самая старая схема) и в
+    ``data_dir()`` (промежуточная). Копируем, а не перемещаем: старая версия,
+    запущенная рядом, продолжит работать со своим файлом.
+    """
+    if portable_enabled():
+        return None
+    target = config_path()
+    try:
+        if target.is_file():
+            return None
+        for legacy in (data_dir() / CONFIG_NAME, app_dir() / CONFIG_NAME):
+            if not legacy.is_file():
+                continue
+            ensure(target.parent)
+            shutil.copy2(legacy, target)
+            return target
+    except OSError:
+        return None
+    return None
+
+
+def make_portable() -> tuple[bool, str]:
+    """Включить портативный режим: маркер рядом с приложением + копия настроек.
+
+    Нужно, чтобы унести программу на флешке вместе с настройками: без маркера
+    данные живут в профиле пользователя и на другой машине их не будет.
+    Возвращает (ok, путь или причина отказа).
+    """
+    import gd_i18n as i18n
+
+    app = app_dir()
+    marker = app / MARKER_NAMES[0]
+    source = config_path()          # до записи маркера — профиль пользователя
+    target = app / CONFIG_NAME
+    try:
+        marker.write_text(
+            "Портативный режим Gammadrilon: данные и настройки лежат в этой папке.\n"
+            "Удалите этот файл, чтобы вернуться к хранению в профиле пользователя.\n",
+            encoding="utf-8")
+    except OSError as exc:
+        return False, i18n.t("не удалось создать маркер {v0}: {v1}",
+                             v0=marker.name, v1=exc)
+    if source.is_file() and source != target and not target.exists():
+        try:
+            ensure(target.parent)
+            shutil.copy2(source, target)
+        except OSError:
+            pass            # маркер уже работает; копия — приятный бонус
+    return True, str(marker)
 
 
 def mode_note() -> str:

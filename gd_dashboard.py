@@ -38,6 +38,7 @@ CATALOG: dict[str, dict] = {
     "w.ram": {"min_w": 3, "max_w": 12, "kind": "metric"},
     "w.power": {"min_w": 3, "max_w": 12, "kind": "action"},
     "w.gpu_limit": {"min_w": 3, "max_w": 12, "kind": "action"},
+    "w.cs2": {"min_w": 3, "max_w": 12, "kind": "action"},
     "w.gamma": {"min_w": 3, "max_w": 12, "kind": "action"},
     "w.dns": {"min_w": 4, "max_w": 12, "kind": "metric"},
     "w.zapret": {"min_w": 5, "max_w": 12, "kind": "action", "min_h": "L"},

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 try:
     import sysconfig as _sysconfig
@@ -20,6 +21,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QMessageBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -148,8 +150,27 @@ class ExtraPanel(QWidget):
         self.btn_import = QPushButton(i18n.t("Импорт из JSON…"))
         self.btn_import.setObjectName("Segment")
         self.btn_import.clicked.connect(self._import)
+        # заводские настройки: после экспериментов нужен чистый старт,
+        # а прежний файл остаётся копией рядом
+        self.btn_reset = QPushButton(i18n.t("Сбросить к умолчанию"))
+        self.btn_reset.setObjectName("Segment")
+        self.btn_reset.clicked.connect(self._reset_all_settings)
+        self.btn_portable = QPushButton(i18n.t("Сделать портативным"))
+        self.btn_portable.setObjectName("Segment")
+        self.btn_portable.setToolTip(i18n.t(
+            "Рядом с программой появится portable.txt: данные и настройки будут "
+            "храниться в её папке — удобно унести на флешке."))
+        self.btn_portable.clicked.connect(self._make_portable)
+        self.btn_suitcase = QPushButton(i18n.t("Чемоданчик…"))
+        self.btn_suitcase.setObjectName("Segment")
+        self.btn_suitcase.setToolTip(i18n.t(
+            "Папка с presets.json и portable.txt: перенести настройки на другой ПК."))
+        self.btn_suitcase.clicked.connect(self._make_suitcase)
         r4.addWidget(self.btn_export)
         r4.addWidget(self.btn_import)
+        r4.addWidget(self.btn_reset)
+        r4.addWidget(self.btn_portable)
+        r4.addWidget(self.btn_suitcase)
         r4.addStretch(1)
         c4.addLayout(r4)
         self.lbl_prof = QLabel(i18n.t("Один файл переносит настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистку; профили CPU/GPU встроенные. Настройки применятся после перезапуска."))
@@ -373,6 +394,52 @@ class ExtraPanel(QWidget):
         report = self.host.reset_everything()
         self._set_status(self.lbl_prof, i18n.t("Сброшено: ") + (", ".join(report) if report else i18n.t("нечего сбрасывать")) + ".")
         self.refresh()
+
+    def _make_suitcase(self):
+        """Собрать папку переноса настроек: presets.json + portable.txt."""
+        import gd_profiles
+
+        folder = QFileDialog.getExistingDirectory(
+            self, i18n.t("Куда положить чемоданчик"), str(Path.home()))
+        if not folder:
+            return
+        ok, message = gd_profiles.make_suitcase(folder, getattr(self.host, "config", None))
+        self._set_status(self.lbl_prof, message, ok=ok)
+
+    def _make_portable(self):
+        """Включить портативный режим: маркер рядом с программой."""
+        import gd_paths
+
+        answer = QMessageBox.question(
+            self, i18n.t("Портативный режим"),
+            i18n.t("Включить портативный режим? Данные и настройки переедут в папку "
+                   "программы, и режим применится после перезапуска."),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        ok, message = gd_paths.make_portable()
+        self._set_status(
+            self.lbl_prof,
+            i18n.t("Портативный режим включён: {v0}. Перезапустите приложение.", v0=message)
+            if ok else message,
+            ok=ok)
+
+    def _reset_all_settings(self):
+        """Вернуть заводские настройки: копия текущего файла остаётся рядом."""
+        reset = getattr(self.host, "reset_app_settings", None) if self.host is not None else None
+        if reset is None:
+            self._set_status(self.lbl_prof, i18n.t("Сброс недоступен в этом окне"), ok=False)
+            return
+        answer = QMessageBox.question(
+            self, i18n.t("Сброс настроек"),
+            i18n.t("Вернуть все настройки к заводским? Текущий файл сохранится копией рядом."),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        ok, message = reset()
+        self._set_status(self.lbl_prof, message, ok=ok)
+        if ok:
+            self.refresh()
 
     def _export(self):
         path, _ = QFileDialog.getSaveFileName(self, i18n.t("Экспорт настроек"), "gammadrilon-settings.json",

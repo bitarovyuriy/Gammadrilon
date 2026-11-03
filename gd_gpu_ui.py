@@ -54,7 +54,6 @@ if HERE not in sys.path:
 
 import gd_bg  # noqa: E402
 import gd_gpu  # noqa: E402
-import gd_agent  # noqa: E402
 import gd_paths  # noqa: E402
 import gd_state  # noqa: E402
 import gd_theme as th  # noqa: E402
@@ -65,12 +64,12 @@ PROFILE_ORDER = ("quiet", "default", "game", "max")
 
 
 def _presets_path() -> str:
-    """presets.json рядом с приложением.
+    """presets.json из gd_paths: портативно — рядом, иначе в ProgramData.
 
     Нужен только standalone-окну: вкладка внутри main.py получает config и
     save_fn от приложения и файл не трогает.
     """
-    return str(gd_paths.app_dir() / "presets.json")
+    return str(gd_paths.config_path())
 
 
 def _read_setting_file(key: str, default=None):
@@ -439,8 +438,7 @@ class GpuWidget(QWidget):
             self.lbl_gpu.setText(i18n.t("GPU не отвечает"))
             if not self._pending_gpu_probe and gd_metrics.gpu_unavailable():
                 # nvidia-smi молчит несколько попыток подряд — карты нет
-                self._gpu_warn.setText(i18n.t(
-                    "NVIDIA GPU или nvidia-smi не найдены. Управление недоступно: для этой карты/системы публичного способа менять лимит мощности нет."))
+                self._gpu_warn.setText(self._gpu_absent_note())
                 self._gpu_warn.setVisible(True)
                 self._set_controls_enabled(False)
             return
@@ -510,16 +508,10 @@ class GpuWidget(QWidget):
 
         st = self._state or gd_metrics.gpu()
         if not st:
-            gd_agent.finish(getattr(self, "_ext_done", None), False,
-                            i18n.t("нет данных GPU (nvidia-smi недоступен)"))
-            self._ext_done = None
             return
         target = gd_gpu.profile_target(st, name)
         pl = target.get("pl")
         if pl is None:
-            gd_agent.finish(getattr(self, "_ext_done", None), False,
-                            i18n.t("драйвер не сообщил лимит для этого профиля"))
-            self._ext_done = None
             return
         self.sl_pl.setValue(int(pl))
         self.profile_desc.setText(
@@ -536,14 +528,28 @@ class GpuWidget(QWidget):
         self._source = "UI"
         self._on_profile(name)
 
+    def _gpu_absent_note(self) -> str:
+        """Почему вкладка пуста: NVIDIA нет или nvidia-smi недоступен.
+
+        Для AMD/Intel называем найденный адаптер: пустая вкладка без имени
+        выглядит как поломка, а «только мониторинг» — понятное состояние.
+        """
+        import gd_gpu
+
+        base = i18n.t(
+            "NVIDIA GPU или nvidia-smi не найдены. Управление лимитом мощности недоступно."
+        )
+        info = gd_gpu.adapter_info()
+        if info:
+            return i18n.t("{v0} Найден адаптер: {v1} — только мониторинг.",
+                          v0=base, v1=info["name"])
+        return base
+
     def _apply(self, payload: dict, profile_name=None, autostart: bool = False):
         """Применить лимит. `autostart` — возврат плана при запуске: меняет только
         подписи и причину в журнале (нажатия пользователя не было), поведение то же."""
         # запуск хелпера (UAC) и запись nvidia-smi долгие — не морозим GUI
         if gd_bg.is_running(self._apply_worker):
-            gd_agent.finish(getattr(self, "_ext_done", None), False,
-                            i18n.t("занято: операция уже выполняется"))
-            self._ext_done = None
             return
         self.btn_apply.setEnabled(False)
         self.profile_desc.setText(i18n.t("Применяю…"))
@@ -561,8 +567,6 @@ class GpuWidget(QWidget):
         if not resp.get("ok"):
             self._set_status(i18n.t("Драйвер не принял изменение: {v0}", v0=resp.get('error')), ok=False)
             self.profile_desc.setText(i18n.t("Изменение не применено."))
-            gd_agent.finish(getattr(self, "_ext_done", None), False, resp.get("error"))
-            self._ext_done = None
             return
         self._pl_dirty = False       # цель пользователя теперь на карте
         self._active_profile = profile_name
@@ -589,16 +593,11 @@ class GpuWidget(QWidget):
             why = i18n.t("лимит мощности GPU")
         self._journal("gpu_pl", i18n.t("{v0} Вт", v0=payload['pl']),
                       before=self._pre_apply_pl, after=payload["pl"], why=why)
-        gd_agent.finish(getattr(self, "_ext_done", None), True)
-        self._ext_done = None
         self._tick_later()
 
     def _restore_async(self, on_done) -> None:
         """Откат лимита в фоне (кнопка «Вернуть как было», откат при выходе)."""
         if gd_bg.is_running(self._restore_worker):
-            gd_agent.finish(getattr(self, "_ext_done", None), False,
-                            i18n.t("занято: операция уже выполняется"))
-            self._ext_done = None
             return
 
         self._restore_worker = gd_bg.submit(
@@ -634,8 +633,6 @@ class GpuWidget(QWidget):
             self.profile_group.setExclusive(True)
         else:
             self._set_status(i18n.t("Откат не удался: {v0}", v0=resp.get('error')), ok=False)
-        gd_agent.finish(getattr(self, "_ext_done", None), resp.get("ok"), resp.get("error"))
-        self._ext_done = None
         self._tick_later()
 
     def _set_status(self, text: str, ok: bool = True, color: str | None = None):
@@ -684,25 +681,18 @@ class GpuWidget(QWidget):
         except Exception:  # noqa: BLE001
             pass
 
-    # -- внешнее управление (трей, палитра команд, локальный API) -----------
-    def apply_profile(self, name: str, source: str = i18n.t("трей"), on_done=None):
-        """Применить профиль GPU извне (или вернуть исходный лимит).
-
-        `on_done(result)` — хук внешних вызовов (локальный API, ТЗ этап 8):
-        один раз получает ``{"ok", "error"}`` по завершении, в том числе при
-        отказе «занято» или отсутствии данных nvidia-smi.
-        """
+    # -- внешнее управление (трей, палитра команд) --------------------------
+    def apply_profile(self, name: str, source: str = i18n.t("трей")):
+        """Применить профиль GPU извне (или вернуть исходный лимит)."""
         if gd_bg.is_running(self._apply_worker) or gd_bg.is_running(self._restore_worker):
-            gd_agent.finish(on_done, False, i18n.t("занято: операция уже выполняется"))
             return
         self._source = source
-        self._ext_done = on_done
         if name == "restore":
             self._on_restore()
             return
         self._on_profile(name)
 
-    def apply_limit(self, watts: int, source: str = i18n.t("трей"), on_done=None,
+    def apply_limit(self, watts: int, source: str = i18n.t("трей"),
                     autostart: bool = False):
         """Лимит мощности в ваттах извне: как движение слайдера + «Применить».
 
@@ -711,7 +701,6 @@ class GpuWidget(QWidget):
         `autostart=True` — возврат плана при запуске (меняются только подписи).
         """
         if gd_bg.is_running(self._apply_worker) or gd_bg.is_running(self._restore_worker):
-            gd_agent.finish(on_done, False, i18n.t("занято: операция уже выполняется"))
             self._set_status(i18n.t("занято: операция уже выполняется"), ok=False)
             return
         import gd_metrics
@@ -723,11 +712,9 @@ class GpuWidget(QWidget):
             msg = i18n.t(
                 "лимит {v0} Вт вне диапазона драйвера {v1}..{v2} Вт",
                 v0=watts, v1=int(lo), v2=int(hi))
-            gd_agent.finish(on_done, False, msg)
             self._set_status(msg, ok=False)   # видно и в самой вкладке, не только вызывающему
             return
         self._source = source
-        self._ext_done = on_done
         self.sl_pl.setValue(int(watts))
         self._apply({"pl": int(watts)}, autostart=autostart)
 

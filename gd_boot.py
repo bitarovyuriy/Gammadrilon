@@ -29,3 +29,8 @@ def mark(name: str) -> None:
             }) + "\n")
     except OSError:
         pass
+
+
+def elapsed_ms() -> float:
+    """Сколько миллисекунд прошло с импорта gd_boot (начало запуска)."""
+    return round((time.perf_counter() - T0) * 1000, 1)

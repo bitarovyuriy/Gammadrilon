@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 
 import gd_i18n as i18n
+import gd_net
 
 #: канонический адрес: ссылки bonzeros/... ведут сюда же (старый аккаунт,
 #: GitHub редиректит), но проверять версию лучше по текущему имени.
@@ -78,6 +79,33 @@ def is_newer(latest: str, current: str) -> bool:
     return parsed > parse_version(current)
 
 
+def release_notes(info: dict | None, limit: int = 600) -> str:
+    """Короткое «что нового» из описания релиза.
+
+    GitHub отдаёт markdown целиком, включая заголовки и ссылки — в окне
+    подтверждения это простыня. Обрезаем по границе строки и убираем
+    служебные символы разметки, оставляя текст.
+    """
+    body = str((info or {}).get("body") or "").strip()
+    if not body:
+        return ""
+    lines = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("<!--", "**Full Changelog**", "Full Changelog")):
+            continue
+        line = line.lstrip("#>*- ").strip()
+        if line:
+            lines.append(line)
+    text = "\n".join(lines)
+    if len(text) > limit:
+        cut = text[:limit]
+        newline = cut.rfind("\n")
+        text = cut[:newline] if newline > limit // 2 else cut
+        text = text.rstrip() + "…"
+    return text
+
+
 def fetch_latest(timeout: float = TIMEOUT) -> dict:
     """Последний релиз с GitHub. Никогда не бросает: ``{"ok": bool, ...}``.
 
@@ -94,7 +122,7 @@ def fetch_latest(timeout: float = TIMEOUT) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with gd_net.open_url(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
         return {"ok": False, "error": i18n.t("GitHub ответил {v0}", v0=exc.code)}
@@ -132,6 +160,8 @@ def fetch_latest(timeout: float = TIMEOUT) -> dict:
         "ok": True,
         "tag": tag,
         "name": str(data.get("name") or tag),
+        # описание релиза: показываем до обновления, а не после
+        "body": release_notes({"body": data.get("body")}),
         "url": str(data.get("html_url") or PAGE_URL),
         "published": str(data.get("published_at") or "")[:10],
         "assets": assets,

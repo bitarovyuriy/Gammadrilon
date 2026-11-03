@@ -22,10 +22,9 @@
 | 5 | `tab.utils` | Утилиты | `UtilsWidget` | `utils` |
 | 6 | `tab.dns` | DNS | `DnsWidget` | `dns` |
 | 7 | `tab.zapret` | Обход DPI | `ZapretWidget` | `zapret` |
-| 8 | `tab.agent` | API агентов | `AgentWidget` | `agent` |
 
 Темы: `dark-…` и `light-…` для каждой вкладки (у `gamma` — только окно,
-у остальных — окно + полный контент). Итого 2 × (8 окон + 7 контентов) = 30.
+у остальных — окно + полный контент). Итого 2 × (7 окон + 6 контентов) = 26.
 
 ## Оверлеи и меню главного окна (только тёмная тема)
 
@@ -47,8 +46,7 @@
 | `dark-dialog-reset-confirm` | `ConfirmDialog` (`gd_dialog.py`) | подтверждение сброса (destructive — пунктир) |
 
 Ещё в приложении: `MessageDialog`/`ConfirmDialog` (`gd_dialog.py`) — все
-информационные окна и подтверждения; `AgentConfirmDialog` (`gd_agent_ui.py`) —
-подтверждение действия агента (снимок живёт в контексте вкладки `agent`);
+информационные окна и подтверждения;
 `HotkeySettingsDialog` (`main.py`) — настройка горячих клавиш, открывается из
 сайдбара; системный `QInputDialog` для имени пресета и клавиши (наследует
 общий QSS, отдельного снимка нет).

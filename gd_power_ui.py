@@ -46,7 +46,6 @@ from PyQt5.QtWidgets import (  # noqa: E402
 )
 
 import gd_theme as th
-import gd_agent  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -551,9 +550,6 @@ class PowerWindow(QWidget):
         """Применить профиль: компаньон поднимается здесь (это осознанный клик
         пользователя), а запись идёт в фоне — окно не замирает."""
         if self._apply_busy:
-            gd_agent.finish(getattr(self, "_ext_done", None), False,
-                            i18n.t("занято: операция уже выполняется"))
-            self._ext_done = None
             return
         self._apply_busy = True
         self._freq_before = self._last_mhz
@@ -581,8 +577,6 @@ class PowerWindow(QWidget):
             # профиль мог быть применён из трея, палитры или правила — окно в этот
             # момент свёрнуто, и статус карточки никто не увидит
             self._notify_failure(i18n.t("Профиль не применён: {v0}", v0=resp.get('error')))
-        gd_agent.finish(getattr(self, "_ext_done", None), resp.get("ok"), resp.get("error"))
-        self._ext_done = None
 
     def _journal_apply(self, payload: dict):
         """Записать изменение в журнал (ТЗ 5.5): дозапрос статуса — в фоне."""
@@ -639,9 +633,6 @@ class PowerWindow(QWidget):
     def _restore(self):
         """Вернуть исходную схему — компаньон отвечает в фоне."""
         if self._apply_busy:
-            gd_agent.finish(getattr(self, "_ext_done", None), False,
-                            i18n.t("занято: операция уже выполняется"))
-            self._ext_done = None
             return
         self._apply_busy = True
         self._set_busy(True)
@@ -669,22 +660,13 @@ class PowerWindow(QWidget):
         else:
             self._set_bottom_status(i18n.t("Ошибка отката: {v0}", v0=resp.get('error')), ok=False)
             self._notify_failure(i18n.t("Ошибка отката: {v0}", v0=resp.get('error')))
-        gd_agent.finish(getattr(self, "_ext_done", None), resp.get("ok"), resp.get("error"))
-        self._ext_done = None
 
     # -- внешнее управление (трей, палитра команд) -------------------------
-    def apply_profile(self, pid: str, source: str = i18n.t("трей"), on_done=None):
-        """Применить профиль извне — как действие, а не загрузку пресета в контролы.
-
-        `on_done(result)` — необязательный хук внешних вызовов (локальный API,
-        ТЗ этап 8): один раз получает ``{"ok", "error"}`` по завершении операции,
-        в том числе при отказе «занято». Из вкладки вызывается без хука.
-        """
+    def apply_profile(self, pid: str, source: str = i18n.t("трей")):
+        """Применить профиль извне — как действие, а не загрузку пресета в контролы."""
         if self._apply_busy:
-            gd_agent.finish(on_done, False, i18n.t("занято: профиль уже применяется"))
             return
         self._source = source
-        self._ext_done = on_done
         if pid == "restore":
             self._restore()
             return

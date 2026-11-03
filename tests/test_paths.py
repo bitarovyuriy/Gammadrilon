@@ -118,6 +118,67 @@ def test_import_time_paths_follow_environment():
     assert lines[2] == str(ROOT / "_lad_tmp" / APP)
 
 
+def test_config_lives_in_user_profile_unless_portable(tmp_path, monkeypatch):
+    """Настройки — в профиле: файл в ProgramData мог достаться от админского запуска."""
+    _env_for(tmp_path, monkeypatch, flag=None, marker=False)
+    assert gd_paths.config_path() == tmp_path / "lad" / APP / gd_paths.CONFIG_NAME
+
+    app = _env_for(tmp_path / "p", monkeypatch, flag="1", marker=False)
+    assert gd_paths.config_path() == app / gd_paths.CONFIG_NAME
+
+
+def test_legacy_config_is_copied_to_profile(tmp_path, monkeypatch):
+    """Старый presets.json рядом с exe переезжает в профиль, но остаётся на месте."""
+    app = _env_for(tmp_path, monkeypatch, flag=None, marker=False)
+    legacy = app / gd_paths.CONFIG_NAME
+    legacy.write_text('{"settings": {"theme": "dark"}}', encoding="utf-8")
+
+    moved = gd_paths.migrate_legacy_config()
+    target = tmp_path / "lad" / APP / gd_paths.CONFIG_NAME
+    assert moved == target, "перенос обязан вернуть путь нового файла"
+    assert target.read_text(encoding="utf-8") == '{"settings": {"theme": "dark"}}'
+    assert legacy.is_file(), "прежняя версия рядом должна продолжать работать"
+
+    target.write_text('{"settings": {"theme": "light"}}', encoding="utf-8")
+    assert gd_paths.migrate_legacy_config() is None, "второй раз не перезаписываем"
+    assert target.read_text(encoding="utf-8") == '{"settings": {"theme": "light"}}'
+
+
+def test_intermediate_config_from_programdata_is_picked_up(tmp_path, monkeypatch):
+    """Промежуточная схема держала файл в ProgramData — его тоже переносим."""
+    _env_for(tmp_path, monkeypatch, flag=None, marker=False)
+    mid = tmp_path / "pd" / APP / gd_paths.CONFIG_NAME
+    mid.parent.mkdir(parents=True)
+    mid.write_text('{"settings": {"language": "en"}}', encoding="utf-8")
+
+    moved = gd_paths.migrate_legacy_config()
+
+    assert moved is not None
+    assert moved == tmp_path / "lad" / APP / gd_paths.CONFIG_NAME
+    assert moved.is_file() and "en" in moved.read_text(encoding="utf-8")
+
+
+def test_programdata_wins_over_repository_copy(tmp_path, monkeypatch):
+    """Если файлов два, берём тот, с которым работало приложение (ProgramData)."""
+    app = _env_for(tmp_path, monkeypatch, flag=None, marker=False)
+    (app / gd_paths.CONFIG_NAME).write_text('{"settings": {"language": "ru"}}',
+                                            encoding="utf-8")
+    mid = tmp_path / "pd" / APP / gd_paths.CONFIG_NAME
+    mid.parent.mkdir(parents=True)
+    mid.write_text('{"settings": {"language": "en"}}', encoding="utf-8")
+
+    moved = gd_paths.migrate_legacy_config()
+
+    assert moved is not None and "en" in moved.read_text(encoding="utf-8")
+
+
+def test_portable_does_not_migrate(tmp_path, monkeypatch):
+    app = _env_for(tmp_path, monkeypatch, flag="1", marker=False)
+    (app / gd_paths.CONFIG_NAME).write_text("{}", encoding="utf-8")
+    assert gd_paths.migrate_legacy_config() is None
+    assert gd_paths.config_path() == app / gd_paths.CONFIG_NAME
+
+
 def test_mode_note_tells_where_data_lives(tmp_path, monkeypatch):
     app = _env_for(tmp_path, monkeypatch, flag=None, marker=False)
     note = gd_paths.mode_note()
