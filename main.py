@@ -2575,6 +2575,7 @@ class MainWindow(QMainWindow):
         hz_row.setSpacing(th.SPACE_S)
 
         self.hz_combo = QComboBox()
+        self.hz_combo.setAccessibleName(i18n.t("Частота обновления"))
         self.hz_combo.setMinimumWidth(120)
 
         self.hz_apply_button = QPushButton()

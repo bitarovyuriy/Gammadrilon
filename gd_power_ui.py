@@ -473,11 +473,15 @@ class PowerWindow(QWidget):
 
         grid4.addWidget(self._hint(i18n.t("Режим усиления")), 0, 0)
         self.cb_boost = QComboBox()
+        # скринридер читает только значение («Агрессивный») — без имени не ясно,
+        # что именно выбрано; имя даёт контекст
+        self.cb_boost.setAccessibleName(i18n.t("Режим усиления"))
         self.cb_boost.addItems(BOOST_LABELS)
         grid4.addWidget(self.cb_boost, 0, 1, 1, 2)
 
         grid4.addWidget(self._hint(i18n.t("Охлаждение")), 1, 0)
         self.cb_cool = QComboBox()
+        self.cb_cool.setAccessibleName(i18n.t("Охлаждение"))
         self.cb_cool.addItems(COOL_LABELS)
         grid4.addWidget(self.cb_cool, 1, 1, 1, 2)
 

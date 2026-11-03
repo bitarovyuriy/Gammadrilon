@@ -16,6 +16,7 @@
       копирование из журнала
 - [ ] `python tools/pages_check.py` и `python tools/pages_check.py --lang en` —
       10 вкладок на пустом профиле, ни одна не падает (RU и EN)
+- [ ] `python tools/a11y_check.py` — у всех кнопок и списков есть имя, все доступны с Tab
 - [ ] `python tools/lang_check.py` — смена языка RU→EN→RU на живом окне без падений
 - [ ] `python tools/visual_check.py` — 5 стабильных страниц совпали с эталоном
       (менялась вёрстка — `--update` и глазами сравнить `build/shots/baseline`
