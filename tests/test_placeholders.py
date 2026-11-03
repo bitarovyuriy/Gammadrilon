@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 import gd_i18n  # noqa: E402
 
-PLACEHOLDER = re.compile(r"\{(\w+)\}")
+PLACEHOLDER = re.compile(r"\{(\w+)(?::[^}]*)?\}")
 
 
 def placeholders(text: str) -> set[str]:
