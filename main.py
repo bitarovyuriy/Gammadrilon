@@ -3440,6 +3440,7 @@ class MainWindow(QMainWindow):
         self.tray.perfToggleRequested.connect(self._on_perf_toggle)
         self.tray.paletteRequested.connect(self.open_palette)
         self.tray.journalRequested.connect(self.open_journal)
+        self.tray.diagnoseRequested.connect(self.open_diagnose_tab)
         self.tray.rulesRequested.connect(self.open_rules_tab)
         self.tray.utilsRequested.connect(self.open_utils_tab)
         self.tray.themeRequested.connect(self._tray_theme)
@@ -4155,6 +4156,13 @@ class MainWindow(QMainWindow):
         idx = self._key_to_index.get("tab.rules")
         if idx is not None:
             self.tabs.setCurrentIndex(idx)      # открытие соберёт ленивую вкладку
+        self.show_window()
+
+    def open_diagnose_tab(self):
+        """Открыть вкладку «Диагностика» — из трея, когда «что-то не работает»."""
+        idx = self._key_to_index.get("tab.diagnose")
+        if idx is not None:
+            self.tabs.setCurrentIndex(idx)
         self.show_window()
 
     def open_gpu_tab(self):

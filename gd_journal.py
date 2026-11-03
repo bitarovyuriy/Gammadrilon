@@ -150,18 +150,6 @@ def recent(n: int = 60) -> list[dict]:
     return read_report(n)["items"]
 
 
-def state_note() -> str:
-    """Честная приписка о самом журнале (для API агентов): пусто — пишется и цел."""
-    ok, err = probe()
-    if not ok:
-        return i18n.t("журнал недоступен для записи: {v0} — история может быть неполной.",
-                      v0=err)
-    broken = read_report(MAX_LINES)["broken"]
-    if broken:
-        return i18n.t("повреждено строк: {v0} — они пропущены.", v0=broken)
-    return ""
-
-
 def clear() -> bool:
     """Очистить журнал. False — удалить не удалось (файл остался как был)."""
     global _last_error
