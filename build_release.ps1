@@ -61,6 +61,9 @@ if (-not ((& $tar -tf $zip) -match 'Gammadrilon/Gammadrilon\.exe$')) {
 }
 
 $exe = Join-Path $projectRoot "dist\Gammadrilon.exe"
+
+# однофайловая сборка PyInstaller кладёт прямо в dist\Gammadrilon.exe
+$onefileExe = $exe
 $portableExe = Join-Path $portableDir "Gammadrilon.exe"
 if (-not (Test-Path $exe)) { throw "Не найден релизный exe: $exe" }
 if (-not (Test-Path $portableExe)) { throw "Не найден портативный exe: $portableExe" }
@@ -68,37 +71,45 @@ if (-not (Test-Path $portableExe)) { throw "Не найден портативн
 $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 $zipMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 
-# Самопроверка собранного exe: тот же набор проверок, что видит пользователь
+# Самопроверка собранных exe: тот же набор проверок, что видит пользователь
 # в «Диагностике». Провал здесь — стоп релиза, а не «потом посмотрим».
-Write-Host "== Самопроверка собранного exe ==" -ForegroundColor Cyan
+# Проверяются ОБА файла: onefile распаковывается в %TEMP% и ломается там, где
+# onedir работает (кириллица в профиле, антивирус) — это отдельный риск.
 # Через .NET Process, а не Start-Process: у Start-Process -PassThru с редиректом
 # ExitCode остаётся $null (проверено дважды), а `-ne 0` на пустоте — это провал.
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = $portableExe
-$psi.Arguments = "--selftest"
-$psi.UseShellExecute = $false
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
-$psi.CreateNoWindow = $true
-$psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-$selfTestProcess = New-Object System.Diagnostics.Process
-$selfTestProcess.StartInfo = $psi
-$null = $selfTestProcess.Start()
-$selfTestOut = $selfTestProcess.StandardOutput.ReadToEndAsync()
-$selfTestErr = $selfTestProcess.StandardError.ReadToEndAsync()
-if (-not $selfTestProcess.WaitForExit(90000)) {
-    try { $selfTestProcess.Kill() } catch { }
-    throw "Самопроверка не завершилась за 90 с - в exe нет режима --selftest или он завис"
+function Invoke-SelfTest {
+    param([string]$PathToExe, [string]$Title)
+    Write-Host "== Самопроверка: $Title ==" -ForegroundColor Cyan
+    $si = New-Object System.Diagnostics.ProcessStartInfo
+    $si.FileName = $PathToExe
+    $si.Arguments = "--selftest"
+    $si.UseShellExecute = $false
+    $si.RedirectStandardOutput = $true
+    $si.RedirectStandardError = $true
+    $si.CreateNoWindow = $true
+    $si.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $si
+    $null = $proc.Start()
+    $out = $proc.StandardOutput.ReadToEndAsync()
+    $err = $proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit(120000)) {
+        try { $proc.Kill() } catch { }
+        throw "Самопроверка $Title не завершилась за 120 с"
+    }
+    $proc.WaitForExit()
+    $code = $proc.ExitCode
+    $proc.Dispose()
+    ($out.Result + $err.Result).Split("`n") | ForEach-Object {
+        if ($_.Trim()) { Write-Host "   $($_.TrimEnd())" }
+    }
+    if ($code -ne 0) {
+        throw "Самопроверка $Title нашла провалы (код $code) - релиз остановлен"
+    }
 }
-$selfTestProcess.WaitForExit()
-$selfTestCode = $selfTestProcess.ExitCode
-$selfTestProcess.Dispose()
-($selfTestOut.Result + $selfTestErr.Result).Split("`n") | ForEach-Object {
-    if ($_.Trim()) { Write-Host "   $($_.TrimEnd())" }
-}
-if ($selfTestCode -ne 0) {
-    throw "Самопроверка exe нашла провалы (код $selfTestCode) - релиз остановлен"
-}
+
+Invoke-SelfTest -PathToExe $portableExe -Title "портативный exe"
+if ($onefileExe) { Invoke-SelfTest -PathToExe $onefileExe -Title "однофайловый exe" }
 
 # Хэши — в текст релиза: пользователь может сверить скачанное, не гадая.
 $exeHash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
