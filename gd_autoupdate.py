@@ -97,8 +97,12 @@ def asset_for(mode: str, assets) -> dict | None:
 
     if mode == "onefile":
         ordered = ("gammadrilon.exe",)
+        # установщик — не новый exe: замена программы файлом Setup превратила
+        # бы приложение в установщик, поэтому «setup»/«install» отбрасываем
         candidates = [a for a in clean if a["name"].lower().endswith(".exe")
-                      and a["name"].lower().startswith("gammadrilon")]
+                      and a["name"].lower().startswith("gammadrilon")
+                      and "setup" not in a["name"].lower()
+                      and "install" not in a["name"].lower()]
     elif mode == "onedir":
         ordered = ("gammadrilon-portable.zip", "gammadrilon.zip")
         candidates = [a for a in clean if a["name"].lower().endswith(".zip")]

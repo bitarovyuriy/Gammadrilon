@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -184,13 +185,50 @@ class UtilsWidget(QWidget):
         title.setVisible(self._standalone)
         head.addWidget(title)
         head.addStretch(1)
-        self.lbl_admin = QLabel("")
-        self.lbl_admin.setObjectName("Hint")
-        head.addWidget(self.lbl_admin)
         root.addLayout(head)
 
+        # Разделы вместо простыни: на 1280x860 страница не влезала в окно и
+        # карточки обрезались. Вкладки держат каждый блок на своём месте, а
+        # тяжёлые разделы (игры, правила) собираются при первом заходе.
+        self._tabs = QTabWidget()
+        self._tabs.setObjectName("SubTabs")
+        self._tabs.setDocumentMode(True)
+        # стрелки прокрутки вкладок появлялись, хотя места хватает:
+        # убираем их и поджимаем отступы, чтобы все пять названий были видны
+        self._tabs.setUsesScrollButtons(False)
+        self._tabs.setStyleSheet(
+            "QTabWidget#SubTabs::tab { padding: 5px 12px; }"
+        )
+
+        def _section(title: str) -> QVBoxLayout:
+            page = QWidget()
+            box = QVBoxLayout(page)
+            box.setContentsMargins(0, 8, 0, 0)
+            box.setSpacing(th.PAGE_SPACING)
+            self._tabs.addTab(page, i18n.t(title))
+            return box
+
+        self._tab_mem = _section("Память")
+        self._tab_sys = _section("Система")
+        self._tab_games = _section("Игры")
+        self._tab_rules = _section("Правила")
+        self._tab_keys = _section("Клавиши")
+        root.addWidget(self._tabs, 1)
+
+        self._section_widgets: dict = {}
+        self._lazy_built = {"games": False, "rules": False, "keys": False}
+        self._tabs.currentChanged.connect(self._section_changed)
+
         # --- память ---
-        card, lay = make_card(i18n.t("ОЧИСТКА ОЗУ — STANDBY LIST И РАБОЧИЕ НАБОРЫ"))
+        card, lay = make_card(
+            i18n.t("ПАМЯТЬ — ОЧИСТКА И БУСТ"),
+            tip=i18n.t(
+                "Очистка standby list выгружает страницы, к которым давно не обращались: "
+                "файловый кэш наполнится заново сам, программы не закрываются. Буст не трогает "
+                "кэш игры — он сжимает рабочие наборы браузеров, мессенджеров и Steam, понижает "
+                "приоритет их страниц и включает EcoQoS; всё возвращается при выключении буста "
+                "и после падения приложения."),
+        )
         grid = QGridLayout()
         grid.setHorizontalSpacing(th.SPACE_L)
         grid.setVerticalSpacing(th.SPACE_XS)
@@ -223,15 +261,22 @@ class UtilsWidget(QWidget):
         brow.addStretch(1)
         lay.addLayout(brow)
 
-        # подпись обязательна и видима (ТЗ 6.1) — не только в тултипе
-        sign = QLabel(gd_memory.SIGNATURE)
-        sign.setObjectName("Hint")
-        sign.setWordWrap(True)
-        lay.addWidget(sign)
-        root.addWidget(card)
+        # статус прав — внутри карточки, а не обрезанным хвостом в шапке
+        self.lbl_admin = QLabel("")
+        self.lbl_admin.setObjectName("Hint")
+        self.lbl_admin.setWordWrap(True)
+        lay.addWidget(self.lbl_admin)
+
+
+        self._tab_mem.addWidget(card)
 
         # --- автоочистка ---
-        card2, lay2 = make_card(i18n.t("АВТООЧИСТКА"))
+        card2, lay2 = make_card(
+            i18n.t("АВТООЧИСТКА"),
+            tip=i18n.t(
+                "Как в ISLC: если standby больше первого порога И свободной памяти меньше "
+                "второго — очищать автоматически."),
+        )
         arow = QHBoxLayout()
         self.chk_auto = QCheckBox(i18n.t("Включить автоочистку"))
         self.chk_auto.stateChanged.connect(self._save_auto)
@@ -257,22 +302,21 @@ class UtilsWidget(QWidget):
         srow.addWidget(self.sp_free)
         srow.addStretch(1)
         lay2.addLayout(srow)
-        auto_note = QLabel(
-            i18n.t("Как в ISLC: если standby больше первого порога И свободной памяти меньше второго — очищать автоматически.")
-        )
-        auto_note.setObjectName("Hint")
-        auto_note.setWordWrap(True)
-        lay2.addWidget(auto_note)
         self.lbl_auto = QLabel(i18n.t("Автоочистка выключена."))
         self.lbl_auto.setObjectName("Hint")
         lay2.addWidget(self.lbl_auto)
-        root.addWidget(card2)
+        self._tab_mem.addWidget(card2)
 
         # --- игровой буст ---
         # Смысл: не чистить всё подряд, а усмирить фон — браузеры, мессенджеры
         # и Steam держат гигабайты в активных страницах, и именно их выгодно
         # вытеснить, не трогая кэш игры.
-        card_boost, lay_boost = make_card(i18n.t("ИГРОВОЙ БУСТ"))
+        # буст — часть той же карточки: человек ищет «что сделать с памятью»
+        # в одном месте, а не бегает между двумя блоками.
+        sep_boost = QLabel(i18n.t("ИГРОВОЙ БУСТ"))
+        sep_boost.setObjectName("CardLabel")
+        lay.addWidget(sep_boost)
+        lay_boost = lay
         boost_row = QHBoxLayout()
         self.btn_boost = QPushButton(i18n.t("Включить игровой буст"))
         self.btn_boost.setObjectName("PrimaryButton")
@@ -290,36 +334,36 @@ class UtilsWidget(QWidget):
         self.lbl_boost.setWordWrap(True)
         lay_boost.addWidget(self.lbl_boost)
 
-        boost_note = QLabel(i18n.t(
-            "Сжимает рабочие наборы браузеров, мессенджеров и Steam, понижает "
-            "приоритет их страниц и включает EcoQoS. Standby list не трогает — "
-            "кэш игры остаётся на месте. Всё изменённое возвращается при выключении "
-            "буста и после падения приложения."
-        ))
-        boost_note.setObjectName("Hint")
-        boost_note.setWordWrap(True)
-        lay_boost.addWidget(boost_note)
-        root.addWidget(card_boost)
 
         # --- запуск вместе с Windows ---
         # Факт (файл в «Автозагрузке»), а не флаг конфига: ярлык могли удалить
         # вручную — тогда галочка честно снята.
         self._startup_host = host if hasattr(host, "set_start_with_windows") else None
 
-        card_run, lay_run = make_card(i18n.t("ЗАПУСК ВМЕСТЕ С WINDOWS"))
+        card_run, lay_run = make_card(
+            i18n.t("ЗАПУСК ВМЕСТЕ С WINDOWS"),
+            tip=i18n.t(
+                "Ярлык ложится в «Автозагрузку» пользователя — без окон и запроса прав. "
+                "Приложение стартует в трей, настройки экрана применяются как обычно."),
+        )
         self.chk_startup = QCheckBox(i18n.t("Запускать вместе с Windows"))
         self.chk_startup.setChecked(self._startup_enabled())
         self.chk_startup.setEnabled(self._startup_host is not None)
         self.chk_startup.stateChanged.connect(self._startup_changed)
         lay_run.addWidget(self.chk_startup)
 
-        run_note = QLabel(i18n.t(
-            "Ярлык ложится в «Автозагрузку» пользователя — "
-            "без окон и запроса прав. Приложение стартует в трей, настройки экрана "
-            "применяются как обычно."))
-        run_note.setObjectName("Hint")
-        run_note.setWordWrap(True)
-        lay_run.addWidget(run_note)
+        # Права администратора при автозапуске: без них лимит GPU, DNS и очистка
+        # ОЗУ при каждом старте просят UAC. Галочка включена по умолчанию;
+        # действует только вместе с автозапуском.
+        self.chk_admin = QCheckBox(i18n.t("Запускать с правами администратора"))
+        settings = {}
+        if host is not None and isinstance(getattr(host, "config", None), dict):
+            settings = host.config.get("settings", {}) or {}
+        self.chk_admin.setChecked(bool(settings.get("start_admin", True)))
+        self.chk_admin.setEnabled(hasattr(host, "set_start_admin"))
+        self.chk_admin.stateChanged.connect(self._admin_changed)
+        lay_run.addWidget(self.chk_admin)
+
 
         self.lbl_startup = QLabel("")
         self.lbl_startup.setObjectName("Hint")
@@ -327,12 +371,17 @@ class UtilsWidget(QWidget):
         if self._startup_host is None:
             self.lbl_startup.setText(i18n.t("Автозапуск настраивается из главного окна."))
         lay_run.addWidget(self.lbl_startup)
-        root.addWidget(card_run)
+        self._tab_sys.addWidget(card_run)
 
         # --- обновления (по желанию) ---
         # Галочка выключена по умолчанию: приложение обещает «без облака», и
         # включать сеть за человека оно не имеет права.
-        card_upd, lay_upd = make_card(i18n.t("ОБНОВЛЕНИЯ"))
+        card_upd, lay_upd = make_card(
+            i18n.t("ОБНОВЛЕНИЯ"),
+            tip=i18n.t(
+                "Запрос уходит на api.github.com не чаще раза в сутки, без версии, "
+                "идентификаторов и счётчиков. GitHub видит IP."),
+        )
         self._updates_host = host if (host is not None and hasattr(host, "check_updates")) else None
 
         self.chk_updates = QCheckBox(i18n.t("Проверять при запуске"))
@@ -356,13 +405,6 @@ class UtilsWidget(QWidget):
         urow.addStretch(1)
         lay_upd.addLayout(urow)
 
-        upd_note = QLabel(i18n.t(
-            "Запрос уходит на api.github.com не чаще раза в сутки, без версии, "
-            "идентификаторов и счётчиков. GitHub видит IP — поэтому галочка по "
-            "умолчанию снята."))
-        upd_note.setObjectName("Hint")
-        upd_note.setWordWrap(True)
-        lay_upd.addWidget(upd_note)
 
         self.lbl_updates = QLabel(i18n.t("Обновления не проверялись."))
         self.lbl_updates.setObjectName("Hint")
@@ -371,7 +413,7 @@ class UtilsWidget(QWidget):
         if self._updates_host is None:
             self.lbl_updates.setText(i18n.t("Проверка обновлений доступна из главного окна."))
         lay_upd.addWidget(self.lbl_updates)
-        root.addWidget(card_upd)
+        self._tab_sys.addWidget(card_upd)
         self._sync_updates()
 
         # --- прочие утилиты (ТЗ 6.3) ---
@@ -379,15 +421,16 @@ class UtilsWidget(QWidget):
             from gd_extra_ui import ExtraPanel
 
             self.extra = ExtraPanel(host=host)
-            root.addWidget(self.extra)
+            self._tab_sys.addWidget(self.extra)
         except Exception as exc:  # noqa: BLE001
             self.extra = None
             err = QLabel(i18n.t("Панель прочих утилит не загрузилась: {v0}", v0=exc))
             err.setObjectName("Hint")
             err.setWordWrap(True)
-            root.addWidget(err)
+            self._tab_sys.addWidget(err)
 
-        root.addStretch(1)
+        self._tab_mem.addStretch(1)
+        self._tab_sys.addStretch(1)
         self.status = QLabel("")
         self.status.setObjectName("Hint")
         self.status.setWordWrap(True)
@@ -398,6 +441,58 @@ class UtilsWidget(QWidget):
         self._timer.timeout.connect(self._tick)
         if standalone:
             self.activate()
+
+    # -- ленивые разделы -----------------------------------------------------
+    def _section_changed(self, index: int):
+        """Собрать содержимое раздела при первом заходе, а не на старте вкладки.
+
+        Экран «Игры» поднимает чтение реестра и снимок CS2, «Правила» — файл
+        правил: держать это в конструкторе значит задерживать открытие «Утилит»
+        на всё, что человек, может быть, и не откроет.
+        """
+        try:
+            title = self._tabs.tabText(index)
+        except Exception:  # noqa: BLE001
+            return
+        for key, title_key in (("games", "Игры"), ("rules", "Правила"), ("keys", "Клавиши")):
+            if self._lazy_built.get(key) or title != i18n.t(title_key):
+                continue
+            self._lazy_built[key] = True
+            self._build_section(key)
+            return
+
+    def _build_section(self, key: str):
+        box = getattr(self, f"_tab_{key}", None)
+        if box is None:
+            return
+        try:
+            if key == "games":
+                from gd_cs2_ui import Cs2Widget
+
+                config = getattr(self.host, "config", None) if self.host is not None else None
+                save_fn = getattr(self.host, "save_settings", None)
+                widget = Cs2Widget(standalone=False, host=self.host,
+                                   config=config, save_fn=save_fn)
+            elif key == "rules":
+                from gd_rules_ui import RulesWidget
+
+                widget = RulesWidget(standalone=False)
+            else:
+                from gd_hotkeys_ui import HotkeysPanel
+
+                config = getattr(self.host, "config", None) if self.host is not None else None
+                widget = HotkeysPanel(
+                    config=config,
+                    save_fn=getattr(self.host, "save_settings", None),
+                    apply_fn=getattr(self.host, "reload_hotkeys", None),
+                )
+        except Exception as exc:  # noqa: BLE001
+            widget = QLabel(i18n.t("Раздел не загрузился: {v0}", v0=exc))
+            widget.setObjectName("Hint")
+            widget.setWordWrap(True)
+        self._section_widgets[key] = widget
+        box.addWidget(widget)
+        box.addStretch(1)
 
     # -- жизненный цикл вкладки -------------------------------------------
     def activate(self):
@@ -422,6 +517,21 @@ class UtilsWidget(QWidget):
     def deactivate(self):
         self._timer.stop()
 
+    # -- разделы снаружи -----------------------------------------------------
+    SECTION_INDEX = {"mem": 0, "sys": 1, "games": 2, "rules": 3, "keys": 4}
+
+    def show_section(self, name: str) -> None:
+        """Открыть раздел по имени: плитка главного экрана и трей ведут сюда."""
+        index = self.SECTION_INDEX.get(str(name))
+        if index is None:
+            return
+        self._tabs.setCurrentIndex(index)
+        self._section_changed(index)
+
+    def section_widget(self, name: str):
+        """Виджет раздела (после сборки) — чтобы снаружи звать его методы."""
+        return self._section_widgets.get(str(name))
+
     # -- данные ------------------------------------------------------------
     def _ensure(self):
         if self.client is None:
@@ -438,7 +548,7 @@ class UtilsWidget(QWidget):
         for key in ROWS:
             self.value_labels[key].setText(human(snap.get(key)))
         self._auto_check(snap)
-        self.lbl_admin.setText(i18n.t("нужны права администратора — действия идут через хелпер"))
+        self.lbl_admin.setText(i18n.t("действия идут через хелпер с правами администратора"))
 
     def _tick(self):
         if gd_bg.is_running(self._init_worker):
@@ -631,6 +741,15 @@ class UtilsWidget(QWidget):
         self.chk_startup.blockSignals(True)
         self.chk_startup.setChecked(self._startup_enabled())
         self.chk_startup.blockSignals(False)
+
+    def _admin_changed(self, state):
+        host = self.host
+        if host is None or not hasattr(host, "set_start_admin"):
+            return
+        err = host.set_start_admin(bool(state))
+        self.lbl_startup.setText(
+            i18n.t("Способ автозапуска не изменён: {v0}", v0=err) if err else ""
+        )
 
     def _startup_changed(self, state) -> None:
         """Галочка переключена: файл автозагрузки + флаг в presets.json."""

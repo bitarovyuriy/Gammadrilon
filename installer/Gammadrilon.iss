@@ -12,7 +12,7 @@
 #define AppName "Gammadrilon"
 ; Версия приходит из build_release.ps1 (/DAppVersion=...), здесь — запасная.
 #ifndef AppVersion
-  #define AppVersion "3.6"
+  #define AppVersion "3.6.2"
 #endif
 #define AppExe "Gammadrilon.exe"
 #define AppId "{{8F9E4A21-5B3C-4D1E-9A77-2C6F8B1D0E3A}"

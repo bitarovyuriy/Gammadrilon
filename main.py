@@ -32,7 +32,9 @@ try:
     if _meipass:
         _qt_candidates.append(os.path.join(_meipass, "PyQt5", "Qt5", "plugins"))
     for _qt_plugins in _qt_candidates:
-        if not _qt_plugins.isascii() and os.path.isdir(_qt_plugins):
+        # выставляем всегда, а не только на не-ASCII пути: у чужого
+        # интерпретатора с ASCII-путём плагины тоже не находятся
+        if os.path.isdir(_qt_plugins):
             os.environ["QT_PLUGIN_PATH"] = _qt_plugins
             _qt_platforms = os.path.join(_qt_plugins, "platforms")
             if os.path.isdir(_qt_platforms):
@@ -41,6 +43,57 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
+
+# --- Диагностика старта Qt ----------------------------------------------------
+# Когда Qt не находит платформу, он показывает модальное окно и умирает — без
+# единой строки о том, откуда запуск. Пишем это до импорта Qt: следующий такой
+# случай будет разобран по факту, а не догадками.
+def _qt_boot_log() -> None:
+    try:
+        import datetime
+
+        meipass = getattr(sys, "_MEIPASS", None)
+        plugin_path = os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH", "")
+        platform = os.environ.get("QT_QPA_PLATFORM", "")
+        try:
+            import sysconfig
+
+            site = sysconfig.get_paths().get("purelib", "")
+        except Exception:  # noqa: BLE001
+            site = ""
+        candidates = [p for p in (
+            os.path.join(str(meipass), "PyQt5", "Qt5", "plugins") if meipass else "",
+            os.path.join(site, "PyQt5", "Qt5", "plugins") if site else "",
+        ) if p]
+        found = [p for p in candidates if os.path.isfile(os.path.join(p, "platforms", "qwindows.dll"))]
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        folder = os.path.join(base, "Gammadrilon")
+        os.makedirs(folder, exist_ok=True)
+        line = (
+            f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} "
+            f"exe={sys.executable} frozen={bool(getattr(sys, 'frozen', False))} "
+            f"site={site or '-'} qwindows={found or 'НЕТ'} "
+            f"QT_QPA_PLATFORM_PLUGIN_PATH={plugin_path or '-'} "
+            f"QT_QPA_PLATFORM={platform or '-'}" + chr(10)
+        )
+        with open(os.path.join(folder, "qt_boot.log"), "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _qt_complain(text: str) -> None:
+    """Показать причину без Qt: консоли при запуске через pythonw нет."""
+    if os.environ.get("GD_QUIET"):
+        print(text)      # скрипты и проверки не должны ждать клика
+        return
+    try:
+        ctypes.windll.user32.MessageBoxW(None, text, "Gammadrilon", 0x10)
+    except Exception:  # noqa: BLE001
+        print(text)
+
+
+_qt_boot_log()
 
 # --- Понятный отказ вместо системного диалога Qt -----------------------------
 # Если запустить исходники чужим интерпретатором (без PyQt5) или из папки, где
@@ -83,9 +136,12 @@ def _qt_ready() -> tuple[bool, str]:
 
 _qt_ok, _qt_reason = _qt_ready()
 if not _qt_ok:
-    print("Gammadrilon: запуск невозможен.")
-    print(_qt_reason)
-    print("\nПодробнее: вкладка «Диагностика» в собранной версии или README, раздел «Если что-то не работает».")
+    _message = (
+        "Gammadrilon: запуск невозможен." + chr(10) + chr(10) + _qt_reason
+        + chr(10) + chr(10) + "Подробнее: README, раздел «Если что-то не работает»."
+    )
+    print(_message)
+    _qt_complain(_message)
     raise SystemExit(2)
 
 
@@ -138,7 +194,7 @@ from PyQt5.QtWidgets import (  # noqa: E402 — проверка окружен�
 
 
 APP_NAME = gd_paths.APP_NAME
-APP_VERSION = "v3.6"
+APP_VERSION = "v3.6.2"
 CONFIG_FILE = "presets.json"
 ICON_FILE = "icon.ico"
 
@@ -186,11 +242,9 @@ SIDE_ICONS = {
     "tab.cpu": "cpu",
     "tab.gpu": "gpu",
     "tab.gamma": "gamma",
-    "tab.rules": "rules",
     "tab.utils": "utils",
     "tab.dns": "dns",
     "tab.zapret": "zapret",
-    "tab.cs2": "cs2",
     "tab.diagnose": "journal",
 }
 
@@ -456,6 +510,10 @@ def kelvin_to_rgb_multipliers(kelvin: int) -> tuple[float, float, float]:
 DEFAULT_CONFIG = {
     "settings": {
         "start_with_windows": False,
+        # автозапуск с правами администратора: без них лимит GPU, DNS и
+        # очистка ОЗУ каждый раз просят UAC. По умолчанию включено —
+        # человек ставит утилиту именно ради этих действий.
+        "start_admin": True,
         "close_on_x": False,
         # лимит GPU после закрытия приложения: True — остаётся на карте
         # (до перезагрузки или кнопки «Вернуть как было»), False — возвращается
@@ -784,8 +842,12 @@ def _legacy_startup_bat() -> Path:
     return get_startup_shortcut_path().with_suffix(".bat")
 
 
-def enable_startup():
+def enable_startup(admin: bool = True):
     """Включить автозапуск без окна.
+
+    ``admin=True`` — сразу с правами администратора: иначе лимит GPU, DNS и
+    очистка ОЗУ при каждом запуске упираются в UAC. Права запрашивает
+    PowerShell (`Start-Process -Verb RunAs`), окно скрыто.
 
     Раньше это был .bat: он стартовал через `cmd` и при входе в систему
     мелькал чёрным окном. WScript.Shell.Run с флагом 0 (скрыто) не показывает
@@ -793,16 +855,29 @@ def enable_startup():
     """
     frozen = getattr(sys, "frozen", False)
     target = sys.executable if frozen else gd_proc.python_exe()
-    command = f'"{target}"'
-    if not frozen:
-        command += f' "{Path(__file__).resolve()}"'
+    argument = "" if frozen else f'"{Path(__file__).resolve()}"'
+
+    if admin:
+        ps = "Start-Process -FilePath '{0}'".format(target.replace("'", "''"))
+        if argument:
+            ps += " -ArgumentList '{0}'".format(argument.replace("'", "''"))
+        ps += " -Verb RunAs -WindowStyle Hidden"
+        command = 'powershell -NoProfile -WindowStyle Hidden -Command "' + ps + '"'
+    else:
+        command = f'"{target}"'
+        if argument:
+            command += " " + argument
+
     # в VBS кавычка внутри строкового литерала удваивается
     vbs_command = command.replace('"', '""')
+    # перевод строки собираем из кодов: исходник не должен зависеть от
+    # того, как редактор сохранил escape-последовательность
+    nl = chr(13) + chr(10)
     content = (
         # i18n: skip — комментарий внутри .vbs-файла автозапуска, пользователь его не видит
-        "' Gammadrilon — автозапуск без окна (файл создан приложением)\r\n"
-        "Set sh = CreateObject(\"WScript.Shell\")\r\n"
-        f'sh.Run "{vbs_command}", 0, False\r\n'
+        "' Gammadrilon — автозапуск без окна (файл создан приложением)" + nl
+        + 'Set sh = CreateObject("WScript.Shell")' + nl
+        + 'sh.Run "' + vbs_command + '", 0, False' + nl
     )
     get_startup_shortcut_path().write_text(content, encoding="utf-16")
     legacy = _legacy_startup_bat()
@@ -2734,12 +2809,9 @@ class MainWindow(QMainWindow):
         self._add_page(self._gpu_page, "tab.gpu")
         gd_boot.mark("page:gpu")
 
-        self._add_page(None, "tab.cs2", factory=self._make_cs2_page)
-
         # Остальные страницы ленивые: модуль вкладки импортируется и виджеты
         # строятся при первом открытии вкладки (или первом действии, которому
         # нужен её объект), а не на старте окна — см. `_ensure_page`.
-        self._add_page(None, "tab.rules", factory=self._make_rules_page)
         self._add_page(None, "tab.utils", factory=self._make_utils_page)
         self._add_page(None, "tab.dns", factory=self._make_dns_page)
         self._add_page(None, "tab.zapret", factory=self._make_zapret_page)
@@ -2795,8 +2867,7 @@ class MainWindow(QMainWindow):
         layout = (
             ("page", "tab.home"),
             ("grp", "side.power"), ("page", "tab.cpu"), ("page", "tab.gpu"),
-            ("page", "tab.cs2"),
-            ("grp", "side.system"), ("page", "tab.gamma"), ("page", "tab.rules"),
+            ("grp", "side.system"), ("page", "tab.gamma"),
             ("page", "tab.utils"), ("page", "tab.dns"), ("page", "tab.zapret"),
             ("page", "tab.diagnose"),
         )
@@ -2844,14 +2915,6 @@ class MainWindow(QMainWindow):
 
                 pl = (gd_metrics.gpu() or {}).get("pl")
                 return i18n.t("{v0:.0f} Вт", v0=pl) if pl else ""
-            if key == "tab.rules":
-                import gd_rules
-
-                rules = getattr(gd_rules, "load_rules", None)
-                if rules is None:
-                    rules = getattr(gd_rules, "load", None)
-                data = rules() if rules else []
-                return str(len(data)) if data else ""
         except Exception:  # noqa: BLE001
             pass
         return ""
@@ -3214,6 +3277,14 @@ class MainWindow(QMainWindow):
         нужен объект экрана (сброс всех изменений, локальный API, палитра).
         Страницы, которых действие не касается, не строятся.
         """
+        if key in ("tab.cs2", "tab.rules"):
+            # эти экраны стали разделами «Утилит»: старые пути (плитки главного
+            # экрана, палитра, трей) ведут туда же, а не в пустоту
+            name = "games" if key == "tab.cs2" else "rules"
+            self.open_utils_section(name)
+            # в стеке лежит QScrollArea-обёртка, а разделы живут на самом экране
+            inner = getattr(self, "_utils_page", None)
+            return inner.section_widget(name) if inner is not None else None
         widget = self._page_widgets.get(key)
         if widget is not None:
             return widget
@@ -3245,11 +3316,6 @@ class MainWindow(QMainWindow):
         self._home_page = DashboardWidget(host=self)
         return self._home_page
 
-    def _make_rules_page(self):
-        from gd_rules_ui import RulesWidget
-
-        self._rules_page = RulesWidget(standalone=False)
-        return self._rules_page
 
     def _make_utils_page(self):
         from gd_utils_ui import UtilsWidget
@@ -3286,12 +3352,6 @@ class MainWindow(QMainWindow):
         self._diagnose_page = DiagnoseWidget(standalone=False, host=self)
         return self._diagnose_page
 
-    def _make_cs2_page(self):
-        from gd_cs2_ui import Cs2Widget
-
-        self._cs2_page = Cs2Widget(standalone=False, host=self, config=self.config,
-                                   save_fn=save_config)
-        return self._cs2_page
 
     def _fix_tab_order(self) -> None:
         """Порядок обхода Tab: сайдбар → содержимое страницы → кнопки титлбара.
@@ -4251,11 +4311,30 @@ class MainWindow(QMainWindow):
             pass
 
     def open_rules_tab(self):
-        """Открыть вкладку «Правила» в главном окне."""
-        idx = self._key_to_index.get("tab.rules")
+        """Открыть «Правила» — теперь раздел внутри «Утилит»."""
+        self.open_utils_section("rules")
+
+    def open_utils_section(self, name: str):
+        """Открыть «Утилиты» и переключить внутренний раздел.
+
+        Раньше CS2 и правила были отдельными вкладками; после объединения
+        плитки главного экрана и трей ведут сюда, чтобы старые пути не ломались.
+        """
+        idx = self._key_to_index.get("tab.utils")
         if idx is not None:
-            self.tabs.setCurrentIndex(idx)      # открытие соберёт ленивую вкладку
+            self.tabs.setCurrentIndex(idx)
+        page = getattr(self, "_utils_page", None)
+        if page is not None and hasattr(page, "show_section"):
+            page.show_section(name)
         self.show_window()
+
+    def save_settings(self) -> bool:
+        """Сохранить конфиг из вложенной панели (её save_fn)."""
+        return save_config(self.config)
+
+    def reload_hotkeys(self) -> None:
+        """Перечитать сочетания после правки в панели «Клавиши»."""
+        self.hotkey_manager.register(self.config)
 
     def open_diagnose_tab(self):
         """Открыть вкладку «Диагностика» — из трея, когда «что-то не работает»."""
@@ -5429,9 +5508,10 @@ class MainWindow(QMainWindow):
         нельзя.
         """
         on = bool(on)
+        admin = bool(self.config.get("settings", {}).get("start_admin", True))
         try:
             if on:
-                enable_startup()
+                enable_startup(admin)
             else:
                 disable_startup()
         except Exception as exc:  # noqa: BLE001
@@ -5443,6 +5523,30 @@ class MainWindow(QMainWindow):
         self._save_config()
         self.set_status(i18n.t("Автозапуск включён") if on
                         else i18n.t("Автозапуск выключен"))
+        return ""
+
+    def set_start_admin(self, on: bool) -> str:
+        """Автозапуск с правами администратора: переписать файл автозагрузки.
+
+        Галочка действует сразу: если автозапуск уже стоит, файл переписывается
+        с новым способом запуска (или без него). Возвращает текст ошибки.
+        """
+        on = bool(on)
+        self.config.setdefault("settings", {})["start_admin"] = on
+        self._save_config()
+        if not self.config.get("settings", {}).get("start_with_windows"):
+            self.set_status(i18n.t("Автозапуск выключен — способ запомнен."))
+            return ""
+        try:
+            enable_startup(on)
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
+            self.set_status(i18n.t("Автозапуск не изменён: {v0}", v0=err), ok=False)
+            return err
+        self.set_status(
+            i18n.t("Автозапуск: с правами администратора") if on
+            else i18n.t("Автозапуск: обычные права")
+        )
         return ""
 
     # -- перенос настроек и проверка обновлений (вкладка «Утилиты») ---------

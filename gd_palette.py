@@ -240,6 +240,10 @@ class CommandPalette(QDialog):
         страница (так случилось с главным экраном), ключ — нет.
         """
         mw = self.mw
+        if key in ("tab.rules", "tab.cs2"):
+            # эти экраны стали разделами «Утилит»
+            mw.open_utils_section("rules" if key == "tab.rules" else "games")
+            return
         idx = mw._key_to_index.get(key)
         if idx is None:
             return

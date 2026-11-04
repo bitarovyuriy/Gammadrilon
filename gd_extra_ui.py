@@ -77,7 +77,8 @@ class ExtraPanel(QWidget):
         lay.setSpacing(12)
 
         # --- таймер ---------------------------------------------------------
-        card, c = make_card(i18n.t("ТОЧНОСТЬ СИСТЕМНОГО ТАЙМЕРА"))
+        card, c = make_card(i18n.t("ТОЧНОСТЬ СИСТЕМНОГО ТАЙМЕРА"),
+                            tip=gd_extra.TIMER_SIGNATURE)
         row = QHBoxLayout()
         self.lbl_timer = QLabel("—")
         self.lbl_timer.setObjectName("Metric")
@@ -87,14 +88,11 @@ class ExtraPanel(QWidget):
         row.addStretch(1)
         row.addWidget(self.chk_timer)
         c.addLayout(row)
-        tip = QLabel(gd_extra.TIMER_SIGNATURE)
-        tip.setObjectName("Hint")
-        tip.setWordWrap(True)
-        c.addWidget(tip)
         lay.addWidget(card)
 
         # --- сетевой чек ----------------------------------------------------
-        card2, c2 = make_card(i18n.t("СЕТЕВОЙ ЧЕК — ЧТО РЕАЛЬНО ОБЪЯСНЯЕТ ЛАГИ"))
+        card2, c2 = make_card(i18n.t("СЕТЕВОЙ ЧЕК — ЧТО РЕАЛЬНО ОБЪЯСНЯЕТ ЛАГИ"),
+                              tip=gd_extra.NET_SIGNATURE)
         self.table = QTableWidget(len(gd_extra.TCP_PROBES), 4)
         self.table.setHorizontalHeaderLabels([i18n.t("Узел"), i18n.t("Медиана"), i18n.t("Джиттер"), i18n.t("Потери")])
         self.table.verticalHeader().setVisible(False)
@@ -121,19 +119,17 @@ class ExtraPanel(QWidget):
         self.lbl_net.setObjectName("Hint")
         self.lbl_net.setWordWrap(True)
         c2.addWidget(self.lbl_net)
-        tip2 = QLabel(gd_extra.NET_SIGNATURE)
-        tip2.setObjectName("Hint")
-        tip2.setWordWrap(True)
-        c2.addWidget(tip2)
         lay.addWidget(card2)
 
         # --- сброс всего ----------------------------------------------------
-        card3, c3 = make_card(i18n.t("СБРОСИТЬ ВСЕ ИЗМЕНЕНИЯ GAMMADRILON"))
+        card3, c3 = make_card(
+            i18n.t("СБРОСИТЬ ВСЕ ИЗМЕНЕНИЯ GAMMADRILON"),
+            tip=i18n.t(
+                "Питание CPU и GPU, DNS, правила, автоочистка, точность таймера, гамма — "
+                "всё возвращается к состоянию системы по умолчанию."),
+        )
         r3 = QHBoxLayout()
-        desc = QLabel(i18n.t("Питание CPU и GPU, DNS, правила, автоочистка, точность таймера, гамма — всё возвращается к состоянию системы по умолчанию."))
-        desc.setObjectName("Hint")
-        desc.setWordWrap(True)
-        r3.addWidget(desc, 1)
+        r3.addStretch(1)
         self.btn_reset = QPushButton(i18n.t("Сбросить всё"))
         self.btn_reset.setObjectName("DangerButton")
         self.btn_reset.clicked.connect(self._reset_all)
@@ -142,7 +138,13 @@ class ExtraPanel(QWidget):
         lay.addWidget(card3)
 
         # --- профили --------------------------------------------------------
-        card4, c4 = make_card(i18n.t("НАСТРОЙКИ И ПРОФИЛИ — ЭКСПОРТ / ИМПОРТ"))
+        card4, c4 = make_card(
+            i18n.t("НАСТРОЙКИ И ПРОФИЛИ — ЭКСПОРТ / ИМПОРТ"),
+            tip=i18n.t(
+                "Один файл переносит настройки приложения, пресеты гаммы, правила, "
+                "«тихий час» и автоочистку; профили CPU/GPU встроенные. Настройки "
+                "применятся после перезапуска."),
+        )
         r4 = QHBoxLayout()
         self.btn_export = QPushButton(i18n.t("Экспорт в JSON…"))
         self.btn_export.setObjectName("Segment")
@@ -179,10 +181,6 @@ class ExtraPanel(QWidget):
         r4.addWidget(self.btn_open_data)
         r4.addStretch(1)
         c4.addLayout(r4)
-        self.lbl_prof = QLabel(i18n.t("Один файл переносит настройки приложения, пресеты гаммы, правила, «тихий час» и автоочистку; профили CPU/GPU встроенные. Настройки применятся после перезапуска."))
-        self.lbl_prof.setObjectName("Hint")
-        self.lbl_prof.setWordWrap(True)
-        c4.addWidget(self.lbl_prof)
         # где лежат данные и как перейти в портативный режим — рядом с экспортом,
         # потому что переносят обычно «всё сразу»: настройки и рабочие файлы
         self.lbl_paths = QLabel("")

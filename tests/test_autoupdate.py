@@ -63,6 +63,21 @@ def test_asset_for_prefers_stable_names():
     assert au.asset_for("onefile", assets)["name"] == "Gammadrilon.exe"
 
 
+def test_asset_for_never_picks_the_installer_as_program():
+    """Установщик — не новая версия программы.
+
+    В релизе рядом лежат `Gammadrilon-Setup-3.6.exe` и `Gammadrilon-v3.6.exe`.
+    Если выбрать первый, обновление заменит приложение установщиком.
+    """
+    assets = [
+        _asset("Gammadrilon-Setup-3.6.exe"),
+        _asset("Gammadrilon-v3.6.exe"),
+        _asset("Gammadrilon-v3.6-portable.zip"),
+    ]
+    assert au.asset_for("onefile", assets)["name"] == "Gammadrilon-v3.6.exe"
+    assert au.asset_for("onedir", assets)["name"] == "Gammadrilon-v3.6-portable.zip"
+
+
 def test_asset_for_rejects_plain_http_and_wrong_kind():
     assert au.asset_for("onedir", [_asset("Gammadrilon-portable.zip", scheme="http")]) is None
     assert au.asset_for("onefile", [_asset("Gammadrilon-portable.zip")]) is None
