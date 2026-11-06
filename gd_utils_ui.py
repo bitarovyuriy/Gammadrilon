@@ -194,11 +194,10 @@ class UtilsWidget(QWidget):
         self._tabs.setObjectName("SubTabs")
         self._tabs.setDocumentMode(True)
         # стрелки прокрутки вкладок появлялись, хотя места хватает:
-        # убираем их и поджимаем отступы, чтобы все пять названий были видны
+        # убираем их, чтобы все пять названий были видны.
+        # Цвета и отступы вкладок живут в общей теме (gd_theme, QTabWidget#SubTabs):
+        # локальный стиль на виджете перебивал тему и делал вкладки белыми.
         self._tabs.setUsesScrollButtons(False)
-        self._tabs.setStyleSheet(
-            "QTabWidget#SubTabs::tab { padding: 5px 12px; }"
-        )
 
         def _section(title: str) -> QVBoxLayout:
             page = QWidget()

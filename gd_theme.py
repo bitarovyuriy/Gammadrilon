@@ -299,6 +299,38 @@ QLabel#Version {
     font-size: @FONT_TINY@;
 }
 
+/* Внутренние вкладки «Утилит»: без рамки, активная — подчёркивание акцентом.
+   Локальный setStyleSheet на виджете тут запрещён: он гасит наследование темы
+   и вкладки становятся белыми на тёмном. */
+QTabWidget#SubTabs::pane {
+    border: none;
+    border-top: 1px solid @RULE@;
+    background: transparent;
+    top: -1px;
+}
+
+QTabWidget#SubTabs QTabBar::tab {
+    background: transparent;
+    color: @MUTED@;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 6px 14px;
+    font-size: @FONT_SMALL@;
+}
+
+QTabWidget#SubTabs QTabBar::tab:hover {
+    color: @INK@;
+}
+
+QTabWidget#SubTabs QTabBar::tab:selected {
+    color: @INK@;
+    border-bottom: 2px solid @ACCENT@;
+}
+
+QTabWidget#SubTabs QTabBar::tab:focus {
+    color: @INK@;
+}
+
 /* «i» в кружке у заголовка карточки: подсказка без зависимости от глифа ⓘ */
 QPushButton#CardInfo {
     color: @MUTED@;
