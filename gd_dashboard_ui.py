@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt5.QtCore import QPoint, Qt, QTimer
+from PyQt5.QtCore import QPoint, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -137,6 +137,33 @@ class ClickableLabel(QPushButton):
         super().__init__(text)
         self.setFlat(True)
         self.setAccessibleName(text)
+
+
+class ClickableText(QLabel):
+    """Подсказка-ссылка: переносится по словам, но работает и с клавиатуры.
+
+    Заголовок плитки делает то же самое кнопкой (`ClickableLabel`), а здесь нужен
+    многострочный текст — `QPushButton` перенос строк не умеет.
+    """
+
+    clicked = pyqtSignal()
+
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self.setWordWrap(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 — имя из Qt
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):  # noqa: N802 — имя из Qt
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit()
+            return
+        super().keyPressEvent(event)
 
 
 class ResizeHandle(QFrame):
@@ -1005,9 +1032,8 @@ class DashboardWidget(QWidget):
         bar.addWidget(self.hint)
         bar.addStretch(1)
 
-        self.setup_hint = ClickableLabel("")
+        self.setup_hint = ClickableText("")
         self.setup_hint.setObjectName("Hint")
-        self.setup_hint.setWordWrap(True)
         self.setup_hint.setVisible(False)
         self.setup_hint.setCursor(Qt.PointingHandCursor)
         self.setup_hint.clicked.connect(self._goto_setup_issue)

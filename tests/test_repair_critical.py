@@ -98,7 +98,13 @@ def test_launch_preserves_actual_argv(monkeypatch, tmp_path):
     monkeypatch.setattr(gd_helper.gd_proc, "popen", lambda argv: commands.append(argv))
     gd_helper.HelperClient(service="agent.py")._launch(1234, "aa" * 16)
     # Выполняем только разбор PowerShell, заменив Start-Process безопасной функцией.
-    prelude = 'function Start-Process { param($FilePath,$ArgumentList,$Verb,$WindowStyle) $ArgumentList }\n'
+    # PowerShell печатает в консольной кодировке (cp866): без этого кириллица
+    # приезжает кракозябрами и сравнение путей падает не по делу
+    prelude = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        "$OutputEncoding=[System.Text.Encoding]::UTF8;"
+        "function Start-Process { param($FilePath,$ArgumentList,$Verb,$WindowStyle) $ArgumentList }\n"
+    )
     result = subprocess.run(["powershell", "-NoProfile", "-Command", prelude + commands[0][-1]],
                             capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert result.returncode == 0, result.stderr
