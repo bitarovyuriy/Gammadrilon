@@ -27,7 +27,7 @@ class Window:
 def test_sync_removes_file_when_disabled(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(gd_main, "disable_startup", lambda: calls.append("disable"))
-    monkeypatch.setattr(gd_main, "enable_startup", lambda: calls.append("enable"))
+    monkeypatch.setattr(gd_main, "enable_startup", lambda **kw: calls.append("enable"))
 
     gd_main.MainWindow._sync_startup(Window(False))
 
@@ -37,7 +37,7 @@ def test_sync_removes_file_when_disabled(monkeypatch):
 def test_sync_writes_file_when_enabled(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(gd_main, "disable_startup", lambda: calls.append("disable"))
-    monkeypatch.setattr(gd_main, "enable_startup", lambda: calls.append("enable"))
+    monkeypatch.setattr(gd_main, "enable_startup", lambda **kw: calls.append("enable"))
 
     gd_main.MainWindow._sync_startup(Window(True))
 

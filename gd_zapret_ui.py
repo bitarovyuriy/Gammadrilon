@@ -731,17 +731,18 @@ class ZapretWidget(QWidget):
             if answer != QMessageBox.Yes:
                 return
         self._set_status(i18n.t("Служба zapret: {v0}…", v0=op))
-        self._worker = gd_bg.submit(lambda: self._job_service(op), self._service_done,
+        path = self._path()
+        selected = dict(self._selected_strategy() or {}) if op == "install" else None
+        self._worker = gd_bg.submit(lambda: self._job_service(op, path, selected), self._service_done,
                                     parent=self)
         self._render()
 
-    def _job_service(self, op: str) -> dict:
+    def _job_service(self, op: str, path: str, selected: dict | None) -> dict:
         client = self._ensure()
-        path = self._path()
         strategy = ""
         argv = None
         if op == "install":
-            st = self._selected_strategy()
+            st = selected
             if not st:
                 return {"ok": False, "error": i18n.t("выберите стратегию")}
             snap = gd_zapret.snapshot(path)

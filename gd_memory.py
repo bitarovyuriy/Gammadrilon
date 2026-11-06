@@ -28,8 +28,8 @@ try:
 except Exception:  # noqa: BLE001
     psutil = None
 
-k32 = ctypes.WinDLL("kernel32")
-advapi32 = ctypes.WinDLL("advapi32")
+k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 psapi = ctypes.WinDLL("psapi")
 ntdll = ctypes.WinDLL("ntdll")
 pdh = ctypes.WinDLL("pdh")
@@ -93,21 +93,24 @@ def enable_privilege(name: str) -> tuple[bool, str]:
     ):
         return False, i18n.t("не удалось открыть токен процесса (код {v0})",
                              v0=ctypes.get_last_error())
-    luid = LUID()
-    if not advapi32.LookupPrivilegeValueW(None, name, ctypes.byref(luid)):
-        return False, i18n.t("привилегия {v0} не найдена в системе", v0=name)
-    tp = TOKEN_PRIVILEGES()
-    tp.PrivilegeCount = 1
-    tp.Privileges[0].Luid = luid
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
-    ctypes.set_last_error(0)
-    ok = advapi32.AdjustTokenPrivileges(h, False, ctypes.byref(tp), 0, None, None)
-    err = ctypes.get_last_error()
-    if not ok:
-        return False, i18n.t("AdjustTokenPrivileges не сработал (код {v0})", v0=err)
-    if err == ERROR_NOT_ALL_ASSIGNED:
-        return False, i18n.t("привилегии нет в токене — нужен запуск от администратора")
-    return True, i18n.t("включена")
+    try:
+        luid = LUID()
+        if not advapi32.LookupPrivilegeValueW(None, name, ctypes.byref(luid)):
+            return False, i18n.t("привилегия {v0} не найдена в системе", v0=name)
+        tp = TOKEN_PRIVILEGES()
+        tp.PrivilegeCount = 1
+        tp.Privileges[0].Luid = luid
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+        ctypes.set_last_error(0)
+        ok = advapi32.AdjustTokenPrivileges(h, False, ctypes.byref(tp), 0, None, None)
+        err = ctypes.get_last_error()
+        if not ok:
+            return False, i18n.t("AdjustTokenPrivileges не сработал (код {v0})", v0=err)
+        if err == ERROR_NOT_ALL_ASSIGNED:
+            return False, i18n.t("привилегии нет в токене — нужен запуск от администратора")
+        return True, i18n.t("включена")
+    finally:
+        k32.CloseHandle(h)
 
 
 def purge_standby_native() -> tuple[bool, str]:

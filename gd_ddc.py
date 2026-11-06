@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import ctypes
+import threading
 from ctypes import wintypes as wt
 
 MC_CAPS_BRIGHTNESS = 0x00000002
@@ -26,6 +27,9 @@ _user32.MonitorFromWindow.restype = wt.HANDLE
 _user32.GetDesktopWindow.restype = wt.HWND
 
 MONITOR_DEFAULTTOPRIMARY = 0x00000001
+_MONITOR_CALLBACK = ctypes.WINFUNCTYPE(wt.BOOL, wt.HANDLE, wt.HDC, ctypes.POINTER(wt.RECT), wt.LPARAM)
+_user32.EnumDisplayMonitors.argtypes = [wt.HDC, ctypes.POINTER(wt.RECT), _MONITOR_CALLBACK, wt.LPARAM]
+_user32.EnumDisplayMonitors.restype = wt.BOOL
 
 
 class _PhysicalMonitor(ctypes.Structure):
@@ -68,6 +72,8 @@ class Monitor:
         self._min = 0
         self._max = 100
         self.supported = False
+        self._lock = threading.RLock()
+        self._closed = False
         self._probe()
 
     def _probe(self) -> None:
@@ -92,8 +98,12 @@ class Monitor:
         return True
 
     def brightness(self) -> int | None:
+        with self._lock:
+            return self._brightness()
+
+    def _brightness(self) -> int | None:
         """Текущая яркость в процентах (0..100). None — монитор не ответил."""
-        if not self.supported:
+        if self._closed or not self.supported:
             return None
         low = wt.DWORD()
         current = wt.DWORD()
@@ -106,8 +116,12 @@ class Monitor:
         return round((int(current.value) - self._min) * 100 / span)
 
     def set_brightness(self, percent: float) -> bool:
+        with self._lock:
+            return self._set_brightness(percent)
+
+    def _set_brightness(self, percent: float) -> bool:
         """Поставить яркость в процентах. False — монитор отказал."""
-        if not self.supported:
+        if self._closed or not self.supported:
             return False
         if self._max <= self._min:
             self._read_limits()
@@ -130,24 +144,31 @@ class Ddc:
         """Найти мониторы. Дешёвый повторный вызов — список уже в памяти."""
         if self.monitors or self._lib is None:
             return bool(self.monitors)
-        monitor = _user32.MonitorFromWindow(_user32.GetDesktopWindow(),
-                                            MONITOR_DEFAULTTOPRIMARY)
-        if not monitor:
-            self.problem = "окно рабочего стола не найдено"
-            return False
-        count = wt.DWORD()
-        if not self._lib.GetNumberOfPhysicalMonitorsFromHMONITOR(
-                monitor, ctypes.byref(count)) or count.value == 0:
+        logical = []
+
+        @_MONITOR_CALLBACK
+        def collect(handle, _dc, _rect, _data):
+            logical.append(handle)
+            return True
+
+        if not _user32.EnumDisplayMonitors(None, None, collect, 0):
             self.problem = "мониторы не найдены"
             return False
-        raw = (_PhysicalMonitor * count.value)()
-        if not self._lib.GetPhysicalMonitorsFromHMONITOR(monitor, count.value, raw):
+        physical = []
+        for handle in logical:
+            count = wt.DWORD()
+            if not self._lib.GetNumberOfPhysicalMonitorsFromHMONITOR(handle, ctypes.byref(count)):
+                continue
+            raw = (_PhysicalMonitor * count.value)()
+            if count.value and self._lib.GetPhysicalMonitorsFromHMONITOR(handle, count.value, raw):
+                physical.extend(raw)
+        self._count = len(physical)
+        self._raw = (_PhysicalMonitor * self._count)(*physical)
+        self.monitors = [Monitor(self._lib, item.handle, item.description, i)
+                         for i, item in enumerate(physical)]
+        if not self.monitors:
             self.problem = "дескрипторы мониторов не получены"
             return False
-        self._raw = raw
-        self._count = count.value
-        self.monitors = [Monitor(self._lib, raw[i].handle, raw[i].description, i)
-                         for i in range(count.value)]
         if not any(m.supported for m in self.monitors):
             self.problem = "монитор не умеет DDC/CI"
         return True
@@ -160,6 +181,11 @@ class Ddc:
         return None
 
     def close(self) -> None:
+        # Завершить уже начатые обращения и запретить использование старых
+        # Monitor после переподключения. Освобождение не идёт параллельно DDC.
+        for monitor in self.monitors:
+            with monitor._lock:
+                monitor._closed = True
         if self._lib is not None and self._raw:
             try:
                 self._lib.DestroyPhysicalMonitors(self._count, self._raw)

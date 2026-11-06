@@ -56,6 +56,13 @@ _applied: dict | None = None
 # вкладка zapret тоже шлёт shutdown(restore=True), и раньше она могла вернуть лимит
 # вопреки настройке.
 _keep_on_exit = False
+_boost = None
+
+
+def _stop_boost():
+    if _boost is not None:
+        return _boost.stop()
+    return True, ""
 
 
 _LOG_FILE: str | None = None
@@ -349,7 +356,8 @@ def _validate_command(obj: dict) -> None:
     commands = {"ping", "status", "apply", "keep", "restore", "shutdown", "purge_standby",
                 "empty_working_sets", "sensors_start", "sensors_stop", "dns_apply", "doh", "dns_flush",
                 "zapret_recon", "zapret_start", "zapret_stop", "zapret_adopt", "zapret_probe",
-                "zapret_service", "zapret_update"}
+                "zapret_service", "zapret_update", "cs2_apply", "cs2_revert",
+                "boost_start", "boost_stop", "boost_restore"}
     if not isinstance(obj, dict) or obj.get("cmd") not in commands:
         raise ValueError("unknown command")
     if obj["cmd"] in {"zapret_start", "zapret_recon", "zapret_probe"} and not obj.get("path"):
@@ -374,6 +382,15 @@ def _validate_command(obj: dict) -> None:
                                or any(type(v) is not int or not 0 < v <= 10000 for v in clocks)
                                or clocks[0] > clocks[1]):
         raise ValueError("invalid clocks")
+    if obj["cmd"] == "cs2_apply":
+        import gd_cs2
+
+        if not isinstance(obj.get("items"), list) or any(i not in {s["id"] for s in gd_cs2.TWEAKS}
+                                                        for i in obj["items"]):
+            raise ValueError("invalid CS2 items")
+        if obj.get("exe") and (not Path(obj["exe"]).is_absolute()
+                                or Path(obj["exe"]).name.lower() != "cs2.exe"):
+            raise ValueError("invalid cs2.exe path")
     for key in ("argv", "servers", "pids", "files"):
         if key in obj and (not isinstance(obj[key], list) or len(obj[key]) > 4096):
             raise ValueError(f"invalid {key}")
@@ -402,7 +419,28 @@ def handle(obj: dict) -> dict:
 
 
 def _handle(obj: dict) -> dict:
+    global _boost
     cmd = obj.get("cmd")
+    if cmd in {"boost_start", "boost_stop", "boost_restore"}:
+        import gd_boost
+
+        with _OP_LOCK:
+            if _boost is None:
+                _boost = gd_boost.GameBoost()
+            if cmd == "boost_restore":
+                _boost.restore_from_disk()
+                ok, message = not _boost.active(), ""
+            else:
+                ok, message = _boost.start() if cmd == "boost_start" else _boost.stop()
+        return {"ok": ok, "message": message, "data": _boost.status(), "error": None if ok else message}
+    if cmd in {"cs2_apply", "cs2_revert"}:
+        import gd_cs2
+
+        with _OP_LOCK:
+            report = (gd_cs2.revert() if cmd == "cs2_revert"
+                      else gd_cs2.apply(obj["items"], obj.get("exe") or ""))
+        return {"ok": report["ok"], "data": report,
+                "error": "; ".join(report.get("errors") or [])}
     if cmd == "ping":
         return {"ok": True, "data": "pong"}
     if cmd == "status":
@@ -424,6 +462,7 @@ def _handle(obj: dict) -> dict:
     if cmd == "shutdown":
         ok, message = True, "bye"
         with _OP_LOCK:
+            boost_ok, boost_message = _stop_boost()
             _zapret_shutdown()               # обход DPI — к состоянию «до включения»
             # решение об откате принимает хелпер: клиентов несколько (вкладка GPU,
             # вкладка zapret, выход приложения), и они не должны перебивать друг
@@ -434,7 +473,8 @@ def _handle(obj: dict) -> dict:
                 ok, message = _restore()
             else:
                 _keep_original()             # лимит остаётся: исходный — на диск
-        return {"ok": ok, "data": "bye", "error": None if ok else message}
+        return {"ok": ok and boost_ok, "data": "bye",
+                "error": None if ok and boost_ok else "; ".join(filter(None, [message if not ok else "", boost_message]))}
     # -- утилиты (ТЗ 6.1/6.2): требуют прав администратора, поэтому живут в хелпере --
     if cmd == "purge_standby":
         with _OP_LOCK:
@@ -634,6 +674,7 @@ def watchdog(ui_pid: int) -> None:
     while True:
         if k32.WaitForSingleObject(handle_, 2000) == 0:   # процесс завершился
             with _OP_LOCK:
+                _stop_boost()
                 _zapret_shutdown()           # обход DPI — к состоянию «до включения»
                 if _keep_on_exit:
                     _keep_original()         # лимит остаётся: исходный — на диск

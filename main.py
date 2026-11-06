@@ -278,6 +278,22 @@ def _trim_crash_log(path: Path) -> None:
         pass
 
 
+class _CrashRelay(QObject):
+    error = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.error.connect(self._show, Qt.QueuedConnection)
+
+    def _show(self, error: str):
+        if QApplication.instance() is not None:
+            import gd_dialog
+
+            gd_dialog.notify(None, APP_NAME,
+                             f"{i18n.t('Непредвиденная ошибка')}:\n{error}\n\n"
+                             f"{i18n.t('Лог падений')}: {_crash_log_path()}")
+
+
 def install_crash_handlers() -> None:
     """Сделать краши видимыми: traceback в файл + (по возможности) диалог.
 
@@ -303,6 +319,9 @@ def install_crash_handlers() -> None:
     except Exception:  # noqa: BLE001
         log = None
 
+    relay = _CrashRelay()
+    _CRASH_KEEP.append(relay)
+
     def _report(exc_type, exc, tb) -> None:
         text = "".join(traceback.format_exception(exc_type, exc, tb))
         if log is not None:
@@ -311,18 +330,7 @@ def install_crash_handlers() -> None:
                 log.flush()
             except Exception:  # noqa: BLE001
                 pass
-        try:
-            if QApplication.instance() is not None:
-                import gd_dialog
-
-                gd_dialog.notify(
-                    None,
-                    APP_NAME,
-                    f"{i18n.t('Непредвиденная ошибка')}:\n{exc}\n\n"
-                    f"{i18n.t('Лог падений')}: {_crash_log_path()}",
-                )
-        except Exception:  # noqa: BLE001
-            pass
+        relay.error.emit(str(exc))
 
     sys.excepthook = _report
 
@@ -2121,7 +2129,7 @@ class MainWindow(QMainWindow):
         wanted = bool(settings.get("start_with_windows"))
         try:
             if wanted:
-                enable_startup()
+                enable_startup(admin=bool(settings.get("start_admin", True)))
             else:
                 disable_startup()
         except Exception:  # noqa: BLE001 — автозапуск не повод не запуститься
@@ -2227,6 +2235,9 @@ class MainWindow(QMainWindow):
             from ctypes import wintypes
 
             msg = wintypes.MSG.from_address(int(message))
+            if msg.message == 0x007E or (msg.message == 0x0218 and int(msg.wParam) in (7, 18)):
+                self._refresh_ddc()
+                return True, 0
             if msg.message == gd_hotkeys.WM_HOTKEY:
                 self.hotkey_manager.dispatch(int(msg.wParam))
                 return True, 0
@@ -4580,13 +4591,8 @@ class MainWindow(QMainWindow):
         shadow: int | None = None,
     ):
         strength = self.shadow_strength() if shadow is None else int(clamp(shadow, 0, 100))
-        ok = self.gamma_controller.apply(brightness, contrast, gamma, temperature,
-                                         strength / 100.0 * 0.25)
-        self._gamma_applied_ok = bool(ok)
-        # цель сторожа — что поставлено на экран, а не что в конфиге: «кошачье
-        # зрение» меняет гамму без записи в конфиг (save=False), и сторож должен
-        # защищать именно его, а не откатывать к сохранённому значению
-        self._gamma_applied_values = (brightness, contrast, gamma, temperature, strength)
+        self._gamma_pending = (brightness, contrast, gamma, int(temperature), strength)
+        self._submit_gamma()
 
         if save:
             self.config["settings"]["current"] = {
@@ -4598,10 +4604,28 @@ class MainWindow(QMainWindow):
             }
             self._save_config()
 
-        if not ok:
-            # отказ подсвечиваем тревогой: тост здесь не нужен — гамму двигают
-            # слайдером, а он в момент отказа на экране (иначе спамил бы на каждый шаг)
+    def _submit_gamma(self):
+        if getattr(self, "_gamma_busy", False) or self._gamma_pending is None:
+            return
+        values = self._gamma_pending
+        self._gamma_pending = None
+        self._gamma_busy = True
+        controller = self.gamma_controller
+
+        def work():
+            b, c, g, t, strength = values
+            return {"values": values, "ok": bool(controller.apply(b, c, g, t, strength / 400.0))}
+
+        gd_bg.submit(work, self._gamma_done, parent=self)
+
+    def _gamma_done(self, result):
+        self._gamma_busy = False
+        self._gamma_applied_ok = bool(result.get("ok"))
+        if result.get("values") is not None:
+            self._gamma_applied_values = result["values"]
+        if not self._gamma_applied_ok and self._gamma_pending is None:
             self.set_status(self._gamma_failure_status(), ok=False)
+        self._submit_gamma()
 
     def _gamma_failure_status(self) -> str:
         """Честно объясняем отказ: чаще всего Windows не даёт менять гамму при HDR."""
@@ -5023,36 +5047,37 @@ class MainWindow(QMainWindow):
         идёт анимация и рампу вообще можно прочитать. Сброс системой возвращаем
         и говорим об этом в статусе.
         """
-        if self.gamma_animation_timer.isActive() or not self._gamma_applied_ok:
+        if (self.gamma_animation_timer.isActive() or not self._gamma_applied_ok
+                or getattr(self, "_gamma_busy", False) or getattr(self, "_gamma_pending", None)):
             return
-
         applied = self._gamma_applied_values
-
         if applied is None:
             return
-
-        brightness, contrast, gamma, temperature, shadow = applied
-        temperature = int(temperature)
-        shadow = float(shadow)
-
-        if (abs(brightness - 1.0) < 0.001 and abs(contrast - 1.0) < 0.001
-                and abs(gamma - 1.0) < 0.001 and temperature == 6500 and shadow <= 0.0):
+        b, c, g, t, shadow = applied
+        if (abs(b - 1.0) < 0.001 and abs(c - 1.0) < 0.001
+                and abs(g - 1.0) < 0.001 and int(t) == 6500 and shadow <= 0):
             return
+        self._gamma_busy = True
+        controller = self.gamma_controller
 
-        actual = self.gamma_controller.read_current()
+        def work():
+            actual = controller.read_current()
+            if actual is None:
+                return {"ok": True, "restored": False}
+            target = controller.build_ramp(b, c, g, t, shadow / 400.0)
+            if controller.ramp_max_diff(actual, target) <= GAMMA_WATCH_TOLERANCE:
+                return {"ok": True, "restored": False}
+            ok = bool(controller.apply(b, c, g, t, shadow / 400.0))
+            return {"ok": ok, "restored": ok}
 
-        if actual is None:
-            return
+        gd_bg.submit(work, self._gamma_watched, parent=self)
 
-        target = self.gamma_controller.build_ramp(brightness, contrast, gamma, temperature,
-                                                  shadow / 100.0 * 0.25)
-
-        if self.gamma_controller.ramp_max_diff(actual, target) <= GAMMA_WATCH_TOLERANCE:
-            return
-
-        if self.gamma_controller.apply(brightness, contrast, gamma, temperature,
-                                       shadow / 100.0 * 0.25):
+    def _gamma_watched(self, result):
+        self._gamma_busy = False
+        if result.get("restored"):
             self.set_status(i18n.t("Гамма восстановлена после сброса системой."))
+        self._gamma_applied_ok = bool(result.get("ok"))
+        self._submit_gamma()
 
     # -- смена активного окна ------------------------------------------------
     def _start_foreground_watch(self):
@@ -5319,6 +5344,25 @@ class MainWindow(QMainWindow):
                 self.apply_preset_by_index(previous, auto=True)
 
     # -- подсветка монитора (DDC/CI) -----------------------------------------
+    def _refresh_ddc(self):
+        if getattr(self, "is_quitting", False):
+            return
+        if self._ddc_loading or getattr(self, "_ddc_busy", False):
+            QTimer.singleShot(100, self._refresh_ddc)
+            return
+        old = self._ddc
+        self._ddc = None
+        self._ddc_monitor = None
+        self.ddc_slider.setEnabled(False)
+        self._ddc_loading = True
+
+        def work():
+            if old is not None:
+                old.close()
+            return self._ddc_probe()
+
+        gd_bg.submit(work, self._ddc_probe_done, parent=self)
+
     def _start_ddc_probe(self):
         """Поиск монитора в фоне: первый вызов dxva2 занимает секунды."""
         if self._ddc_loading or self._ddc_monitor is not None:
@@ -5336,7 +5380,7 @@ class MainWindow(QMainWindow):
 
     def _ddc_probe_done(self, result):
         self._ddc_loading = False
-        if isinstance(result, Exception) or result is None:
+        if not isinstance(result, tuple) or len(result) != 3:
             self._ddc_failed(str(result or ""))
             return
         ddc, monitor, level = result
@@ -5387,11 +5431,17 @@ class MainWindow(QMainWindow):
         self._ddc_monitor = monitor
         self.ddc_slider.setEnabled(False)
         self.bind_text(self.ddc_hint, "читаем яркость…")
-        gd_bg.submit(monitor.brightness, self._ddc_level_read, parent=self)
+        gd_bg.submit(lambda: (monitor, monitor.brightness()), self._ddc_level_read, parent=self)
 
-    def _ddc_level_read(self, level) -> None:
-        if isinstance(level, Exception) or level is None:
-            self._ddc_failed(str(level or ""))
+    def _ddc_level_read(self, result) -> None:
+        if not isinstance(result, tuple) or len(result) != 2:
+            self._ddc_failed(str(result or ""))
+            return
+        monitor, level = result
+        if monitor is not self._ddc_monitor:
+            return
+        if level is None:
+            self._ddc_failed("")
             return
         self._ddc_last_ok = int(level)
         self.ddc_slider.blockSignals(True)
@@ -6089,14 +6139,6 @@ def main():
     try:
         _boot_cfg = load_config()
         th.apply((_boot_cfg.get("settings") or {}).get("theme", "dark"))
-        # Приложение могло упасть с включённым игровым бустом: приоритеты
-        # фоновых процессов остались изменёнными. Возвращаем до показа окна.
-        try:
-            import gd_boost
-
-            gd_boost.GameBoost().restore_from_disk()
-        except Exception:  # noqa: BLE001
-            pass
     except Exception:  # noqa: BLE001
         pass
     APP_STYLESHEET = build_app_stylesheet()
@@ -6133,6 +6175,15 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     window = MainWindow()
+    import gd_boost
+
+    if gd_boost._state_path().is_file():
+        import gd_helper
+
+        recovery_client = gd_helper.HelperClient()
+        gd_bg.submit(lambda: recovery_client.call({"cmd": "boost_restore"}, timeout=120),
+                     lambda result: window.set_status(str(result.get("error")), ok=False)
+                     if not result.get("ok") else None, parent=window)
     gd_boot.mark("window")
     window.show()
     gd_boot.mark("shown")
@@ -6142,22 +6193,6 @@ def main():
     if window.config.get("settings", {}).get("check_updates", False):
         # тихая проверка: человек просил не пропустить новый релиз, а не отчёт
         window.check_updates(silent=True)
-
-    if window.config.get("settings", {}).get("start_with_windows", False):
-        try:
-            enable_startup()
-        except Exception as exc:  # noqa: BLE001
-            # настройка обещает автозапуск — молчание здесь было бы ложью
-            window.set_status(i18n.t(
-                "Автозапуск включён в настройках, но ярлык создать не удалось: {v0}",
-                v0=exc))
-            try:
-                import gd_journal
-
-                gd_journal.record("startup", i18n.t("Автозапуск"), None,
-                                  i18n.t("не создан"), why=str(exc), reversible=False)
-            except Exception:  # noqa: BLE001
-                pass
 
     code = app.exec_()
 

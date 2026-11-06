@@ -68,9 +68,9 @@ def timer_current_100ns() -> int | None:
             ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
             ctypes.POINTER(ctypes.c_ulong)]
         ntdll.NtQueryTimerResolution.restype = ctypes.c_long
-        mn, cur, mx = ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)
-        ntdll.NtQueryTimerResolution(ctypes.byref(mn), ctypes.byref(cur), ctypes.byref(mx))
-        return cur.value
+        mn, mx, cur = ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)
+        status = ntdll.NtQueryTimerResolution(ctypes.byref(mn), ctypes.byref(mx), ctypes.byref(cur))
+        return cur.value if status == 0 else None
     except Exception:  # noqa: BLE001
         return None
 

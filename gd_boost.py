@@ -403,9 +403,11 @@ class GameBoost:
         try:
             import gd_extra
 
-            if gd_extra.set_timer_resolution(True):
+            result = gd_extra.set_timer_resolution(True)
+            ok, actual = result if isinstance(result, tuple) else (bool(result), 5000)
+            if ok:
                 self._timer_held = True
-                notes.append(i18n.t("таймер 0.5 мс"))
+                notes.append(i18n.t("таймер {v0} мс", v0=actual / 10000.0))
         except Exception:  # noqa: BLE001 — таймер не обязателен для буста
             pass
 
@@ -476,3 +478,30 @@ class GameBoost:
         self._timer_held = bool(data.get("timer"))
         ok, _ = self.stop()
         return ok
+
+
+class HelperBoost:
+    """UI-клиент буста: изменение чужих процессов выполняет elevated-помощник."""
+
+    def __init__(self):
+        import gd_helper
+
+        self.client = gd_helper.HelperClient()
+        self._active = False
+
+    def active(self):
+        return self._active
+
+    def _call(self, command):
+        response = self.client.call({"cmd": command}, timeout=120)
+        state = response.get("data") or {}
+        self._active = bool(state.get("active", self._active))
+        return bool(response.get("ok")), response.get("message") or response.get("error") or ""
+
+    def start(self):
+        return self._call("boost_start")
+
+    def stop(self):
+        if not self._active:
+            return True, i18n.t("Игровой буст и так выключен.")
+        return self._call("boost_stop")

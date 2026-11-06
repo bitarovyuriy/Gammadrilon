@@ -280,25 +280,46 @@ def remember_before_change() -> tuple[bool, dict]:
 # -- применение (только через elevated-хелпер) --------------------------------
 def apply_native(mode: str, servers: list[str], iface: str) -> tuple[bool, str]:
     """Установить DNS. Вызывается из elevated-хелпера (netsh требует админа)."""
+    import ipaddress
+
+    if mode not in ("static", "dhcp") or not iface or not isinstance(iface, str):
+        return False, i18n.t("неверная конфигурация DNS")
+    try:
+        addresses = [ipaddress.ip_address(s) for s in servers]
+    except (ValueError, TypeError):
+        return False, i18n.t("неверный адрес DNS")
+    if mode == "static" and not addresses:
+        return False, i18n.t("не заданы адреса DNS")
+    commands = []
     if mode == "dhcp":
-        code, out = _run(["netsh", "interface", "ipv4", "set", "dnsservers",
-                          f"name={iface}", "source=dhcp"])
-        if code != 0 or i18n.t("требуется повышение прав") in out:
-            return False, out.strip() or i18n.t("netsh вернул ошибку")
-        _run(["netsh", "interface", "ipv6", "set", "dnsservers",
-              f"name={iface}", "source=dhcp"])
+        commands = [["netsh", "interface", family, "set", "dnsservers",
+                     f"name={iface}", "source=dhcp"] for family in ("ipv4", "ipv6")]
     else:
-        if not servers:
-            return False, i18n.t("не заданы адреса DNS")
-        code, out = _run(["netsh", "interface", "ipv4", "set", "dnsservers",
-                          f"name={iface}", "source=static",
-                          f"address={servers[0]}", "register=primary", "validate=no"])
-        if code != 0 or i18n.t("требуется повышение прав") in out:
-            return False, out.strip() or i18n.t("netsh вернул ошибку")
-        for i, srv in enumerate(servers[1:], start=2):
-            _run(["netsh", "interface", "ipv4", "add", "dnsservers",
-                  f"name={iface}", f"address={srv}", f"index={i}", "validate=no"])
-    flush_native()
+        for version in (4, 6):
+            family = [str(a) for a in addresses if a.version == version]
+            for index, address in enumerate(family, 1):
+                if index == 1:
+                    commands.append(["netsh", "interface", f"ipv{version}", "set", "dnsservers",
+                                     f"name={iface}", "source=static", f"address={address}",
+                                     "validate=no"])
+                else:
+                    commands.append(["netsh", "interface", f"ipv{version}", "add", "dnsservers",
+                                     f"name={iface}", f"address={address}", f"index={index}", "validate=no"])
+    completed = 0
+    errors = []
+    for command in commands:
+        code, out = _run(command)
+        if code != 0:
+            errors.append(out.strip() or i18n.t("netsh вернул ошибку"))
+        else:
+            completed += 1
+    if completed:
+        ok, message = flush_native()
+        if not ok:
+            errors.append(message)
+    if errors:
+        return False, i18n.t("DNS: выполнено {v0} из {v1}; {v2}",
+                             v0=completed, v1=len(commands), v2="; ".join(errors))
     return True, i18n.t("DNS обновлён")
 
 
@@ -336,5 +357,5 @@ def flush_native() -> tuple[bool, str]:
     except Exception:  # noqa: BLE001
         pass
     code, out = _run(["ipconfig", "/flushdns"])
-    ok = i18n.t("Не удалось") not in out and i18n.t("не удалось") not in out
+    ok = code == 0
     return ok, (i18n.t("кэш DNS сброшен") if ok else out.strip())

@@ -173,7 +173,7 @@ class UtilsWidget(QWidget):
         self._worker = None       # фоновая очистка standby
         self._ws_worker = None    # фоновое сжатие рабочих наборов
         self._init_worker = None  # фоновое создание сенсоров/GpuClient (первый вход)
-        self._boost = gd_boost.GameBoost()
+        self._boost = gd_boost.HelperBoost()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(*th.PAGE_MARGINS)
@@ -621,10 +621,15 @@ class UtilsWidget(QWidget):
 
     def _toggle_boost(self):
         """Включить/выключить игровой буст. Тяжёлая работа — в фоне."""
-        if self._boost.active():
-            ok, message = self._boost.stop()
-        else:
-            ok, message = self._boost.start()
+        if gd_bg.is_running(getattr(self, "_boost_worker", None)):
+            return
+        self.btn_boost.setEnabled(False)
+        job = self._boost.stop if self._boost.active() else self._boost.start
+        self._boost_worker = gd_bg.submit(job, self._boost_done, parent=self)
+
+    def _boost_done(self, result):
+        self.btn_boost.setEnabled(True)
+        ok, message = result if isinstance(result, tuple) else (False, str(result))
         self._show_boost(message, ok)
 
     def _show_boost(self, text: str, ok: bool):

@@ -41,6 +41,8 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import gd_cs2  # noqa: E402
+import gd_bg  # noqa: E402
+import gd_helper  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 import gd_theme as th  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
@@ -64,6 +66,8 @@ class Cs2Widget(QWidget):
         self._on = bool(self._settings().get("cs2_on", False))
         self._exe = ""
         self._busy = False
+        self._reload_worker = None
+        self._client = gd_helper.HelperClient()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(*th.PAGE_MARGINS)
@@ -199,9 +203,10 @@ class Cs2Widget(QWidget):
         if self._save_fn is None:
             return
         try:
-            self._save_fn(self._config)
-        except Exception:  # noqa: BLE001 — сохранение не должно ронять экран
-            pass
+            if self._save_fn() is False:
+                self._note(i18n.t("Не удалось сохранить настройки CS2."))
+        except Exception as exc:  # noqa: BLE001
+            self._note(i18n.t("Не удалось сохранить настройки CS2: {v0}", v0=exc))
 
     def _chosen(self) -> list[str]:
         return [spec["id"] for spec in gd_cs2.TWEAKS
@@ -218,12 +223,26 @@ class Cs2Widget(QWidget):
     # -- состояние ----------------------------------------------------------
     def reload(self) -> None:
         """Полное чтение: рычаг, игра, диагностика, настройки игры."""
-        snap = gd_cs2.snapshot()
+        if gd_bg.is_running(self._reload_worker):
+            return
+
+        def work():
+            return {"snapshot": gd_cs2.snapshot(), "diagnostics": gd_cs2.diagnostics(),
+                    "video": gd_cs2.video_notes(), "video_path": gd_cs2.video_file()}
+
+        self._reload_worker = gd_bg.submit(work, self._reload_done, parent=self)
+
+    def _reload_done(self, result):
+        self._reload_worker = None
+        snap = result.get("snapshot")
+        if not isinstance(snap, dict):
+            self._note(str(result.get("error") or i18n.t("Состояние CS2 недоступно.")))
+            return
         self._exe = snap.get("exe") or ""
         self._render_state(snap)
         self._refresh_game()
-        self._render_diagnostics()
-        self._render_video()
+        self._render_diagnostics(result.get("diagnostics") or [])
+        self._render_video(result.get("video") or [], result.get("video_path"))
 
     def _render_state(self, snap: dict) -> None:
         items = snap.get("items") or {}
@@ -285,36 +304,30 @@ class Cs2Widget(QWidget):
     def _toggle(self) -> None:
         if self._busy:
             return
+        chosen = self._chosen()
+        if not self._on and not chosen:
+            self._note(i18n.t("Отметьте хотя бы один пункт — иначе рычагу нечего делать."))
+            return
         self._busy = True
-        try:
-            if self._on:
-                report = gd_cs2.revert()
-                if report.get("ok"):
-                    self._on = False
-                    self._note(i18n.t("Вернул прежние значения: {v0} записей.",
-                                      v0=report.get("restored") or 0))
-                else:
-                    self._note(i18n.t("Не всё вернулось: {v0}", v0="; ".join(report.get("errors") or [])))
-            else:
-                chosen = self._chosen()
-                if not chosen:
-                    self._note(i18n.t("Отметь хотя бы один пункт — иначе рычагу нечего делать."))
-                    return
-                exe = self._exe or gd_cs2.find_cs2()
-                report = gd_cs2.apply(chosen, exe)
-                if report.get("applied"):
-                    self._on = True
-                    self._note(i18n.t("Включено: {v0}.", v0=", ".join(
-                        i18n.t(s["title"]) for s in gd_cs2.TWEAKS
-                        if s["id"] in report.get("applied", []))))
-                if report.get("errors"):
-                    self._note(i18n.t("Замечания: {v0}", v0="; ".join(report["errors"])))
-            settings = self._settings()
-            settings["cs2_on"] = self._on
-            settings["cs2_items"] = self._chosen()
-            self._save()
-        finally:
-            self._busy = False
+        self.btn_toggle.setEnabled(False)
+        request = ({"cmd": "cs2_revert"} if self._on else
+                   {"cmd": "cs2_apply", "items": list(chosen), "exe": self._exe})
+        client = self._client
+        self._worker = gd_bg.submit(lambda: client.call(request, timeout=120),
+                                    self._toggle_done, parent=self)
+
+    def _toggle_done(self, response):
+        self._busy = False
+        self.btn_toggle.setEnabled(True)
+        report = response.get("data") or {}
+        if not response.get("ok"):
+            self._note(i18n.t("Не всё выполнено: {v0}", v0=response.get("error") or ""))
+        elif "restored" in report:
+            self._note(i18n.t("Вернул прежние значения: {v0} записей.", v0=report["restored"]))
+        else:
+            self._note(i18n.t("Включено: {v0}.", v0=", ".join(report.get("applied") or [])))
+        self._settings()["cs2_items"] = self._chosen()
+        self._save()
         self.reload()
 
     def _items_changed(self, _checked: bool) -> None:
@@ -379,17 +392,15 @@ class Cs2Widget(QWidget):
         layout.addWidget(box)
         rows.append(box)
 
-    def _render_diagnostics(self) -> None:
+    def _render_diagnostics(self, items) -> None:
         self._clear(self._diag_rows)
         self.lbl_diag_note.setText("")
-        for item in gd_cs2.diagnostics():
+        for item in items:
             self._add_row(self.lay_diag, self._diag_rows, item["title"], item["value"],
                           item.get("note", ""), item.get("level", "info"))
 
-    def _render_video(self) -> None:
+    def _render_video(self, rows, path) -> None:
         self._clear(self._video_rows)
-        rows = gd_cs2.video_notes()
-        path = gd_cs2.video_file()
         if not rows:
             self.lbl_video_note.setText(i18n.t(
                 "Не нашёл cs2_video.txt: настройки игры появятся здесь после первого запуска CS2."))
