@@ -39,6 +39,7 @@ from PyQt5.QtWidgets import (  # noqa: E402
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -51,6 +52,28 @@ import gd_zapret  # noqa: E402
 import gd_zapret_probe as probe  # noqa: E402
 import gd_zapret_update as upd  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
+
+
+class ElidedPathLabel(QLabel):
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text):  # noqa: N802
+        self._full_text = text
+        self.setToolTip(text)
+        self._elide()
+
+    def _elide(self):
+        super().setText(self.fontMetrics().elidedText(self._full_text, Qt.ElideMiddle,
+                                                     max(0, self.contentsRect().width())))
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
 
 
 def _fmt_uptime(seconds) -> str:
@@ -125,7 +148,7 @@ class ZapretWidget(QWidget):
                    "от автора zapret. Путь — без кириллицы."),
         )
         prow = QHBoxLayout()
-        self.lbl_path = QLabel(i18n.t("не выбрана"))
+        self.lbl_path = ElidedPathLabel(i18n.t("не выбрана"))
         self.lbl_path.setObjectName("Value")
         self.lbl_path.setToolTip("")
         prow.addWidget(self.lbl_path, 1)
@@ -136,14 +159,17 @@ class ZapretWidget(QWidget):
         self.btn_open = QPushButton(i18n.t("Открыть папку"))
         self.btn_open.setObjectName("Segment")
         self.btn_open.clicked.connect(self._open_folder)
-        prow.addWidget(self.btn_open)
+        path_actions = QHBoxLayout()
+        path_actions.addWidget(self.btn_open)
         # видна только когда путь не-ASCII: тогда winws.exe может не стартовать
         self.btn_move = QPushButton(i18n.t("Перенести в C:\\Tools\\zapret"))
         self.btn_move.setObjectName("Segment")
         self.btn_move.clicked.connect(self._move_ascii)
         self.btn_move.setVisible(False)
-        prow.addWidget(self.btn_move)
+        path_actions.addWidget(self.btn_move)
+        path_actions.addStretch(1)
         lay.addLayout(prow)
+        lay.addLayout(path_actions)
         self.lbl_path_note = QLabel("")
         self.lbl_path_note.setObjectName("Hint")
         self.lbl_path_note.setWordWrap(True)

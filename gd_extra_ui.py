@@ -21,6 +21,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QGridLayout,
     QMessageBox,
     QHBoxLayout,
     QLabel,
@@ -145,7 +146,7 @@ class ExtraPanel(QWidget):
                 "«тихий час» и автоочистку; профили CPU/GPU встроенные. Настройки "
                 "применятся после перезапуска."),
         )
-        r4 = QHBoxLayout()
+        r4 = QGridLayout()
         self.btn_export = QPushButton(i18n.t("Экспорт в JSON…"))
         self.btn_export.setObjectName("Segment")
         self.btn_export.clicked.connect(self._export)
@@ -173,13 +174,9 @@ class ExtraPanel(QWidget):
         self.btn_suitcase.setToolTip(i18n.t(
             "Папка с presets.json и portable.txt: перенести настройки на другой ПК."))
         self.btn_suitcase.clicked.connect(self._make_suitcase)
-        r4.addWidget(self.btn_export)
-        r4.addWidget(self.btn_import)
-        r4.addWidget(self.btn_reset)
-        r4.addWidget(self.btn_portable)
-        r4.addWidget(self.btn_suitcase)
-        r4.addWidget(self.btn_open_data)
-        r4.addStretch(1)
+        for index, button in enumerate((self.btn_export, self.btn_import, self.btn_reset,
+                                         self.btn_portable, self.btn_suitcase, self.btn_open_data)):
+            r4.addWidget(button, index // 2, index % 2)
         c4.addLayout(r4)
         self.lbl_prof = QLabel("")
         self.lbl_prof.setObjectName("Hint")
@@ -268,7 +265,7 @@ class ExtraPanel(QWidget):
                 ok=False,
             )
             gd_journal.record("timer", i18n.t("точность системного таймера"),
-                              gd_extra.ms_from_100ns(before) if before else None,
+                              before,
                               ms, why=i18n.t("система отказала в запросе точности таймера"),
                               source=i18n.t("утилиты"), reversible=False)
             gd_toast.show_toast(i18n.t("toast.timer_failed"), "warn")
@@ -280,7 +277,7 @@ class ExtraPanel(QWidget):
                 "Точность таймера: запрос принят, но фактическое значение не подтвердилось — "
                 "считайте, что оно не изменилось."), ok=False)
             gd_journal.record("timer", i18n.t("точность системного таймера"),
-                              gd_extra.ms_from_100ns(before) if before else None, None,
+                              before, None,
                               why=i18n.t("не удалось прочитать фактическую точность таймера"),
                               source=i18n.t("утилиты"), reversible=False)
             gd_toast.show_toast(i18n.t("toast.timer_failed"), "warn")
@@ -315,7 +312,7 @@ class ExtraPanel(QWidget):
             gd_toast.show_toast(i18n.t("toast.timer_off"), "ok")
 
         gd_journal.record("timer", i18n.t("точность системного таймера"),
-                          gd_extra.ms_from_100ns(before) if before else None, ms,
+                          before, ms,
                           why=i18n.t("точность системного таймера"), source=i18n.t("утилиты"))
 
     # -- сеть ----------------------------------------------------------------
@@ -401,8 +398,14 @@ class ExtraPanel(QWidget):
             confirm_text=i18n.t("Сбросить всё"), destructive=True)
         if not ans:
             return
-        report = self.host.reset_everything()
-        self._set_status(self.lbl_prof, i18n.t("Сброшено: ") + (", ".join(report) if report else i18n.t("нечего сбрасывать")) + ".")
+        self._set_status(self.lbl_prof, i18n.t("Возвращаю изменения…"))
+        self.host.reset_everything(on_done=self._reset_finished)
+
+    def _reset_finished(self, report):
+        text = i18n.t("Сброшено: {v0}", v0=", ".join(report.get("done") or []))
+        if report.get("errors"):
+            text += ". " + "; ".join(report["errors"])
+        self._set_status(self.lbl_prof, text, ok=bool(report.get("ok")))
         self.refresh()
 
     def _open_data_folder(self):

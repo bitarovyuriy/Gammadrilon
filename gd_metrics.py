@@ -46,6 +46,7 @@ _thread: threading.Thread | None = None
 _wake = threading.Event()
 _stop = threading.Event()
 _gpu_miss = 0                 # сколько раз подряд nvidia-smi не ответил
+_gpu_last_success = 0.0
 _activity = {"visible": True, "gpu_focus": False}
 _dns_request = False          # кто-то попросил разово прочитать DNS (см. request_dns)
 _closing = False
@@ -91,6 +92,8 @@ def snapshot() -> dict:
     with _lock:
         snap = dict(_state)
         snap["ts"] = dict(_ts)
+        if _gpu_miss >= GPU_MISS_LIMIT:
+            snap["gpu"] = None
     return snap
 
 
@@ -112,6 +115,27 @@ def gpu() -> dict | None:
 def gpu_unavailable() -> bool:
     """True, если nvidia-smi не отвечает уже несколько попыток подряд (GPU нет)."""
     return _gpu_miss >= GPU_MISS_LIMIT
+
+
+def gpu_status() -> dict:
+    """Состояние источника отдельно от сохранённого последнего снимка."""
+    start()
+    with _lock:
+        age = None if _gpu_last_success <= 0 else max(0, time.monotonic() - _gpu_last_success)
+        available = _state["gpu"] is not None and _gpu_miss < GPU_MISS_LIMIT
+        return {"state": _state["gpu"], "age": age, "available": available,
+                "stale": not available or _gpu_miss > 0 or age is None or age > max(GPU_TTL_TRAY * 2, 10)}
+
+
+def _record_gpu(state, now):
+    global _gpu_miss, _gpu_last_success
+
+    with _lock:
+        if state is not None:
+            _state["gpu"] = state
+            _gpu_last_success = now
+        _gpu_miss = _gpu_miss + 1 if state is None else 0
+        _ts["gpu"] = now
 
 
 def dns() -> dict | None:
@@ -212,7 +236,7 @@ def _ttls() -> tuple[float, float, float]:
 
 
 def _loop() -> None:
-    global _gpu_miss, _dns_request
+    global _dns_request
 
     from gd_sensors import CpuSensors, ram_usage
 
@@ -250,11 +274,7 @@ def _loop() -> None:
                 st = gd_gpu.read_state()
             except Exception:  # noqa: BLE001
                 st = None
-            with _lock:
-                if st is not None:
-                    _state["gpu"] = st
-                _ts["gpu"] = now
-            _gpu_miss = _gpu_miss + 1 if st is None else 0
+            _record_gpu(st, now)
 
         if dns_wanted:                 # DNS — только по запросу, по таймеру не читаем
             try:

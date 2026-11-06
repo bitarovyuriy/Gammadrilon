@@ -1801,7 +1801,7 @@ class NavItem(QWidget):
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(15, 15)
         if icon_name:
-            self.icon_label.setPixmap(gd_icons.icon(icon_name, 15, "#C4C4C4").pixmap(15, 15))
+            self.icon_label.setPixmap(gd_icons.icon(icon_name, 15, th.MUTED).pixmap(15, 15))
         lay.addWidget(self.icon_label)
 
         self.text_label = QLabel(text)
@@ -1833,7 +1833,7 @@ class NavItem(QWidget):
     def set_active(self, on: bool) -> None:
         self.setProperty("active", bool(on))
         if self.icon_name:
-            color = "#FFFFFF" if on else "#C4C4C4"
+            color = th.INK if on else th.MUTED
             self.icon_label.setPixmap(gd_icons.icon(self.icon_name, 15, color).pixmap(15, 15))
         self.style().unpolish(self)
         self.style().polish(self)
@@ -2212,6 +2212,9 @@ class MainWindow(QMainWindow):
         top.addWidget(value_label, 0, Qt.AlignBottom)
 
         slider = QSlider(Qt.Horizontal)
+        slider.setAccessibleName(i18n.t(title))
+        slider.setProperty("a11y_key", title)
+        label.setBuddy(slider)
         slider.setMinimum(minimum)
         slider.setMaximum(maximum)
         slider.setValue(value)
@@ -2515,6 +2518,8 @@ class MainWindow(QMainWindow):
         temp_top.addWidget(self.temperature_value, 0, Qt.AlignBottom)
 
         self.temperature_slider = TemperatureSlider(Qt.Horizontal)
+        self.temperature_slider.setAccessibleName(i18n.t("Температура цвета"))
+        self.temperature_slider.setProperty("a11y_key", "Температура цвета")
         self.temperature_slider.setObjectName("TempSlider")
         self.temperature_slider.setMinimum(3000)
         self.temperature_slider.setMaximum(10000)
@@ -2671,6 +2676,8 @@ class MainWindow(QMainWindow):
         ddc_layout.addWidget(self.ddc_pick)
 
         self.ddc_slider = QSlider(Qt.Horizontal)
+        self.ddc_slider.setAccessibleName(i18n.t("Подсветка монитора"))
+        self.ddc_slider.setProperty("a11y_key", "Подсветка монитора")
         self.ddc_slider.setMinimum(0)
         self.ddc_slider.setMaximum(100)
         self.ddc_slider.setValue(0)
@@ -4035,6 +4042,8 @@ class MainWindow(QMainWindow):
             pass
         if hasattr(self, "brightness_value"):
             self.update_value_labels()
+        for item in getattr(self, "_nav_items", {}).values():
+            item.set_active(bool(item.property("active")))
         for widget_name in ("gamma_scale", "curve", "preset_combo"):
             widget = getattr(self, widget_name, None)
             if widget is not None:
@@ -4072,6 +4081,10 @@ class MainWindow(QMainWindow):
             widget.setText(i18n.t(key))
         for widget, key in self._tooltip_bindings:
             widget.setToolTip(i18n.t(key))
+        for slider in self.findChildren(QSlider):
+            key = slider.property("a11y_key")
+            if key:
+                slider.setAccessibleName(i18n.t(key))
         self._retranslate_tabs()
         try:
             self.tray.retranslate()
@@ -4116,109 +4129,116 @@ class MainWindow(QMainWindow):
         self.show_window()
 
     # -- сброс всех изменений и «тихий час» (ТЗ 6.3, п.3 и п.5) -------------
-    def reset_everything(self) -> list[str]:
-        """Одна кнопка: вернуть питание CPU/GPU, DNS, правила, автоочистку, таймер и гамму."""
-        import gd_extra
-        import gd_journal
-        import gd_rules
-        import gd_toast
+    def reset_everything(self, on_done=None):
+        """Собрать результаты всех откатов и только затем сообщить итог."""
+        if getattr(self, "_reset_running", False):
+            return
+        import gd_helper
 
-        gd_toast.suppress(True)          # не плодить по тосту на каждый откат
-        done: list[str] = []
+        self._reset_running = True
+        self._reset_callback = on_done
+        self._reset_report = None
+        self._reset_gamma_result = None
+        self._reset_wait_gamma = True
+        self.set_status(i18n.t("Возвращаю изменения…"))
+        self.gamma_animation_timer.stop()
+        self.animation_data = None
+        self._auto_prev_index = None
+        self._cancel_cat_vision()
+        self._quiet_prev = None
+        self._quiet_generation = getattr(self, "_quiet_generation", 0) + 1
+        self._gamma_pending = None
+        self.set_ui_values(1.0, 1.0, 1.0, 6500, shadow=0, apply_now=True, save=True)
+        power = getattr(getattr(self, "_power_page", None), "client", None)
+        helper = gd_helper.HelperClient()
+        boost = getattr(getattr(self, "_utils_page", None), "_boost", None)
 
-        power = getattr(self, "_power_page", None)
-        if power is not None and getattr(power, "client", None) is not None:
-            try:
-                # откат идёт в фоне (через компаньон), GUI не ждёт
-                power.apply_profile("restore", source=i18n.t("утилиты"))
-                done.append("питание CPU")
-            except Exception:  # noqa: BLE001
-                pass
-
-        gpu = getattr(self, "_gpu_page", None)
-        if gpu is not None and getattr(gpu, "client", None) is not None:
-            try:
-                gpu.apply_profile("restore", source=i18n.t("утилиты"))
-                done.append("лимит GPU")
-            except Exception:  # noqa: BLE001
-                pass
-
-        dns = self._ensure_page("tab.dns")     # ленивый экран собирается под действие
-        if dns is not None:
-            try:
-                dns._restore()
-                done.append("DNS")
-            except Exception:  # noqa: BLE001
-                pass
-
-        # обход DPI: остановить winws.exe, запущенный Gammadrilon (ТЗ 8, DoD)
-        try:
+        def work():
+            import gd_dns
+            import gd_extra
+            import gd_profiles
+            import gd_rules
             import gd_zapret
 
-            state = gd_zapret.our_state()
-            pid = (state or {}).get("pid")
-            if pid and gd_zapret.pid_alive(pid):
-                zapret = self._ensure_page("tab.zapret")
-                if zapret is not None:
-                    zapret._off()
-                    done.append(i18n.t("обход DPI"))
-        except Exception:  # noqa: BLE001
-            pass
+            done, errors = [], []
 
-        try:
+            def run(name, fn):
+                try:
+                    result = fn()
+                    if isinstance(result, dict):
+                        ok, message = bool(result.get("ok")), result.get("error") or ""
+                    elif isinstance(result, tuple):
+                        ok, message = result[0], str(result[1])
+                    else:
+                        ok, message = bool(result), ""
+                    (done if ok else errors).append(name if ok else f"{name}: {message}")
+                except Exception as exc:
+                    errors.append(f"{name}: {exc}")
+
+            if power is not None:
+                run(i18n.t("питание CPU"), lambda: power.call({"cmd": "restore"}, timeout=90))
+            run(i18n.t("лимит GPU"), lambda: helper.call({"cmd": "restore"}, timeout=90))
+            saved = gd_dns.saved_state() or gd_dns.current_state()
+            run("DNS", lambda: helper.call({"cmd": "dns_apply", "mode": saved.get("mode") or "dhcp",
+                                            "servers": saved.get("servers") or [], "iface": saved.get("iface")},
+                                           timeout=90))
+            state = gd_zapret.our_state() or {}
+            if state.get("pid") and not state.get("external") and gd_zapret.pid_alive(state["pid"]):
+                run(i18n.t("обход DPI"), lambda: helper.call({"cmd": "zapret_stop", "pid": state["pid"]}, timeout=40))
+            if boost is not None and boost.active():
+                run(i18n.t("игровой буст"), boost.stop)
             rules = gd_rules.load_rules()
             if any(r.get("enabled") for r in rules):
-                for r in rules:
-                    r["enabled"] = False
-                if gd_rules.save_rules(rules):
-                    done.append(i18n.t("правила ({v0})", v0=len(rules)))
-                else:
-                    # в окне выключены, но на диск не легли — в отчёте это видно
-                    done.append(i18n.t("правила — не удалось сохранить"))
-        except Exception:  # noqa: BLE001
-            pass
-
-        # автоочистка: состояние живёт в autoclean.json (пишет вкладка «Утилиты»),
-        # читаем его напрямую — ленивый экран ради галочки не собираем
-        try:
-            import gd_profiles
-
+                for rule in rules:
+                    rule["enabled"] = False
+                run(i18n.t("правила"), lambda: gd_rules.save_rules(rules))
             auto = gd_profiles._read_autoclean()
-            if auto.get("enabled") and gd_profiles._write_autoclean(
-                    {**auto, "enabled": False}):
-                done.append(i18n.t("автоочистка ОЗУ"))
-        except Exception:  # noqa: BLE001
-            pass
+            if auto.get("enabled"):
+                run(i18n.t("автоочистка ОЗУ"), lambda: gd_profiles._write_autoclean({**auto, "enabled": False}))
+            quiet = gd_profiles.load_quiet()
+            if quiet.get("enabled") or quiet.get("applied"):
+                run(i18n.t("тихий час"), lambda: gd_profiles.save_quiet({**quiet, "enabled": False, "applied": False}))
+            run(i18n.t("точность таймера"), lambda: gd_extra.set_timer_resolution(False))
+            return {"done": done, "errors": errors}
 
-        try:
-            if (gd_extra.timer_ms() or 99) < 1.0:
-                gd_extra.set_timer_resolution(False)
-                done.append(i18n.t("точность таймера"))
-        except Exception:  # noqa: BLE001
-            pass
+        self._reset_worker = gd_bg.submit(work, self._reset_system_done, parent=self)
 
-        try:
-            self.gamma_animation_timer.stop()
-            self.animation_data = None
-            self._auto_prev_index = None
-            self._cancel_cat_vision()
-            self.set_ui_values(1.0, 1.0, 1.0, 6500, shadow=0, apply_now=True, save=True)
-            done.append(i18n.t("гамма"))
-        except Exception:  # noqa: BLE001
-            pass
+    def _reset_system_done(self, result):
+        self._reset_report = (result if "done" in result else
+                              {"done": [], "errors": [str(result.get("error") or result)]})
+        self._finish_reset()
 
-        try:
-            gd_journal.record("reset", i18n.t("все изменения Gammadrilon"), None,
-                              ", ".join(done) or i18n.t("нечего"), why=i18n.t("сброс всех изменений"),
-                              source=i18n.t("утилиты"))
-        except Exception:  # noqa: BLE001
-            pass
-        gd_toast.suppress(False)
-        gd_toast.show_toast(
-            i18n.t("toast.reset",
-                   what=", ".join(done) if done else i18n.t("toast.reset_nothing")),
-            "ok" if done else "info")
-        return done
+    def _reset_gamma_done(self, ok, error=""):
+        self._reset_wait_gamma = False
+        self._reset_gamma_result = (bool(ok), error)
+        self._finish_reset()
+
+    def _finish_reset(self):
+        if self._reset_report is None or self._reset_gamma_result is None:
+            return
+        import gd_journal
+        import gd_toast
+
+        report = self._reset_report
+        gamma_ok, gamma_error = self._reset_gamma_result
+        if gamma_ok:
+            report["done"].append(i18n.t("гамма"))
+        else:
+            report["errors"].append(gamma_error or i18n.t("гамма не применена"))
+        report["ok"] = not report["errors"]
+        text = (i18n.t("Сброшено: {v0}", v0=", ".join(report["done"])) if report["done"] else
+                i18n.t("Сброс не выполнен"))
+        if report["errors"]:
+            text += ". " + i18n.t("Ошибки: {v0}", v0="; ".join(report["errors"]))
+        self.set_status(text, ok=report["ok"])
+        gd_journal.record("reset", i18n.t("все изменения Gammadrilon"), None, text,
+                          source=i18n.t("утилиты"), reversible=False)
+        gd_toast.show_toast(text, "ok" if report["ok"] else "warn")
+        self._reset_running = False
+        callback, self._reset_callback = self._reset_callback, None
+        self._reset_report = None
+        if callback is not None:
+            callback(report)
 
     def start_quiet_hour(self):
         """Планировщик «Тихий час»: проверка раз в 30 с."""
@@ -4239,96 +4259,58 @@ class MainWindow(QMainWindow):
             self._quiet_release(q)
 
     def _quiet_apply(self, q: dict):
-        import gd_journal
-        import gd_profiles
-
-        gc = self.gamma_controller
-        self._quiet_prev = {"brightness": getattr(gc, "brightness", 1.0),
-                            "contrast": getattr(gc, "contrast", 1.0),
-                            "gamma": getattr(gc, "gamma", 1.0),
-                            "temperature": getattr(gc, "temperature", 6500)}
-        dim_ok = False
-        try:
-            self.apply_values(0.5, self._quiet_prev["contrast"],
-                              self._quiet_prev["gamma"],
-                              self._quiet_prev["temperature"], save=False)
-            # apply_values ставит флаг факта: гамма может быть отклонена (HDR)
-            dim_ok = bool(getattr(self, "_gamma_applied_ok", False))
-        except Exception:  # noqa: BLE001
-            dim_ok = False
-        power = getattr(self, "_power_page", None)
-        eco_ok = power is not None
-        if power is not None:
-            try:
-                power.apply_profile("eco", source=i18n.t("тихий час"))
-            except Exception:  # noqa: BLE001
-                eco_ok = False
-        # «активен» — значит попытка сделана: иначе тик будет пробовать каждые
-        # несколько секунд и засыплет тревожными тостами ту же причину
-        q["applied"] = True
-        if not gd_profiles.save_quiet(q):
-            self.set_status(i18n.t(
-                "Тихий час: состояние не сохранено — файл quiet_hour.json недоступен для записи."),
-                ok=False)
-        if eco_ok and dim_ok:
-            try:
-                import gd_toast
-
-                gd_toast.show_toast(i18n.t("toast.quiet_on"), "info")
-            except Exception:  # noqa: BLE001
-                pass
-        else:
-            # не врём про успех: тост сказал бы «ЭКО включён», которого нет
-            self._report_failure(i18n.t(
-                "toast.quiet_none") if not (eco_ok or dim_ok)
-                else (i18n.t("toast.quiet_no_eco") if not eco_ok else i18n.t("toast.quiet_no_dim")))
-        try:
-            gd_journal.record("quiet_hour", f"{q.get('start')}–{q.get('end')}", None,
-                              i18n.t("ЭКО CPU + минимум яркости"), why=i18n.t("тихий час"),
-                              source=i18n.t("утилиты"))
-        except Exception:  # noqa: BLE001
-            pass
+        values = self._gamma_applied_values or (1.0, 1.0, 1.0, 6500, 0)
+        self._quiet_prev = dict(zip(("brightness", "contrast", "gamma", "temperature", "shadow"), values))
+        target = {**self._quiet_prev, "brightness": 0.5}
+        self._quiet_change(q, target, True)
 
     def _quiet_release(self, q: dict):
+        target = self._quiet_prev or {"brightness": 1.0, "contrast": 1.0, "gamma": 1.0,
+                                      "temperature": 6500, "shadow": 0}
+        self._quiet_prev = None
+        self._quiet_change(q, target, False)
+
+    def _quiet_change(self, q, target, entering):
         import gd_journal
         import gd_profiles
+        import gd_toast
 
-        prev = self._quiet_prev or {"brightness": 1.0, "contrast": 1.0,
-                                    "gamma": 1.0, "temperature": 6500}
-        restore_ok = False
-        try:
-            self.apply_values(prev["brightness"], prev["contrast"], prev["gamma"],
-                              prev["temperature"], save=False)
-            restore_ok = bool(getattr(self, "_gamma_applied_ok", False))
-        except Exception:  # noqa: BLE001
-            restore_ok = False
-        power = getattr(self, "_power_page", None)
-        if power is not None and getattr(power, "client", None) is not None:
-            try:
-                power.apply_profile("restore", source=i18n.t("тихий час"))
-            except Exception:  # noqa: BLE001
-                pass
-        q["applied"] = False
+        generation = getattr(self, "_quiet_generation", 0) + 1
+        self._quiet_generation = generation
+        results = {}
+
+        def finished(part, ok):
+            if self._quiet_generation != generation:
+                return
+            results[part] = bool(ok)
+            if len(results) < 2:
+                return
+            if all(results.values()):
+                gd_toast.show_toast(i18n.t("toast.quiet_on" if entering else "toast.quiet_off"), "info")
+            elif entering:
+                key = ("toast.quiet_none" if not any(results.values()) else
+                       "toast.quiet_no_eco" if not results["cpu"] else "toast.quiet_no_dim")
+                self._report_failure(i18n.t(key))
+            else:
+                self._report_failure(i18n.t("toast.quiet_keep_dim") if not results["gamma"] else
+                                     i18n.t("Тихий час: питание CPU не восстановлено."))
+            gd_journal.record("quiet_hour", f"{q.get('start')}–{q.get('end')}", None, results,
+                              why=i18n.t("тихий час"), source=i18n.t("утилиты"))
+
+        q["applied"] = bool(entering)
         if not gd_profiles.save_quiet(q):
             self.set_status(i18n.t(
-                "Тихий час: состояние не сохранено — файл quiet_hour.json недоступен для записи."),
-                ok=False)
-        self._quiet_prev = None
-        if restore_ok:
-            try:
-                import gd_toast
-
-                gd_toast.show_toast(i18n.t("toast.quiet_off"), "info")
-            except Exception:  # noqa: BLE001
-                pass
+                "Тихий час: состояние не сохранено — файл quiet_hour.json недоступен для записи."), ok=False)
+        self.apply_values(target["brightness"], target["contrast"], target["gamma"], target["temperature"],
+                          shadow=target.get("shadow", 0), save=False,
+                          on_done=lambda ok: finished("gamma", ok))
+        client = getattr(getattr(self, "_power_page", None), "client", None)
+        if client is None:
+            finished("cpu", False)
         else:
-            # «состояние возвращено» — неправда, если яркость осталась сниженной
-            self._report_failure(i18n.t("toast.quiet_keep_dim"))
-        try:
-            gd_journal.record("quiet_hour", i18n.t("выход из окна"), i18n.t("ЭКО + минимум яркости"),
-                              None, why=i18n.t("тихий час завершён"), source=i18n.t("утилиты"))
-        except Exception:  # noqa: BLE001
-            pass
+            command = {"cmd": "apply", "profile": "eco"} if entering else {"cmd": "restore"}
+            gd_bg.submit(lambda: client.call(command, timeout=90),
+                         lambda result: finished("cpu", result.get("ok")), parent=self)
 
     def open_rules_tab(self):
         """Открыть «Правила» — теперь раздел внутри «Утилит»."""
@@ -4589,9 +4571,22 @@ class MainWindow(QMainWindow):
         temperature: int,
         save: bool = True,
         shadow: int | None = None,
+        on_done=None,
     ):
         strength = self.shadow_strength() if shadow is None else int(clamp(shadow, 0, 100))
-        self._gamma_pending = (brightness, contrast, gamma, int(temperature), strength)
+        values = (brightness, contrast, gamma, int(temperature), strength)
+        callbacks = getattr(self, "_gamma_callbacks", [])
+        previous = getattr(self, "_gamma_pending", None)
+        if previous is not None and previous != values:
+            self._gamma_callbacks = [(v, cb) for v, cb in callbacks if v != previous]
+            for target, callback in callbacks:
+                if target == previous:
+                    callback(False)
+        else:
+            self._gamma_callbacks = callbacks
+        if on_done is not None:
+            self._gamma_callbacks.append((values, on_done))
+        self._gamma_pending = values
         self._submit_gamma()
 
         if save:
@@ -4625,6 +4620,15 @@ class MainWindow(QMainWindow):
             self._gamma_applied_values = result["values"]
         if not self._gamma_applied_ok and self._gamma_pending is None:
             self.set_status(self._gamma_failure_status(), ok=False)
+        if getattr(self, "_reset_wait_gamma", False) and self._gamma_pending is None:
+            reset_ok = self._gamma_applied_ok and result.get("values") == (1.0, 1.0, 1.0, 6500, 0)
+            self._reset_gamma_done(reset_ok, "" if reset_ok else i18n.t("гамма не применена"))
+        callbacks = getattr(self, "_gamma_callbacks", [])
+        completed = result.get("values")
+        matching = [(v, cb) for v, cb in callbacks if v == completed or (completed is None and v != self._gamma_pending)]
+        self._gamma_callbacks = [(v, cb) for v, cb in callbacks if (v, cb) not in matching]
+        for _values, callback in matching:
+            callback(self._gamma_applied_ok)
         self._submit_gamma()
 
     def _gamma_failure_status(self) -> str:
@@ -5391,6 +5395,7 @@ class MainWindow(QMainWindow):
         self._fill_ddc_pick(ddc)
         self._ddc_monitor = monitor
         self._ddc_last_ok = int(level)
+        self._ddc_pending = int(level)
         self.ddc_slider.blockSignals(True)
         self.ddc_slider.setValue(int(level))
         self.ddc_slider.blockSignals(False)
@@ -5429,6 +5434,7 @@ class MainWindow(QMainWindow):
         self._save_config()
         monitor = monitors[int(index)]
         self._ddc_monitor = monitor
+        self._ddc_pending = None
         self.ddc_slider.setEnabled(False)
         self.bind_text(self.ddc_hint, "читаем яркость…")
         gd_bg.submit(lambda: (monitor, monitor.brightness()), self._ddc_level_read, parent=self)
@@ -5444,6 +5450,7 @@ class MainWindow(QMainWindow):
             self._ddc_failed("")
             return
         self._ddc_last_ok = int(level)
+        self._ddc_pending = int(level)
         self.ddc_slider.blockSignals(True)
         self.ddc_slider.setValue(int(level))
         self.ddc_slider.blockSignals(False)
@@ -5470,6 +5477,7 @@ class MainWindow(QMainWindow):
     def _ddc_apply(self):
         monitor = self._ddc_monitor
         if (getattr(self, "_ddc_busy", False) or monitor is None
+                or self._ddc_pending is None
                 or self._ddc_pending == self._ddc_last_ok):
             return
         value = self._ddc_pending

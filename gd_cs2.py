@@ -281,6 +281,7 @@ def snapshot(exe: str = "", *, registry=None, power=None) -> dict:
         "items": items,
         "power": active,
         "on": bool(items) and all(items.values()),
+        "can_revert": bool(_load_backup(backup_path())),
     }
 
 

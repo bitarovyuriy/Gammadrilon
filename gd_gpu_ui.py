@@ -348,6 +348,7 @@ class GpuWidget(QWidget):
         srow = QHBoxLayout()
         srow.setSpacing(12)
         self.sl_pl = QSlider(Qt.Horizontal)
+        self.sl_pl.setAccessibleName(i18n.t("Лимит мощности"))
         self.sl_pl.setRange(100, 366)
         self.lbl_pl_val = QLabel("—")
         self.lbl_pl_val.setObjectName("Value")
@@ -433,18 +434,32 @@ class GpuWidget(QWidget):
     def _tick(self):
         import gd_metrics
 
-        st = gd_metrics.gpu() or self._state
-        if st is None:
+        info = gd_metrics.gpu_status()
+        st = info["state"]
+        if not info["available"]:
             self.lbl_gpu.setText(i18n.t("GPU не отвечает"))
-            if not self._pending_gpu_probe and gd_metrics.gpu_unavailable():
-                # nvidia-smi молчит несколько попыток подряд — карты нет
-                self._gpu_warn.setText(self._gpu_absent_note())
-                self._gpu_warn.setVisible(True)
-                self._set_controls_enabled(False)
+            age = info["age"]
+            self._gpu_warn.setText(
+                i18n.t("Последние данные GPU получены {v0:.0f} с назад.", v0=age)
+                if age is not None else self._gpu_absent_note())
+            self._gpu_warn.setVisible(True)
+            self._set_controls_enabled(False)
+            self._gpu_stale = True
+            for label in (self.lbl_temp, self.lbl_clk, self.lbl_pl, self.lbl_util, self.lbl_mem):
+                label.setText("—")
             return
+        if info["stale"]:
+            self._gpu_warn.setText(i18n.t("Данные GPU устарели: {v0:.0f} с.", v0=info["age"] or 0))
+            self._gpu_warn.setVisible(True)
+            self._set_controls_enabled(False)
+        elif getattr(self, "_gpu_stale", False):
+            self._gpu_warn.setVisible(False)
+            self._set_controls_enabled(True)
+        self._gpu_stale = bool(info["stale"])
         if self._pending_gpu_probe:
             self._pending_gpu_probe = False      # первый ответ пришёл — вкладка живая
-            self._gpu_warn.setVisible(False)
+            if not info["stale"]:
+                self._gpu_warn.setVisible(False)
         self._state = st
         self.lbl_gpu.setText(st["name"])
         self.lbl_temp.setText(f"{st['temp']:.0f} °C" if st["temp"] is not None else "—")

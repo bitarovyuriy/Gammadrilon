@@ -190,6 +190,22 @@ def test_ddc_coalesces_writes_without_confirming_pending(monkeypatch):
     assert monitor.set_brightness.call_args_list[1].args == (70,)
 
 
+def test_switching_ddc_discards_previous_monitor_pending(monkeypatch):
+    jobs = []
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: jobs.append((fn, done)))
+    old = NS(supported=True)
+    new = NS(supported=True, brightness=lambda: 30, set_brightness=Mock(), description="new")
+    window = NS(_ddc=NS(monitors=[old, new]), _ddc_monitor=old, _ddc_pending=70,
+                _ddc_last_ok=20, _ddc_busy=True, config={}, _save_config=Mock(),
+                ddc_slider=NS(setEnabled=Mock()), ddc_hint=object(), bind_text=Mock(), _ddc_level_read=Mock())
+    window._ddc_applied = Mock()
+    window._ddc_apply = lambda: main.MainWindow._ddc_apply(window)
+    main.MainWindow.on_ddc_monitor_picked(window, 1)
+    main.MainWindow._ddc_applied(window, (old, 20, True))
+    assert len(jobs) == 1, "выбор монитора не переносит на него старую цель"
+    new.set_brightness.assert_not_called()
+
+
 def test_wait_all_keeps_running_workers(monkeypatch):
     worker = Mock()
     worker.isRunning.return_value = True
@@ -245,6 +261,7 @@ def test_helper_applies_the_verified_copy(monkeypatch, tmp_path):
     digest = hashlib.sha256(b"official").hexdigest()
     protected = []
     monkeypatch.setattr(upd, "_protect_directory", lambda path: protected.append(path))
+    monkeypatch.setattr(upd, "_privileged_temp_root", lambda: tmp_path, raising=False)
 
     def apply(root, copied, version):
         assert copied != archive
@@ -275,11 +292,42 @@ def test_helper_rejects_archive_substitution(monkeypatch, tmp_path):
     archive = tmp_path / "new.zip"
     archive.write_bytes(b"replacement")
     apply = Mock(return_value={"ok": True})
+    monkeypatch.setattr(upd, "_protect_directory", lambda path: None)
+    monkeypatch.setattr(upd, "_privileged_temp_root", lambda: tmp_path, raising=False)
     monkeypatch.setattr(upd, "apply_update", apply)
     result = service.handle({"cmd": "zapret_update", "op": "apply", "path": str(tmp_path),
                              "zip": str(archive), "sha256": "a" * 64, "version": "2.0"})
     assert not result["ok"]
     apply.assert_not_called()
+
+
+def test_gpu_failed_clock_restore_survives_helper_restart(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "_state_path", lambda: tmp_path / "gpu.json")
+    monkeypatch.setattr(service, "_read_keep_setting", lambda: False)
+    monkeypatch.setattr(service, "_original", {"pl": 200})
+    monkeypatch.setattr(service, "_applied", {"pl": 100, "lock_clocks": [900, 1200]})
+    monkeypatch.setattr(service, "_set_power", lambda value: (True, ""))
+    monkeypatch.setattr(service, "_run_smi", lambda args: (False, "permission denied"))
+    assert not service._restore()[0]
+    monkeypatch.setattr(service, "_original", None)
+    monkeypatch.setattr(service, "_applied", None)
+    service._load_kept_original()
+    calls = []
+    monkeypatch.setattr(service, "_run_smi", lambda args: calls.append(args) or (True, ""))
+    assert service._restore()[0]
+    assert calls == [["-rgc"]]
+
+
+def test_gpu_partial_apply_retains_rollback_state(monkeypatch):
+    monkeypatch.setattr(service, "_original", None)
+    monkeypatch.setattr(service, "_applied", None)
+    monkeypatch.setattr(service.gd_gpu, "read_state", lambda: {"pl": 200})
+    monkeypatch.setattr(service, "_set_power", lambda value: (True, ""))
+    monkeypatch.setattr(service, "_run_smi", lambda args: (False, "driver error"))
+    monkeypatch.setattr(service, "_keep_original", Mock())
+    assert not service._apply(100, [900, 1200], False)[0]
+    assert service._original["pl"] == 200
+    assert service._applied["pl"] == 100
 
 
 def test_boost_keeps_failed_restores_for_retry(monkeypatch, tmp_path):
@@ -315,6 +363,9 @@ def test_reset_gamma_survives_watchdog(monkeypatch):
                 gamma_animation_timer=NS(stop=lambda: None, isActive=lambda: False),
                 _cancel_cat_vision=Mock(), _gamma_applied_ok=True,
                 _gamma_applied_values=(1.5, 1.0, 1.7, 6500, 20))
+    monkeypatch.setattr(gd_bg, "submit", lambda *a, **kw: None)
+    window.set_status = Mock()
+    window._reset_system_done = Mock()
 
     def set_values(b, c, g, t, **kw):
         window._gamma_applied_values = (b, c, g, t, kw["shadow"])

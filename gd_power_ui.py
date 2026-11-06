@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-from PyQt5.QtCore import Qt, QTimer  # noqa: E402
+from PyQt5.QtCore import Qt, QTimer, QPoint  # noqa: E402
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
     QButtonGroup,
@@ -43,6 +43,7 @@ from PyQt5.QtWidgets import (  # noqa: E402
     QSlider,
     QVBoxLayout,
     QWidget,
+    QWhatsThis,
 )
 
 import gd_theme as th
@@ -273,14 +274,17 @@ def make_card(title: str, tip: str = ""):
         row.setSpacing(th.SPACE_XS)
         lbl = QLabel(title)
         lbl.setObjectName("CardLabel")
+        lbl.setWordWrap(True)
         row.addWidget(lbl)
         row.addStretch(1)
         if tip:
-            info = QLabel("i")  # глиф «ⓘ» есть не во всех шрифтах — рисуем круг стилями
+            info = QPushButton("i")
             info.setObjectName("CardInfo")
-            info.setAlignment(Qt.AlignCenter)
+            info.setAccessibleName(i18n.t("Пояснение: {v0}", v0=title))
             info.setToolTip(tip)
             info.setCursor(Qt.WhatsThisCursor)
+            info.clicked.connect(lambda: QWhatsThis.showText(
+                info.mapToGlobal(QPoint(0, info.height())), tip, info))
             row.addWidget(info)
         lay.addLayout(row)
     return frame, lay
@@ -441,6 +445,7 @@ class PowerWindow(QWidget):
 
         grid.addWidget(self._hint(i18n.t("Макс. состояние"), _TURBO_TIP), 0, 0)
         self.sl_max = QSlider(Qt.Horizontal)
+        self.sl_max.setAccessibleName(i18n.t("Макс. состояние"))
         self.sl_max.setRange(5, 100)
         self.sl_max.setToolTip(_TURBO_TIP)
         self.lbl_max = QLabel("100%")
@@ -452,6 +457,7 @@ class PowerWindow(QWidget):
 
         grid.addWidget(self._hint("EPP", i18n.t("Приоритет энергосбережения: 0 — максимальная производительность, 100 — максимальная экономия.")), 1, 0)
         self.sl_epp = QSlider(Qt.Horizontal)
+        self.sl_epp.setAccessibleName("EPP")
         self.sl_epp.setRange(0, 100)
         self.lbl_epp = QLabel("0")
         self.lbl_epp.setObjectName("Value")

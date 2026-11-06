@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt5.QtCore import QPoint, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QPoint, Qt, QTimer
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -130,15 +130,13 @@ class RowWidget(QWidget):
             x += width + gap
 
 
-class ClickableLabel(QLabel):
+class ClickableLabel(QPushButton):
     """Заголовок плитки: клик открывает полный раздел."""
 
-    clicked = pyqtSignal()
-
-    def mouseReleaseEvent(self, event):  # noqa: N802 — имя из Qt
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mouseReleaseEvent(event)
+    def __init__(self, text):
+        super().__init__(text)
+        self.setFlat(True)
+        self.setAccessibleName(text)
 
 
 class ResizeHandle(QFrame):

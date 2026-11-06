@@ -300,15 +300,34 @@ QLabel#Version {
 }
 
 /* «i» в кружке у заголовка карточки: подсказка без зависимости от глифа ⓘ */
-QLabel#CardInfo {
+QPushButton#CardInfo {
     color: @MUTED@;
-    border: 1px solid @RULE@;
+    border: 1px solid @MUTED@;
     border-radius: @RADIUS@;
-    min-width: 14px;
-    max-width: 14px;
-    min-height: 14px;
-    max-height: 14px;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0;
     font-size: 10px;
+}
+
+QPushButton#CardInfo:focus {
+    border-color: @ACCENT@;
+}
+
+QPushButton#CardLabel {
+    color: @INK2@;
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 0;
+    min-height: 0;
+    text-align: left;
+    font-size: @FONT_SMALL@;
+}
+
+QPushButton#CardLabel:focus {
+    border-color: @MUTED@;
 }
 
 QLabel#AppTitle {
@@ -1091,7 +1110,7 @@ QCheckBox::indicator,
 QRadioButton::indicator {
     width: 16px;
     height: 16px;
-    border: 1px solid @TRACK@;
+    border: 1px solid @MUTED@;
     border-radius: @RADIUS_SMALL@;
     background: @SURFACE@;
 }

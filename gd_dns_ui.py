@@ -315,6 +315,9 @@ class DnsWidget(QWidget):
                 d = client.call({"cmd": "doh", "servers": servers,
                                  "template": r.get("doh"), "enable": True})
                 doh_msg = f" DoH: {d.get('data') or d.get('error')}"
+                if not d.get("ok"):
+                    return {"ok": False, "partial": True, "error": doh_msg,
+                            "before": before, "remembered": remembered}
             return {"ok": True, "doh": doh_msg, "before": before,
                     "remembered": remembered}
 
@@ -325,7 +328,11 @@ class DnsWidget(QWidget):
     def _apply_done(self, resp, r, servers):
         self.btn_apply.setEnabled(True)
         if not resp.get("ok"):
-            self._set_status(i18n.t("DNS не изменён: {v0}", v0=resp.get('error')), ok=False)
+            self._refresh_now()
+            self._set_status(i18n.t("DNS изменён частично: {v0}", v0=resp.get('error'))
+                             if resp.get("partial") else
+                             i18n.t("DNS: ошибка применения, проверьте текущее состояние: {v0}",
+                                    v0=resp.get('error')), ok=False)
             return
         before = resp.get("before") or {}
         doh_msg = resp.get("doh", "")

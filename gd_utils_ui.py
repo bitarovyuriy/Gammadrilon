@@ -71,7 +71,7 @@ class ProcessPicker(QDialog):
 
         root = QVBoxLayout(self)
         hint = QLabel(
-            i18n.t("Отметь процессы: Windows выгрузит страницы, к которым давно не обращались. Для чужих процессов нужны права администратора.")
+            i18n.t("Отметьте процессы: Windows выгрузит страницы, к которым давно не обращались. Для чужих процессов нужны права администратора.")
         )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)

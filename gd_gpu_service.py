@@ -137,34 +137,36 @@ def _set_keep_on_exit(on) -> None:
 
 def _load_kept_original() -> None:
     """Прочитать исходный лимит, оставленный прошлой сессией (если был)."""
-    global _original, _keep_on_exit
+    global _original, _applied, _keep_on_exit
     _set_keep_on_exit(_read_keep_setting())
     try:
         import json
 
         data = json.loads(_state_path().read_text(encoding="utf-8"))
-        pl = float(data["original_pl"])
+        original = data.get("original") or {"pl": float(data["original_pl"])}
+        pl = original.get("pl")
+        if pl is not None and (not isinstance(pl, (int, float)) or not math.isfinite(pl) or not 0 < pl <= 2000):
+            return
     except Exception:  # noqa: BLE001 — файла нет, битый JSON или не число
         return
-    _original = {"pl": pl, "clocks_locked": False}
+    _original = original
+    _applied = data.get("applied")
     # i18n: skip-start — строка лога компаньона (для разработчика)
-    _log(f"лимит с прошлой сессии: исходный {pl:.0f} Вт")
+    _log(f"состояние отката с прошлой сессии: {_original}")
     # i18n: skip-end
 
 
 def _keep_original() -> None:
     """Запомнить исходный лимит на диск: лимит остался на карте после выхода."""
-    if not _original or _original.get("pl") is None:
+    if not _original:
         return
     try:
-        import json
+        import gd_state
 
         path = _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"original_pl": _original["pl"]}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        gd_state.write_json_atomic(path, {"original_pl": _original.get("pl"),
+                                          "original": _original, "applied": _applied})
     except OSError:
         pass
 
@@ -229,18 +231,28 @@ def _apply(pl: float | None, lock_clocks: list | None,
         ok, out = _set_power(pl)
         if not ok:
             return False, i18n.t("лимит мощности: {v0}", v0=out)
+        if _original is None:
+            _original = before
+        if _applied is None:
+            _applied = {}
+        _applied["pl"] = pl
+        _keep_original()
         what.append(i18n.t("PL {v0} Вт", v0=int(pl)))
     if lock_clocks:
         lo, hi = int(lock_clocks[0]), int(lock_clocks[1])
         ok, out = _run_smi(["-lgc", f"{lo},{hi}"])
         if not ok:
             return False, i18n.t("частоты: {v0}", v0=out)
+        if _original is None:
+            _original = before
+        if _applied is None:
+            _applied = {}
+        _applied["lock_clocks"] = lock_clocks
         what.append(i18n.t("клоки {v0}–{v1} МГц", v0=lo, v1=hi))
 
     # исходное состояние запоминаем только когда изменение действительно прошло
-    if _original is None:
+    if what and _original is None:
         _original = before
-    _applied = {"pl": pl, "lock_clocks": lock_clocks}
     if what and _keep_on_exit:
         # исходное значение — на диск сразу: лимит может пережить и крах окна,
         # и аварийное завершение хелпера, а следующая сессия всё равно должна

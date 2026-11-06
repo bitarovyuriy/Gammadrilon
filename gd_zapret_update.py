@@ -334,7 +334,7 @@ def _protect_directory(path: Path) -> None:
 def apply_verified_update(root, zip_path, version, digest) -> dict:
     """Хешируем защищённую копию и применяем именно её, без повторного чтения источника."""
     try:
-        with tempfile.TemporaryDirectory(prefix="gd-update-") as temp:
+        with tempfile.TemporaryDirectory(prefix="gd-update-", dir=_privileged_temp_root()) as temp:
             private = Path(temp)
             _protect_directory(private)
             archive = private / "release.zip"
@@ -344,6 +344,12 @@ def apply_verified_update(root, zip_path, version, digest) -> dict:
             return apply_update(root, archive, version)
     except (OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _privileged_temp_root():
+    # Родитель также не должен давать обычному пользователю заменить каталог
+    # через DELETE_CHILD, обходя защищённую DACL самого каталога.
+    return Path(os.environ.get("SystemRoot", "C:/Windows")) / "Temp" if os.name == "nt" else None
 
 
 # --------------------------------------------------------------------------

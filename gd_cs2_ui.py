@@ -67,6 +67,7 @@ class Cs2Widget(QWidget):
         self._exe = ""
         self._busy = False
         self._reload_worker = None
+        self._reload_again = False
         self._client = gd_helper.HelperClient()
 
         root = QVBoxLayout(self)
@@ -224,6 +225,7 @@ class Cs2Widget(QWidget):
     def reload(self) -> None:
         """Полное чтение: рычаг, игра, диагностика, настройки игры."""
         if gd_bg.is_running(self._reload_worker):
+            self._reload_again = True
             return
 
         def work():
@@ -243,14 +245,21 @@ class Cs2Widget(QWidget):
         self._refresh_game()
         self._render_diagnostics(result.get("diagnostics") or [])
         self._render_video(result.get("video") or [], result.get("video_path"))
+        if self._reload_again:
+            self._reload_again = False
+            self.reload()
 
     def _render_state(self, snap: dict) -> None:
         items = snap.get("items") or {}
         on_count = sum(1 for value in items.values() if value)
         # состояние рычага — факт системы, а не то, что мы помним про себя:
         # значения могли включить руками или другим приложением
-        self._on = bool(items) and all(items.values())
-        self.lbl_state.setText(i18n.t("Включён") if self._on else i18n.t("Выключен"))
+        self._on = bool(snap.get("can_revert"))
+        self._settings()["cs2_on"] = self._on
+        label = (i18n.t("Включён") if items and all(items.values()) else
+                 i18n.t("Частично включён") if on_count else
+                 i18n.t("Есть изменения для отката") if self._on else i18n.t("Выключен"))
+        self.lbl_state.setText(label)
         self.btn_toggle.setText(i18n.t("Выключить") if self._on else i18n.t("Включить"))
         for box in self.checkboxes.values():
             box.setEnabled(not self._on)
@@ -260,7 +269,7 @@ class Cs2Widget(QWidget):
         else:
             self.lbl_exe.setText(i18n.t(
                 "cs2.exe не найдена: пункты, привязанные к игре, работать не будут. "
-                "Проверь, что Steam видит Counter-Strike 2."
+                "Проверьте, что Steam видит Counter-Strike 2."
             ))
             self.lbl_exe.setStyleSheet(f"color: {th.WARN};")
         counts = i18n.t("Пунктов включено в системе: {v0} из {v1}.", v0=on_count, v1=len(items))

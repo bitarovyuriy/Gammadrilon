@@ -55,13 +55,16 @@ def describe(widget) -> str:
 
 def check_page(page, key: str) -> list[str]:
     from PyQt5.QtCore import Qt
-    from PyQt5.QtWidgets import QAbstractButton, QComboBox
+    from PyQt5.QtWidgets import QAbstractButton, QComboBox, QSlider
 
     problems: list[str] = []
-    for widget in page.findChildren(QAbstractButton) + page.findChildren(QComboBox):
+    for widget in page.findChildren(QAbstractButton) + page.findChildren(QComboBox) + page.findChildren(QSlider):
         if not widget.isVisible() or not widget.isEnabled():
             continue
         name = describe(widget)
+        if isinstance(widget, QSlider) and not widget.accessibleName().strip():
+            problems.append(f"{key}: {type(widget).__name__} без accessibleName")
+            continue
         if not name:
             problems.append(f"{key}: {type(widget).__name__} без имени")
         elif len(name) <= 2 and name in {"▶", "×", "+", "-", "?"}:

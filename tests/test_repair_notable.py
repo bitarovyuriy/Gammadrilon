@@ -150,6 +150,42 @@ def test_gamma_applies_in_background_and_coalesces(monkeypatch):
     assert [call.args[2] for call in controller.apply.call_args_list] == [1.2, 1.7]
 
 
+def test_gamma_completion_is_reported_after_driver_result(monkeypatch):
+    jobs, results = [], []
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: jobs.append((fn, done)))
+    window = NS(gamma_controller=NS(apply=lambda *a: False), shadow_strength=lambda: 0,
+                _gamma_pending=None, _gamma_busy=False, set_status=Mock(), _gamma_failure_status=lambda: "failed")
+    window._submit_gamma = lambda: main.MainWindow._submit_gamma(window)
+    window._gamma_done = lambda result: main.MainWindow._gamma_done(window, result)
+    main.MainWindow.apply_values(window, 0.5, 1.0, 1.0, 6500, save=False, on_done=results.append)
+    assert not results
+    jobs[0][1](jobs[0][0]())
+    assert results == [False]
+
+
+def test_quiet_hour_waits_for_cpu_and_gamma(monkeypatch):
+    import gd_profiles
+    import gd_toast
+    import gd_journal
+
+    jobs, gamma = [], []
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: jobs.append((fn, done)))
+    monkeypatch.setattr(gd_profiles, "save_quiet", lambda value: True)
+    monkeypatch.setattr(gd_journal, "record", Mock())
+    toast = Mock()
+    monkeypatch.setattr(gd_toast, "show_toast", toast)
+    window = NS(_power_page=NS(client=NS(call=lambda *a, **kw: {"ok": True})),
+                apply_values=lambda *a, **kw: gamma.append(kw["on_done"]),
+                set_status=Mock(), _report_failure=Mock())
+    main.MainWindow._quiet_change(window, {}, {"brightness": 0.5, "contrast": 1, "gamma": 1,
+                                               "temperature": 6500}, True)
+    assert not toast.called
+    jobs[0][1](jobs[0][0]())
+    assert not toast.called
+    gamma[0](True)
+    assert toast.called
+
+
 def test_boost_click_only_submits(monkeypatch):
     import gd_utils_ui as ui
 
