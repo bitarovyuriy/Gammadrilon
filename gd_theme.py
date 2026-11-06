@@ -304,9 +304,19 @@ QLabel#Version {
    и вкладки становятся белыми на тёмном. */
 QTabWidget#SubTabs::pane {
     border: none;
-    border-top: 1px solid @RULE@;
     background: transparent;
-    top: -1px;
+}
+
+QTabWidget#SubTabs {
+    border: none;
+    background: transparent;
+}
+
+/* QTabBar в стиле Fusion рисует светлую базовую линию под вкладками —
+   на тёмной теме она выглядит белой полосой во всю ширину. */
+QTabWidget#SubTabs QTabBar {
+    background: transparent;
+    qproperty-drawBase: 0;
 }
 
 QTabWidget#SubTabs QTabBar::tab {
