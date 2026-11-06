@@ -48,6 +48,7 @@ _stop = threading.Event()
 _gpu_miss = 0                 # сколько раз подряд nvidia-smi не ответил
 _activity = {"visible": True, "gpu_focus": False}
 _dns_request = False          # кто-то попросил разово прочитать DNS (см. request_dns)
+_closing = False
 
 _EMPTY = {
     "cpu": {"mhz": None, "perf_pct": None, "load_pct": None,
@@ -64,6 +65,8 @@ _EMPTY = {
 def start() -> None:
     """Запустить фоновой сборщик метрик (идемпотентно)."""
     global _thread
+    if _closing:
+        return
     if _thread is not None and _thread.is_alive():
         return
     _stop.clear()
@@ -73,6 +76,8 @@ def start() -> None:
 
 def stop(timeout: float = 2.0) -> None:
     """Остановить сборщик (вызывается при выходе приложения)."""
+    global _closing
+    _closing = True
     _stop.set()
     _wake.set()
     t = _thread

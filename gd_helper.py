@@ -15,9 +15,12 @@
 from __future__ import annotations
 
 import os
+import json
+import subprocess
 import sys
 import threading
 import time
+from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client
 
 import gd_i18n as i18n
@@ -26,6 +29,21 @@ import gd_proc
 
 TCP_HOST = "127.0.0.1"
 TCP_PORT = 47318
+MAX_MESSAGE_BYTES = 1024 * 1024
+
+
+def send_message(conn, obj: dict) -> None:
+    payload = json.dumps(obj, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    if len(payload) > MAX_MESSAGE_BYTES:
+        raise ValueError("message too large")
+    conn.send_bytes(payload)
+
+
+def recv_message(conn) -> dict:
+    obj = json.loads(conn.recv_bytes(MAX_MESSAGE_BYTES).decode("utf-8"))
+    if not isinstance(obj, dict):
+        raise ValueError("expected JSON object")
+    return obj
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 #: портативный режим (маркер рядом с приложением) кладёт сессию и лог рядом с exe
@@ -80,6 +98,8 @@ class HelperClient:
             return None
         if not isinstance(data, dict):
             return None
+        if data.get("ui_pid") != os.getpid():
+            return None
         try:
             port = int(data["port"])
             token = str(data["token"])
@@ -94,7 +114,7 @@ class HelperClient:
 
             os.makedirs(os.path.dirname(self.session_file), exist_ok=True)
             with open(self.session_file, "w", encoding="utf-8") as fh:
-                json.dump({"port": port, "token": token}, fh)
+                json.dump({"port": port, "token": token, "ui_pid": os.getpid()}, fh)
         except OSError:
             pass
 
@@ -102,7 +122,7 @@ class HelperClient:
     def _connect(self, port: int, token: str) -> bool:
         try:
             conn = Client((TCP_HOST, int(port)), family="AF_INET", authkey=bytes.fromhex(token))
-        except (OSError, ValueError):
+        except (OSError, ValueError, AuthenticationError):
             return False
         self._conn = conn
         self.port = port
@@ -139,16 +159,19 @@ class HelperClient:
 
     def _launch(self, port: int, token: str) -> None:
         """Запустить хелпер с правами администратора (однократный UAC)."""
-        tail = f"'--port','{port}','--token','{token}','--ui-pid','{os.getpid()}','--log','{LOG_FILE}'"
+        tail = ["--port", str(port), "--token", token, "--ui-pid", str(os.getpid()), "--log", LOG_FILE]
         if getattr(sys, "frozen", False):
             # в собранном exe сервис — тот же исполняемый файл с флагом режима
-            args = f"-ArgumentList '{self.service_flag}',{tail}"
+            argv = [self.service_flag, *tail]
             exe = sys.executable
         else:
             svc = os.path.join(HERE, self.service)
-            args = f"-ArgumentList '-u','{svc}',{tail}"
+            argv = ["-u", svc, *tail]
             exe = gd_proc.python_exe()
-        cmd = f"Start-Process -FilePath '{exe}' {args} -Verb RunAs -WindowStyle Hidden"
+        # Start-Process склеивает массив: передаём одну Windows-командную строку.
+        args = subprocess.list2cmdline(argv).replace("'", "''")
+        exe = exe.replace("'", "''")
+        cmd = f"Start-Process -FilePath '{exe}' -ArgumentList '{args}' -Verb RunAs -WindowStyle Hidden"
         gd_proc.popen(["powershell", "-NoProfile", "-Command", cmd])
 
     # -- протокол ----------------------------------------------------------
@@ -209,25 +232,32 @@ class HelperClient:
         """
         conn = self._conn
         try:
-            conn.send(obj)
+            send_message(conn, obj)
             if not conn.poll(timeout):
+                conn.close()
                 self._conn = None
                 return {"ok": False, "error": i18n.t("таймаут ответа хелпера")}
-            return conn.recv()
+            return recv_message(conn)
         except (OSError, EOFError):
             self._conn = None
             return {"ok": False, "error": i18n.t("связь с хелпером потеряна")}
         except Exception as exc:  # noqa: BLE001
+            try:
+                conn.close()
+            except Exception:
+                pass
             self._conn = None
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    def shutdown(self, restore: bool = True, force: bool = False) -> None:
+    def shutdown(self, restore: bool = True, force: bool = False) -> dict:
+        result = {"ok": True}
         if self._conn is not None:
             try:
-                self.call({"cmd": "shutdown", "restore": restore, "force": force})
-            except Exception:  # noqa: BLE001
-                pass
+                result = self.call({"cmd": "shutdown", "restore": restore, "force": force})
+            except Exception as exc:  # noqa: BLE001
+                result = {"ok": False, "error": str(exc)}
         self._conn = None
+        return result
 
     def shutdown_async(self, restore: bool = True, force: bool = False) -> None:
         """Попросить хелпер завершиться с откатом, не дожидаясь ответа.
@@ -242,7 +272,7 @@ class HelperClient:
         if self._conn is None:
             return
         try:
-            self._conn.send({"cmd": "shutdown", "restore": restore, "force": force})
+            send_message(self._conn, {"cmd": "shutdown", "restore": restore, "force": force})
         except Exception:  # noqa: BLE001
             pass
         finally:

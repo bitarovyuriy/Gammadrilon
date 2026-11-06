@@ -20,12 +20,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import re
 import shutil
 import time
+import tempfile
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 import zipfile
 from pathlib import Path
 
@@ -135,6 +139,7 @@ def _release_from_api(data: dict) -> dict:
             "size": int(asset.get("size") or 0),
             "url": str(asset.get("browser_download_url") or ""),
             "downloads": int(asset.get("download_count") or 0),
+            "digest": str(asset.get("digest") or ""),
         })
     return {
         "tag": str(data.get("tag_name") or "").strip(),
@@ -236,7 +241,10 @@ def download(url: str, dest: str | Path, on_progress=None,
     part = dest.with_name(dest.name + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "Gammadrilon"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp, part.open("wb") as fh:
+        if not trusted_release_url(url):
+            raise ValueError("untrusted release URL")
+        opener = urllib.request.build_opener(_ReleaseRedirect())
+        with opener.open(req, timeout=timeout) as resp, part.open("wb") as fh:
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
             while True:
@@ -262,6 +270,80 @@ def download(url: str, dest: str | Path, on_progress=None,
     if dest.stat().st_size <= 0:
         return False, i18n.t("скачался пустой файл")
     return True, str(dest)
+
+
+def trusted_release_url(url: str, *, redirect: bool = False) -> bool:
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in (None, 443):
+        return False
+    if parsed.hostname == "github.com":
+        return parsed.path.startswith(f"/{REPO}/releases/download/")
+    return redirect and parsed.hostname in {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
+
+
+class _ReleaseRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not trusted_release_url(newurl, redirect=True):
+            raise ValueError("untrusted release redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def release_sha256(release: dict, url: str) -> str:
+    for asset in release.get("assets") or []:
+        digest = asset.get("digest", "")
+        if asset.get("url") == url and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+            return digest[7:].lower()
+    return ""
+
+
+def verify_sha256(path: str | Path, digest: str) -> bool:
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+        return False
+    with open(path, "rb") as fh:
+        hasher = hashlib.sha256()
+        for chunk in iter(lambda: fh.read(256 * 1024), b""):
+            hasher.update(chunk)
+        actual = hasher.hexdigest()
+    return hmac.compare_digest(actual, digest.lower())
+
+
+def _protect_directory(path: Path) -> None:
+    """Копия для elevated-применения: запись только SYSTEM/Administrators."""
+    if os.name != "nt":
+        path.chmod(0o700)
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    descriptor = ctypes.c_void_p()
+    convert = adv.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    set_security = adv.SetFileSecurityW
+    set_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    if not convert("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not set_security(str(path), 0x80000004, descriptor):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        ctypes.windll.kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        ctypes.windll.kernel32.LocalFree(descriptor)
+
+
+def apply_verified_update(root, zip_path, version, digest) -> dict:
+    """Хешируем защищённую копию и применяем именно её, без повторного чтения источника."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="gd-update-") as temp:
+            private = Path(temp)
+            _protect_directory(private)
+            archive = private / "release.zip"
+            shutil.copyfile(zip_path, archive)
+            if not verify_sha256(archive, digest):
+                return {"ok": False, "error": "SHA-256 mismatch"}
+            return apply_update(root, archive, version)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 # --------------------------------------------------------------------------
@@ -299,6 +381,9 @@ def validate_zip(zip_path: str | Path) -> tuple[bool, str]:
 def extract_archive(zip_path: str | Path, staging: str | Path) -> tuple[bool, str | Path]:
     """Распаковать архив в staging и вернуть корень с ``bin/winws.exe``."""
     staging = Path(staging)
+    ok, error = validate_zip(zip_path)
+    if not ok:
+        return False, error
     if staging.exists():
         shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True, exist_ok=True)
@@ -448,19 +533,33 @@ def rollback_update(manifest: dict | None = None) -> dict:
         return {"ok": False, "error": i18n.t("нет резервной копии обновления")}
     root = Path(str(manifest.get("root") or ""))
     backup = Path(str(manifest.get("backup") or ""))
+    if not root.is_absolute() or not backup.is_absolute() or root == Path(root.anchor):
+        return {"ok": False, "error": "invalid rollback path"}
     if not backup.is_file():
         return {"ok": False, "error": i18n.t("резервная копия не найдена")}
     if not root.parent.is_dir():
         return {"ok": False, "error": i18n.t("папка установки недоступна")}
-    try:
-        if root.exists():
-            shutil.rmtree(root)
-        with zipfile.ZipFile(backup) as zf:
-            zf.extractall(root.parent)
-    except (OSError, zipfile.BadZipFile) as exc:
-        return {"ok": False, "error": i18n.t("не удалось откатить: {v0}", v0=exc)}
-    if not (root / "bin" / "winws.exe").is_file():
-        return {"ok": False, "error": i18n.t("откат без рабочего winws.exe")}
+    with tempfile.TemporaryDirectory(prefix=f"{root.name}.rollback-", dir=root.parent) as temp:
+        staging = Path(temp) / "unpack"
+        displaced = Path(temp) / "previous"
+        ok, extracted = extract_archive(backup, staging)
+        if not ok:
+            return {"ok": False, "error": str(extracted)}
+        moved = False
+        try:
+            if root.exists():
+                os.replace(root, displaced)
+                moved = True
+            os.replace(extracted, root)
+        except OSError as exc:
+            if moved:
+                try:
+                    os.replace(displaced, root)
+                except OSError:
+                    # Не удалять единственную рабочую копию при повторном отказе.
+                    recovery = root.with_name(root.name + ".recovery")
+                    shutil.copytree(displaced, recovery, dirs_exist_ok=True)
+            return {"ok": False, "error": i18n.t("не удалось откатить: {v0}", v0=exc)}
     try:
         MANIFEST_FILE.unlink(missing_ok=True)
     except OSError:

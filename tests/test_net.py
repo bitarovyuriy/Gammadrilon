@@ -48,8 +48,11 @@ def test_open_url_goes_direct_and_remembers_route():
         srv.shutdown()
 
 
-def test_dead_route_falls_back_to_direct():
+def test_dead_route_falls_back_to_direct(monkeypatch):
     """Если запомненный маршрут умер, запрос не должен падать."""
+    # Windows может обходить прокси для loopback. Здесь проверяем именно отказ
+    # прокси: иначе прямой ответ ошибочно считается ответом мёртвого маршрута.
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
     srv = _server()
     try:
         gd_net._working = "http://127.0.0.1:9"  # порт закрыт: соединение отвергнуто

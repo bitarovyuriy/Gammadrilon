@@ -565,6 +565,8 @@ DEFAULT_CONFIG = {
     "presets": [
         {
             "name": "Normal",
+            "shadow": 0,
+            "ddc": -1,
             "brightness": 1.0,
             "contrast": 1.0,
             "gamma": 1.0,
@@ -573,6 +575,8 @@ DEFAULT_CONFIG = {
         },
         {
             "name": "Warm Night",
+            "shadow": 0,
+            "ddc": -1,
             "brightness": 0.75,
             "contrast": 0.85,
             "gamma": 1.08,
@@ -581,6 +585,8 @@ DEFAULT_CONFIG = {
         },
         {
             "name": "Bright Game",
+            "shadow": 0,
+            "ddc": -1,
             "brightness": 1.35,
             "contrast": 1.05,
             "gamma": 1.0,
@@ -733,7 +739,6 @@ def load_config() -> dict:
         else:
             data = json.loads(json.dumps(DEFAULT_CONFIG))
         save_config(data)
-        return data
 
     # файл нормализуется (недостающие ключи, клампы) — запись только если что-то
     # действительно изменилось: иначе каждый старт переписывал бы presets.json
@@ -4182,7 +4187,11 @@ class MainWindow(QMainWindow):
             pass
 
         try:
-            self.gamma_controller.reset()
+            self.gamma_animation_timer.stop()
+            self.animation_data = None
+            self._auto_prev_index = None
+            self._cancel_cat_vision()
+            self.set_ui_values(1.0, 1.0, 1.0, 6500, shadow=0, apply_now=True, save=True)
             done.append(i18n.t("гамма"))
         except Exception:  # noqa: BLE001
             pass
@@ -5410,21 +5419,35 @@ class MainWindow(QMainWindow):
 
     def _ddc_apply(self):
         monitor = self._ddc_monitor
-        if monitor is None or self._ddc_pending == self._ddc_last_ok:
+        if (getattr(self, "_ddc_busy", False) or monitor is None
+                or self._ddc_pending == self._ddc_last_ok):
             return
         value = self._ddc_pending
-        gd_bg.submit(lambda: monitor.set_brightness(value), self._ddc_applied, parent=self)
+        self._ddc_busy = True
+        gd_bg.submit(lambda: (monitor, value, monitor.set_brightness(value)), self._ddc_applied, parent=self)
 
     def _ddc_applied(self, result):
-        if isinstance(result, Exception) or result is False:
+        self._ddc_busy = False
+        if not isinstance(result, tuple) or len(result) != 3:
+            self.set_status(i18n.t("монитор не принял яркость"), ok=False)
+            return
+        monitor, value, ok = result
+        if monitor is not self._ddc_monitor:
+            self._ddc_apply()
+            return
+        if not ok:
             # монитор не принял — возвращаем ползунок к тому, что реально стоит
             self.ddc_slider.blockSignals(True)
             self.ddc_slider.setValue(self._ddc_last_ok)
             self.ddc_slider.blockSignals(False)
             self.set_value_text(self.ddc_value, self._ddc_last_ok, "%")
             self.set_status(i18n.t("монитор не принял яркость"), ok=False)
+            # Следующее, отличающееся значение всё ещё нужно записать.
+            if self._ddc_pending != value:
+                self._ddc_apply()
             return
-        self._ddc_last_ok = self._ddc_pending
+        self._ddc_last_ok = value
+        self._ddc_apply()
 
 
     def set_status(self, text: str, ok: bool = True):
@@ -5947,70 +5970,77 @@ class MainWindow(QMainWindow):
         self.hide()
 
     def quit_app(self):
+        if self.is_quitting:
+            return
         self.is_quitting = True
+        self.setEnabled(False)
         self._remember_window_size()
-
-        # отложенная запись конфига не должна потеряться при выходе
         self._save_config(now=True)
-
-        try:
-            self.hotkey_manager.clear()
-        except Exception:
-            pass
-
-        self.gamma_watch_timer.stop()
+        self.hotkey_manager.clear()
         self._stop_foreground_watch()
-        self._ddc_timer.stop()
+        # Остановить источники задач, сохранив окно и QObject до их конца.
+        for timer in self.findChildren(QTimer):
+            timer.stop()
+        gd_bg.begin_shutdown()
+        import gd_metrics
+
+        gd_metrics.stop(timeout=0)
+        self._poll_exit()
+
+    def _poll_exit(self):
+        # GUI продолжает обслуживать queued-сигналы.
+        if not gd_bg.wait_all(0):
+            QTimer.singleShot(50, self._poll_exit)
+            return
+        power = getattr(self, "_power_page", None)
+        if power is not None:
+            power._shutting_down = True
+        gpu = getattr(self, "_gpu_page", None)
+        if gpu is not None and not gpu._keep_on_exit:
+            gpu._remember_plan(None)
+        self._exit_worker = gd_bg.submit(
+            self._cleanup_for_exit, self._exit_finished, parent=self, during_shutdown=True)
+
+    def _cleanup_for_exit(self):
+        import gd_journal
+        import gd_metrics
+
+        errors = []
+        gd_metrics.stop(timeout=None)
+        utils = getattr(self, "_utils_page", None)
+        boost = getattr(utils, "_boost", None)
+        if boost is not None:
+            ok, message = boost.stop()
+            if not ok:
+                errors.append(message)
+        for attr, restore in (("_power_page", True), ("_gpu_page", None), ("_zapret_page", True)):
+            page = getattr(self, attr, None)
+            client = getattr(page, "client", None)
+            if client is not None:
+                try:
+                    if restore is None:
+                        restore = not page._keep_on_exit
+                    response = client.shutdown(restore=restore)
+                    if isinstance(response, dict) and not response.get("ok"):
+                        errors.append(str(response.get("error") or "restore failed"))
+                except Exception as exc:
+                    errors.append(str(exc))
         try:
             if self._ddc is not None:
                 self._ddc.close()
-        except Exception:
-            pass
-
-        try:
             self.gamma_controller.reset()
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(str(exc))
+        if errors:
+            gd_journal.record("exit_restore", i18n.t("восстановление при выходе"),
+                              why="; ".join(errors), reversible=False)
+        return {"ok": not errors, "errors": errors}
 
-        # откат профиля питания (если вкладка «Питание CPU» использовалась)
-        try:
-            if getattr(self, "_power_page", None) is not None:
-                # через вкладку: она снимает сторожа смерти компаньона — после
-                # выхода «компаньона нет» не новость, а ожидаемый результат
-                self._power_page.shutdown_for_exit()
-        except Exception:
-            pass
-
-        # остановка GPU-хелпера: лимит остаётся по настройке (по умолчанию),
-        # неподтверждённое изменение откатывается всегда
-        try:
-            if getattr(self, "_gpu_page", None) is not None:
-                self._gpu_page.shutdown_for_exit()
-        except Exception:
-            pass
-
-        # обход DPI: если хелпер поднимала только вкладка zapret — закрыть через её клиент
-        try:
-            zapret_page = getattr(self, "_zapret_page", None)
-            if zapret_page is not None and getattr(zapret_page, "client", None) is not None:
-                zapret_page.client.shutdown_async(restore=True)
-        except Exception:
-            pass
-
-        # дождаться фоновых задач: иначе Qt удалит ещё работающий QThread
-        try:
-            import gd_bg
-
-            gd_bg.wait_all(2000)
-        except Exception:
-            pass
-        try:
-            import gd_metrics
-
-            gd_metrics.stop()
-        except Exception:
-            pass
-
+    def _exit_finished(self, result):
+        # done приходит перед finished: дождаться самого cleanup-потока.
+        if not gd_bg.wait_all(0):
+            QTimer.singleShot(20, lambda: self._exit_finished(result))
+            return
         QApplication.quit()
 
 # Единый стиль приложения живёт в gd_theme (токены + QSS): раньше здесь и в

@@ -548,12 +548,6 @@ class ZapretWidget(QWidget):
         strategy = (snap.get("service_strategy") or gd_zapret.service_registry_strategy()
                     or ours.get("strategy") or self._remembered_strategy())
 
-        client = self._ensure()
-        if svc:
-            client.call({"cmd": "zapret_service", "op": "stop"}, timeout=90)
-        elif our_pid and not ours_external:
-            client.call({"cmd": "zapret_stop", "pid": our_pid}, timeout=40)
-
         self._update_progress = i18n.t("проверка релиза")
         info = upd.check_updates(path, force=True)
         if not info.get("ok"):
@@ -562,6 +556,11 @@ class ZapretWidget(QWidget):
         url = upd.release_zip_url(info.get("release") or {})
         if not url:
             return {"ok": False, "error": i18n.t("в релизе нет zip-архива")}
+        digest = upd.release_sha256(info.get("release") or {}, url)
+        if not digest or not upd.trusted_release_url(url):
+            return {"ok": False, "error": i18n.t("нет проверенной SHA-256 релиза")}
+        if not __import__("re").fullmatch(r"[0-9A-Za-z._-]+", tag):
+            return {"ok": False, "error": "invalid release tag"}
         zip_path = gd_paths.log_dir() / f"zapret-{tag}.zip"
         self._update_progress = i18n.t("загрузка {v0}", v0=tag)
 
@@ -573,10 +572,24 @@ class ZapretWidget(QWidget):
         ok, msg = upd.download(url, zip_path, on_progress=progress)
         if not ok:
             return {"ok": False, "error": msg}
+        if not upd.verify_sha256(zip_path, digest):
+            return {"ok": False, "error": "SHA-256 mismatch"}
+        ok, msg = upd.validate_zip(zip_path)
+        if not ok:
+            return {"ok": False, "error": msg}
+        client = self._ensure()
+        if svc:
+            stopped = client.call({"cmd": "zapret_service", "op": "stop"}, timeout=90)
+        elif our_pid and not ours_external:
+            stopped = client.call({"cmd": "zapret_stop", "pid": our_pid}, timeout=40)
+        else:
+            stopped = {"ok": True}
+        if not stopped.get("ok"):
+            return {"ok": False, "error": stopped.get("error")}
         self._update_progress = i18n.t("распаковка и замена")
 
         res = client.call({"cmd": "zapret_update", "op": "apply", "path": path,
-                           "zip": str(zip_path), "version": tag}, timeout=600)
+                           "zip": str(zip_path), "version": tag, "sha256": digest}, timeout=600)
         if not res.get("ok"):
             # обход останавливали мы — возвращаем его в строй старыми средствами
             if svc:

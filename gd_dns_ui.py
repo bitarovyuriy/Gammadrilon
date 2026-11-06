@@ -240,6 +240,7 @@ class DnsWidget(QWidget):
         self.btn_measure.setEnabled(False)
         self._set_status(i18n.t("Замеряю — реальные DNS-запросы по каждому серверу…"))
         self._worker = MeasureWorker(self)
+        gd_bg.register(self._worker)
         self._worker.done.connect(self._measure_done)
         self._worker.start()
 

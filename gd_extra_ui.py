@@ -181,6 +181,10 @@ class ExtraPanel(QWidget):
         r4.addWidget(self.btn_open_data)
         r4.addStretch(1)
         c4.addLayout(r4)
+        self.lbl_prof = QLabel("")
+        self.lbl_prof.setObjectName("Hint")
+        self.lbl_prof.setWordWrap(True)
+        c4.addWidget(self.lbl_prof)
         # где лежат данные и как перейти в портативный режим — рядом с экспортом,
         # потому что переносят обычно «всё сразу»: настройки и рабочие файлы
         self.lbl_paths = QLabel("")
@@ -322,6 +326,7 @@ class ExtraPanel(QWidget):
         w.done.connect(self._probe_done)
         w.finished.connect(lambda: self.btn_probe.setEnabled(True))
         self._workers.append(w)
+        gd_bg.register(w)
         w.start()
 
     def _probe_done(self, data: dict):
@@ -352,6 +357,7 @@ class ExtraPanel(QWidget):
         w.done.connect(self._bb_done)
         w.finished.connect(lambda: self.btn_bb.setEnabled(True))
         self._workers.append(w)
+        gd_bg.register(w)
         w.start()
 
     def _bb_done(self, data: dict):

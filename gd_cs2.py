@@ -322,6 +322,8 @@ def apply(items, exe: str = "", *, registry=None, power=None, path: Path | str |
         report["errors"].append(i18n.t("ни один пункт не выбран"))
         return report
     backup = _load_backup(path)
+    planned = []
+    # Полный снимок сохраняется до первого изменения, включая powercfg.
     for spec in TWEAKS:
         if spec["id"] not in chosen:
             continue
@@ -330,29 +332,33 @@ def apply(items, exe: str = "", *, registry=None, power=None, path: Path | str |
                 i18n.t("cs2.exe не найдена — «{v0}» пропущен", v0=spec["title"]))
             continue
         try:
+            entries = _entries(spec["id"], exe)
             if spec["id"] == "power_plan":
-                if "power|active" not in backup:
-                    backup["power|active"] = {"exist": True, "value": power.active(), "kind": "sz"}
-                if power.set(HIGH_PERF_GUID):
-                    report["applied"].append(spec["id"])
-                else:
-                    report["errors"].append(
-                        i18n.t("«{v0}»: powercfg отказал", v0=spec["title"]))
-                continue
-            for hive, key, name, value, kind in _entries(spec["id"], exe):
+                backup.setdefault("power|active", {"exist": True, "value": power.active(), "kind": "sz"})
+            for hive, key, name, value, kind in entries:
                 mark = f"{hive}|{key}|{name}"
                 if mark not in backup:
                     old = registry.read(hive, key, name)
-                    backup[mark] = {
-                        "exist": old is not None,
-                        "value": old,
-                        "kind": "dword" if isinstance(old, int) else "sz",
-                    }
-                registry.write(hive, key, name, value, kind)
+                    backup[mark] = {"exist": old is not None, "value": old,
+                                    "kind": "dword" if isinstance(old, int) else "sz"}
+            planned.append((spec, entries))
+        except OSError as exc:
+            report["errors"].append(f"{spec['title']}: {exc}")
+    if not _save_backup(path, backup):
+        report["errors"].append(i18n.t("не удалось сохранить резервную копию"))
+        return report
+    for spec, entries in planned:
+        try:
+            if spec["id"] == "power_plan":
+                if not power.set(HIGH_PERF_GUID):
+                    report["errors"].append(i18n.t("«{v0}»: powercfg отказал", v0=spec["title"]))
+                    continue
+            else:
+                for hive, key, name, value, kind in entries:
+                    registry.write(hive, key, name, value, kind)
             report["applied"].append(spec["id"])
         except OSError as exc:
             report["errors"].append(f"{spec['title']}: {exc}")
-    _save_backup(path, backup)
     report["ok"] = bool(report["applied"]) and not report["errors"]
     return report
 

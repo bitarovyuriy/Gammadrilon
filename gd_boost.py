@@ -423,32 +423,41 @@ class GameBoost:
             return True, i18n.t("Игровой буст и так выключен.")
 
         restored = 0
+        pending = {}
         for pid_text, entry in self._snapshot.items():
             pid = int(pid_text)
             priority = entry.get("memory_priority")
             eco = entry.get("eco_qos")
             cpu = entry.get("cpu_priority")
-            if priority is not None:
-                set_memory_priority(pid, priority)
-            if eco is not None:
-                set_eco_qos(pid, bool(eco))
-            if cpu:
-                set_cpu_priority(pid, int(cpu))
-            restored += 1
+            failed = False
+            if priority is not None and not set_memory_priority(pid, priority):
+                failed = True
+            if eco is not None and not set_eco_qos(pid, bool(eco)):
+                failed = True
+            if cpu and not set_cpu_priority(pid, int(cpu)):
+                failed = True
+            if failed:
+                pending[pid_text] = entry
+            if pid_text not in pending:
+                restored += 1
 
         if self._timer_held:
             try:
                 import gd_extra
 
-                gd_extra.set_timer_resolution(False)
+                result = gd_extra.set_timer_resolution(False)
+                timer_ok = result[0] if isinstance(result, tuple) else bool(result)
             except Exception:  # noqa: BLE001
-                pass
-            self._timer_held = False
+                timer_ok = False
+            self._timer_held = not timer_ok
 
-        self._snapshot = {}
-        self._active = False
+        self._snapshot = pending
+        self._active = bool(pending or self._timer_held)
         self._game_pid = None
         self._note = ""
+        if self._active:
+            self._save()
+            return False, i18n.t("Не удалось полностью восстановить игровой буст.")
         self._clear_file()
         return True, i18n.t("Буст выключен, восстановлено процессов: {v0}.", v0=restored)
 

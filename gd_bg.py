@@ -17,9 +17,10 @@ import time
 
 #: активные фоновые воркеры: нужны, чтобы дождаться их при выходе приложения
 _WORKERS: set = set()
+_CLOSING = False
 
 
-def submit(fn, on_done, parent=None):
+def submit(fn, on_done, parent=None, *, during_shutdown=False):
     """Выполнить ``fn()`` в фоне, результат отдать в ``on_done`` (GUI-поток).
 
     Возвращённый QThread нужно сохранить до завершения — иначе он соберётся GC.
@@ -28,10 +29,23 @@ def submit(fn, on_done, parent=None):
     """
     import gd_helper
 
+    if _CLOSING and not during_shutdown:
+        return None
     worker = gd_helper.run_async(fn, on_done, parent)
+    register(worker)
+    return worker
+
+
+def register(worker):
+    """Также учитывать специализированные QThread измерений."""
     _WORKERS.add(worker)
     worker.finished.connect(lambda w=worker: _WORKERS.discard(w))
     return worker
+
+
+def begin_shutdown() -> None:
+    global _CLOSING
+    _CLOSING = True
 
 
 def is_running(worker) -> bool:
@@ -51,7 +65,7 @@ def is_running(worker) -> bool:
         return False
 
 
-def wait_all(timeout_ms: int = 2000) -> None:
+def wait_all(timeout_ms: int = 2000) -> bool:
     """Дождаться завершения фоновых задач (вызывается при выходе приложения).
 
     ``timeout_ms`` — общий дедлайн на все воркеры, а не на каждый. Без ожидания
@@ -60,14 +74,19 @@ def wait_all(timeout_ms: int = 2000) -> None:
     """
     deadline = time.monotonic() + timeout_ms / 1000.0
     for worker in list(_WORKERS):
+        if not is_running(worker):
+            _WORKERS.discard(worker)
+            continue
         left_ms = int((deadline - time.monotonic()) * 1000)
         if left_ms <= 0:
-            break
+            continue
         try:
             worker.wait(left_ms)
         except RuntimeError:      # C++-объект уже удалён
             pass
-    _WORKERS.clear()
+        if not is_running(worker):
+            _WORKERS.discard(worker)
+    return not _WORKERS
 
 
 class Periodic:

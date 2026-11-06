@@ -27,10 +27,13 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
+import math
+from pathlib import Path
 import sys
 import threading
 import time
 
+from multiprocessing import AuthenticationError
 from multiprocessing.connection import Listener
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +42,7 @@ import gd_gpu  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 import gd_paths  # noqa: E402
 import gd_proc  # noqa: E402
+from gd_helper import recv_message, send_message  # noqa: E402
 
 i18n.init_for_process()      # компаньон — отдельный процесс: язык берём из presets.json
 
@@ -249,18 +253,24 @@ def _restore() -> tuple[bool, str]:
     if _original is None:
         return True, i18n.t("нечего откатывать")
     errors = []
-    ok, out = _run_smi(["-rgc"])          # снять блокировку частот
-    if not ok and "permission" not in out.lower():
-        errors.append(i18n.t("сброс частот: {v0}", v0=out))
+    if (_applied or {}).get("lock_clocks"):
+        ok, out = _run_smi(["-rgc"])
+        if not ok:
+            errors.append(i18n.t("сброс частот: {v0}", v0=out))
+        else:
+            _applied["lock_clocks"] = None
     orig_pl = _original.get("pl")
     if orig_pl is not None:
         ok, out = _set_power(float(orig_pl))
         if not ok:
             errors.append(i18n.t("лимит мощности: {v0}", v0=out))
+        else:
+            _original["pl"] = None
+    if errors:
+        _keep_original()
+        return False, "; ".join(errors)
     _original = None
     _applied = None
-    if errors:
-        return False, "; ".join(errors)
     _clear_kept_original()          # лимит вернулся — «исходный» больше не нужен
     return True, i18n.t("исходные значения возвращены")
 
@@ -335,6 +345,47 @@ def _zapret_adopt(pid: int):
 # -- обработка команды ------------------------------------------------------
 
 
+def _validate_command(obj: dict) -> None:
+    commands = {"ping", "status", "apply", "keep", "restore", "shutdown", "purge_standby",
+                "empty_working_sets", "sensors_start", "sensors_stop", "dns_apply", "doh", "dns_flush",
+                "zapret_recon", "zapret_start", "zapret_stop", "zapret_adopt", "zapret_probe",
+                "zapret_service", "zapret_update"}
+    if not isinstance(obj, dict) or obj.get("cmd") not in commands:
+        raise ValueError("unknown command")
+    if obj["cmd"] in {"zapret_start", "zapret_recon", "zapret_probe"} and not obj.get("path"):
+        raise ValueError("missing installation path")
+    for key in ("path", "zip", "log"):
+        if key in obj and (not isinstance(obj[key], str) or not Path(obj[key]).is_absolute()
+                           or "\x00" in obj[key]):
+            raise ValueError(f"invalid {key}")
+    for name in [obj.get("strategy", ""), *(obj.get("files") or [])]:
+        if not isinstance(name, str) or "/" in name or "\\" in name or ":" in name or name == "..":
+            raise ValueError("invalid strategy")
+    for key in ("pid", "parent", "limit"):
+        if key in obj and (type(obj[key]) is not int or not 0 < obj[key] <= 2**32 - 1):
+            raise ValueError(f"invalid {key}")
+    for key in ("pl", "seconds"):
+        value = obj.get(key)
+        if value is not None and (type(value) not in (int, float) or not math.isfinite(value)
+                                  or not 0 < value <= (600 if key == "seconds" else 2000)):
+            raise ValueError(f"invalid {key}")
+    clocks = obj.get("lock_clocks")
+    if clocks is not None and (not isinstance(clocks, list) or len(clocks) != 2
+                               or any(type(v) is not int or not 0 < v <= 10000 for v in clocks)
+                               or clocks[0] > clocks[1]):
+        raise ValueError("invalid clocks")
+    for key in ("argv", "servers", "pids", "files"):
+        if key in obj and (not isinstance(obj[key], list) or len(obj[key]) > 4096):
+            raise ValueError(f"invalid {key}")
+    if "argv" in obj and any(not isinstance(a, str) or "\x00" in a for a in obj["argv"]):
+        raise ValueError("invalid argv")
+    if obj["cmd"] == "zapret_service" and obj.get("op", "status") not in {
+            "status", "install", "remove", "start", "stop", "restart"}:
+        raise ValueError("invalid service operation")
+    if obj["cmd"] == "zapret_update" and obj.get("op", "apply") not in {"apply", "rollback", "ipset", "hosts"}:
+        raise ValueError("invalid update operation")
+
+
 def handle(obj: dict) -> dict:
     """Обработать команду, гарантированно возвращая dict.
 
@@ -343,9 +394,10 @@ def handle(obj: dict) -> dict:
     ошибка превращается в честный ответ {"ok": False, ...}.
     """
     try:
+        _validate_command(obj)
         return _handle(obj)
     except Exception as exc:  # noqa: BLE001
-        _log(f"ошибка команды {obj.get('cmd')!r}: {type(exc).__name__}: {exc}")  # i18n: skip (лог)
+        _log(f"ошибка команды: {type(exc).__name__}: {exc}")  # i18n: skip (лог)
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -370,6 +422,7 @@ def _handle(obj: dict) -> dict:
             ok, msg = _restore()
         return {"ok": ok, "data": _status(), "error": None if ok else msg}
     if cmd == "shutdown":
+        ok, message = True, "bye"
         with _OP_LOCK:
             _zapret_shutdown()               # обход DPI — к состоянию «до включения»
             # решение об откате принимает хелпер: клиентов несколько (вкладка GPU,
@@ -378,10 +431,10 @@ def _handle(obj: dict) -> dict:
             # «неподтверждённых» изменений нет с 12.10.2026 (таймер подтверждения
             # убран), каждое применение сразу становится состоянием карты.
             if obj.get("force") or (obj.get("restore", True) and not _keep_on_exit):
-                _restore()
+                ok, message = _restore()
             else:
                 _keep_original()             # лимит остаётся: исходный — на диск
-        return {"ok": True, "data": "bye"}
+        return {"ok": ok, "data": "bye", "error": None if ok else message}
     # -- утилиты (ТЗ 6.1/6.2): требуют прав администратора, поэтому живут в хелпере --
     if cmd == "purge_standby":
         with _OP_LOCK:
@@ -515,8 +568,8 @@ def _handle(obj: dict) -> dict:
             import gd_zapret_update as upd
 
             if op == "apply":
-                res = upd.apply_update(obj.get("path") or "", obj.get("zip") or "",
-                                       obj.get("version") or "")
+                res = upd.apply_verified_update(obj.get("path") or "", obj.get("zip") or "",
+                                                obj.get("version") or "", obj.get("sha256") or "")
             elif op == "rollback":
                 res = upd.rollback_update()
             elif op == "ipset":
@@ -534,26 +587,41 @@ def _handle(obj: dict) -> dict:
 # -- сервер -----------------------------------------------------------------
 
 
+def _client_is_owner(peer, port: int, ui_pid: int, created: float) -> bool:
+    """PID берётся из таблицы TCP ОС, а не из доступного клиенту JSON."""
+    import psutil
+
+    try:
+        if psutil.Process(ui_pid).create_time() != created:
+            return False
+        return any(c.pid == ui_pid and c.laddr == peer and c.raddr == ("127.0.0.1", port)
+                   for c in psutil.net_connections(kind="tcp"))
+    except (psutil.Error, OSError):
+        return False
+
+
 def serve_client(conn) -> None:
     try:
         while True:
             if not conn.poll(1.0):
                 continue
             try:
-                obj = conn.recv()
+                obj = recv_message(conn)
             except EOFError:
                 break
-            if not isinstance(obj, dict):
-                conn.send({"ok": False, "error": i18n.t("ожидался объект")})
+            except (ValueError, UnicodeError):
+                send_message(conn, {"ok": False, "error": i18n.t("ожидался объект")})
                 continue
             try:
-                conn.send(handle(obj))
+                send_message(conn, handle(obj))
             except (OSError, EOFError):
                 break
             if obj.get("cmd") == "shutdown":
                 os._exit(0)              # откат уже сделан внутри handle()
     except (OSError, EOFError):
         pass
+    finally:
+        conn.close()
 
 
 def watchdog(ui_pid: int) -> None:
@@ -587,6 +655,10 @@ def main() -> int:
     ap.add_argument("--ui-pid", type=int, default=0)
     ap.add_argument("--log", default=None)
     args = ap.parse_args()
+    if args.host != "127.0.0.1" or not args.ui_pid or not args.token:
+        ap.error("loopback, token and UI PID are required")
+    import psutil
+    ui_created = psutil.Process(args.ui_pid).create_time()
     _LOG_FILE = args.log
 
     # лимит, оставленный прошлой сессией: помним исходное значение для отката
@@ -603,10 +675,13 @@ def main() -> int:
     while True:                          # выход — через os._exit (shutdown/watchdog)
         try:
             conn = listener.accept()
-        except OSError:
+        except (OSError, AuthenticationError):
             time.sleep(0.2)
             continue
         _log("клиент подключился")  # i18n: skip-end
+        if not _client_is_owner(listener.last_accepted, args.port, args.ui_pid, ui_created):
+            conn.close()
+            continue
         threading.Thread(target=serve_client, args=(conn,), daemon=True).start()
 
 
