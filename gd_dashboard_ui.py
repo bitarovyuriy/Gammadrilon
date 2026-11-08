@@ -503,6 +503,8 @@ class GpuLimitTile(Tile):
 
     PROFILES = (("quiet", "Тихий"), ("default", "Дефолт"), ("game", "Игровой"), ("max", "Макс"))
 
+    _confirmed = ""
+
     def build(self) -> None:
         self.value = QLabel(_dash())
         self.value.setObjectName("Value")
@@ -522,12 +524,24 @@ class GpuLimitTile(Tile):
         page = self.board.ensure_page("tab.gpu")
         applied = False
         if page is not None:
+            if not getattr(self, "_subscribed", False):
+                # страница сообщает итог применения: «задача запущена» ≠ «применилось»
+                page.profile_result.connect(self._on_result)
+                self._subscribed = True
             applied = page.apply_profile(profile) is not False
         if not applied:
             # применить не удалось (нет страницы, занят драйвер, нет данных) —
             # кнопка не должна гореть, будто профиль включён
-            _select_only(self.chips, "")
+            _select_only(self.chips, self._confirmed or "")
             self.line.setText(i18n.t("Профиль не применён: видеокарта не ответила."))
+
+    def _on_result(self, name: str, ok: bool) -> None:
+        """Итог применения профиля со страницы GPU."""
+        if ok:
+            self._confirmed = name
+            return
+        _select_only(self.chips, self._confirmed or "")
+        self.line.setText(i18n.t("Профиль не применён: видеокарта не ответила."))
 
     def update_metrics(self, snap: dict[str, Any]) -> None:
         gpu = snap.get("gpu")

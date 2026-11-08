@@ -36,7 +36,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from PyQt5.QtCore import Qt, QTimer  # noqa: E402
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
     QButtonGroup,
     QCheckBox,
@@ -120,6 +120,10 @@ def _write_keep_flag_file(on: bool) -> bool:
 
 
 class GpuWidget(QWidget):
+    #: итог применения профиля: (имя профиля, получилось ли). Плитка на
+    #: главном экране подсвечивает профиль только по подтверждению.
+    profile_result = pyqtSignal(str, bool)
+
     def __init__(self, standalone: bool = False, config: dict | None = None,
                  save_fn=None):
         super().__init__()
@@ -134,6 +138,8 @@ class GpuWidget(QWidget):
         self._pl_dirty = False        # на слайдере — цель пользователя, ещё не применённая
         self._active_profile = None   # имя применённого профиля (для трея/палитры)
         self._apply_worker = None     # фоновое применение лимита (UAC + nvidia-smi)
+        self._probe_worker = None     # фоновое чтение состояния при пустых метриках
+        self._want_profile = None     # профиль, ждущий состояния драйвера
         self._restore_worker = None   # фоновый откат
         self._pre_apply_pl = None     # лимит до применения — для записи «было → стало»
         self._autostart_checked = False   # проверка автолимита при запуске — один раз
@@ -541,25 +547,46 @@ class GpuWidget(QWidget):
 
         st = self._state or gd_metrics.gpu()
         if not st:
-            # Метрики собираются в фоне, и на старте их ещё нет. Раньше клик по
-            # профилю в этом состоянии молча ничего не делал — кнопка горела,
-            # лимит не менялся. Читаем состояние драйвера сами: NVML ~25 мс.
+            # Метрик на старте ещё нет. Раньше клик молча ничего не делал; теперь
+            # состояние читается в фоне: `nvidia-smi` без NVML ждёт до 8 секунд,
+            # и держать его в GUI-потоке нельзя. Ответ придёт в _profile_from_state.
             gd_metrics.refresh_now("gpu")
-            st = gd_gpu.read_state()
+            if gd_bg.is_running(self._probe_worker):
+                return False        # уже спрашиваем драйвер — второй клик не нужен
+            self._want_profile = name
+            self._probe_worker = gd_bg.submit(gd_gpu.read_state,
+                                              self._profile_from_state, parent=self)
+            self.profile_desc.setText(i18n.t("Читаю состояние видеокарты…"))
+            return True
+        return self._apply_profile_state(st, name)
+
+    def _profile_from_state(self, st):
+        """Пришло состояние драйвера из фона: применяем отложенный профиль."""
+        name, self._want_profile = self._want_profile, None
+        if not name:
+            return
         if not st:
             self._set_status(i18n.t("Видеокарта не ответила: профиль не применён."), ok=False)
-            return False
+            self.profile_result.emit(name, False)
+            return
+        self._apply_profile_state(st, name)
+
+    def _apply_profile_state(self, st, name) -> bool:
         target = gd_gpu.profile_target(st, name)
         pl = target.get("pl")
         if pl is None:
             self._set_status(i18n.t("Драйвер не сообщил границы лимита: профиль не применён."),
                              ok=False)
+            self.profile_result.emit(name, False)
             return False
         self.sl_pl.setValue(int(pl))
         self.profile_desc.setText(
             i18n.t("Профиль «{v0}» → лимит {v1} Вт. Применяю…", v0=gd_gpu.GPU_PROFILES[name]['label'], v1=pl)
         )
-        return self._apply({"pl": pl}, profile_name=name)
+        started = self._apply({"pl": pl}, profile_name=name)
+        if started is False:
+            self.profile_result.emit(name, False)
+        return started
 
     def _on_apply(self):
         self._source = "UI"
@@ -607,6 +634,10 @@ class GpuWidget(QWidget):
 
     def _apply_done(self, resp, payload: dict, profile_name, autostart: bool = False):
         self.btn_apply.setEnabled(True)
+        ok = bool(resp.get("ok"))
+        if profile_name:
+            # плитка узнаёт итог только отсюда: «запустил задачу» ≠ «применилось»
+            self.profile_result.emit(profile_name, ok)
         if not resp.get("ok"):
             self._set_status(i18n.t("Драйвер не принял изменение: {v0}", v0=resp.get('error')), ok=False)
             self.profile_desc.setText(i18n.t("Изменение не применено."))

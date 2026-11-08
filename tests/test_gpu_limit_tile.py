@@ -24,9 +24,22 @@ import gd_dashboard_ui as dash  # noqa: E402
 _APP = QApplication.instance() or QApplication([])
 
 
+class FakeSignal:
+    def __init__(self):
+        self.slots = []
+
+    def connect(self, slot):
+        self.slots.append(slot)
+
+    def emit(self, name, ok):
+        for slot in self.slots:
+            slot(name, ok)
+
+
 class FakePage:
     def __init__(self):
         self.applied = []
+        self.profile_result = FakeSignal()
 
     def apply_profile(self, profile):
         self.applied.append(profile)

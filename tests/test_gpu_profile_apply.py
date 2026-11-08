@@ -37,11 +37,22 @@ class _Label:
         self.text = text
 
 
+class _Signal:
+    def __init__(self):
+        self.events = []
+
+    def emit(self, name, ok):
+        self.events.append((name, ok))
+
+
 class _Page:
     """Заглушка вместо GpuWidget: проверяем только путь _on_profile."""
 
     def __init__(self):
         self._state = None
+        self._probe_worker = None
+        self._want_profile = None
+        self.profile_result = _Signal()
         self.sl_pl = _Slider()
         self.profile_desc = _Label()
         self._status = []
@@ -53,6 +64,10 @@ class _Page:
     def _apply(self, payload, profile_name=None, autostart=False):
         self._applied.append((payload, profile_name))
         return True
+
+    # методы берём у настоящего класса: проверяем именно их поведение
+    _profile_from_state = gd_gpu_ui.GpuWidget._profile_from_state
+    _apply_profile_state = gd_gpu_ui.GpuWidget._apply_profile_state
 
 
 def _page(**attrs):
@@ -71,11 +86,26 @@ def test_profile_applies_when_metrics_are_empty(monkeypatch):
     monkeypatch.setattr(gd_metrics, "gpu", lambda: None)
     monkeypatch.setattr(gd_metrics, "refresh_now", lambda what=None: None)
     monkeypatch.setattr(gd_gpu, "read_state", lambda: state)
+    submitted = []
+
+    def fake_submit(fn, done, parent=None):
+        submitted.append((fn, done))
+        return object()
+
+    monkeypatch.setattr(gd_gpu_ui.gd_bg, "submit", fake_submit)
+    monkeypatch.setattr(gd_gpu_ui.gd_bg, "is_running", lambda worker: False)
     page = _page()
 
+    # клик при пустых метриках: чтение драйвера уходит в фон, GUI не ждёт
     result = _on_profile(page, "game")
 
     assert result is True
+    assert page._applied == []            # применение ещё не начато
+    assert len(submitted) == 1
+
+    fn, done = submitted.pop()
+    done(fn())                            # пришёл ответ драйвера
+
     assert page._applied == [({"pl": 340}, "game")]
     assert page.sl_pl.value == 340
 
@@ -84,13 +114,19 @@ def test_profile_reports_when_driver_is_silent(monkeypatch):
     monkeypatch.setattr(gd_metrics, "gpu", lambda: None)
     monkeypatch.setattr(gd_metrics, "refresh_now", lambda what=None: None)
     monkeypatch.setattr(gd_gpu, "read_state", lambda: None)
+    submitted = []
+    monkeypatch.setattr(gd_gpu_ui.gd_bg, "submit",
+                        lambda fn, done, parent=None: submitted.append((fn, done)) or object())
+    monkeypatch.setattr(gd_gpu_ui.gd_bg, "is_running", lambda worker: False)
     page = _page()
 
-    result = _on_profile(page, "max")
+    assert _on_profile(page, "max") is True
+    fn, done = submitted.pop()
+    done(fn())
 
-    assert result is False
     assert page._applied == []
     assert page._status and page._status[0][1] is False
+    assert page.profile_result.events == [("max", False)]
 
 
 def test_busy_apply_is_not_reported_as_success(monkeypatch):
