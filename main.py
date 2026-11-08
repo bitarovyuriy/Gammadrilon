@@ -5390,6 +5390,16 @@ class MainWindow(QMainWindow):
             self._ddc_failed(ddc.problem)
             return
         self._fill_ddc_pick(ddc)
+        # сохранённый монитор главнее «первого найденного»: иначе в списке стоит
+        # второй экран, а ползунок правит первый
+        picked = self._picked_ddc_monitor(ddc)
+        if picked is not None and picked is not monitor:
+            self._ddc_monitor = picked
+            self.ddc_slider.setEnabled(False)
+            self.bind_text(self.ddc_hint, i18n.t("читаем яркость…"))
+            gd_bg.submit(lambda: (picked, picked.brightness()),
+                         self._ddc_level_read, parent=self)
+            return
         self._ddc_monitor = monitor
         self._ddc_last_ok = int(level)
         self._ddc_pending = int(level)
@@ -5421,6 +5431,16 @@ class MainWindow(QMainWindow):
             self.ddc_pick.setVisible(True)
         else:
             self.ddc_pick.setVisible(False)
+
+    def _picked_ddc_monitor(self, ddc):
+        """Монитор, выбранный в списке (или единственный доступный)."""
+        usable = usable_monitors(ddc)
+        if not usable:
+            return None
+        index = int(self.ddc_pick.currentIndex())
+        if len(usable) > 1 and 0 <= index < len(usable):
+            return usable[index]
+        return usable[0]
 
     def on_ddc_monitor_picked(self, index: int) -> None:
         """Переключились на другой монитор: читаем его яркость, не гадаем."""

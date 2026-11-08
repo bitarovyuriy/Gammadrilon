@@ -712,24 +712,37 @@ class ZapretWidget(QWidget):
         elif ours.get("pid"):
             client.call({"cmd": "zapret_stop", "pid": ours["pid"]}, timeout=40)
         res = client.call({"cmd": "zapret_update", "op": "rollback"}, timeout=300)
+        # Обход уже остановлен: вернуть прежний запуск нужно при любом исходе,
+        # иначе неудачная замена оставляет человека без обхода вовсе.
+        restored = self._restart_after_rollback(client, path, svc, ours)
         if not res.get("ok"):
-            return {"ok": False, "error": res.get("error")}
+            err = res.get("error")
+            if not (restored or {}).get("ok"):
+                err = f"{err}; прежний запуск не вернулся: {(restored or {}).get('error')}"
+            return {"ok": False, "error": err, "restarted": bool((restored or {}).get("ok"))}
+        return {"ok": True, "data": res.get("data") or {},
+                "restarted": bool((restored or {}).get("ok"))}
+
+    def _restart_after_rollback(self, client, path: str, svc: bool, ours: dict) -> dict:
+        """Вернуть обход в прежнее состояние после отката версии."""
         if svc:
-            client.call({"cmd": "zapret_service", "op": "start"}, timeout=90)
-        elif ours.get("pid") and ours.get("strategy") and not ours.get("external"):
+            return client.call({"cmd": "zapret_service", "op": "start"}, timeout=90)
+        if ours.get("pid") and ours.get("strategy") and not ours.get("external"):
             strategy = str(ours["strategy"])
             recon = client.call({"cmd": "zapret_recon", "path": path,
                                  "strategy": strategy}, timeout=120)
-            if recon.get("ok"):
-                argv = recon["data"]["argv"]
-                gd_zapret.cache_put(path, strategy, argv)
-                started = client.call({"cmd": "zapret_start", "path": path, "argv": argv,
-                                       "log": gd_zapret.log_path(),
-                                       "note": strategy}, timeout=60)
-                if started.get("ok"):
-                    gd_zapret.save_our_state(path, strategy,
-                                             int(started["data"]["pid"]), argv)
-        return {"ok": True, "data": res.get("data") or {}}
+            if not recon.get("ok"):
+                return {"ok": False, "error": recon.get("error")}
+            argv = recon["data"]["argv"]
+            gd_zapret.cache_put(path, strategy, argv)
+            started = client.call({"cmd": "zapret_start", "path": path, "argv": argv,
+                                   "log": gd_zapret.log_path(),
+                                   "note": strategy}, timeout=60)
+            if started.get("ok"):
+                gd_zapret.save_our_state(path, strategy,
+                                         int(started["data"]["pid"]), argv)
+            return started
+        return {"ok": True}
 
     def _rollback_done(self, result) -> None:
         if isinstance(result, dict) and result.get("ok"):
