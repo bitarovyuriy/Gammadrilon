@@ -15,6 +15,7 @@ import time
 from collections import deque
 from multiprocessing.connection import Client
 
+import gd_helper
 import gd_proc
 
 import gd_bg
@@ -147,12 +148,13 @@ class PowerClient:
         """
         conn = self._conn
         try:
-            conn.send(obj)
+            gd_helper.send_message(conn, obj)
             if not conn.poll(timeout):
                 self._conn = None
                 return {"ok": False, "error": i18n.t("таймаут ответа компаньона")}
-            return conn.recv()
-        except (OSError, EOFError):
+            return gd_helper.recv_message(conn)
+        except (OSError, EOFError, ValueError):
+            # ValueError — пришло не наше сообщение (чужой процесс на канале)
             self._conn = None
             return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
 
@@ -186,7 +188,7 @@ class PowerClient:
         if self._conn is None:
             return
         try:
-            self._conn.send({"cmd": "shutdown", "restore": restore})
+            gd_helper.send_message(self._conn, {"cmd": "shutdown", "restore": restore})
         except Exception:  # noqa: BLE001
             pass
         finally:

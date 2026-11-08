@@ -464,7 +464,14 @@ class GpuWidget(QWidget):
         self.lbl_gpu.setText(st["name"])
         self.lbl_temp.setText(f"{st['temp']:.0f} °C" if st["temp"] is not None else "—")
         self.lbl_clk.setText(i18n.t("{v0:.0f} МГц", v0=st['clock']) if st["clock"] is not None else "—")
-        self.lbl_pl.setText(i18n.t("{v0:.0f}/{v1:.0f} Вт", v0=st['pl'], v1=st['pl_max']) if st["pl"] is not None else "—")
+        # границы мощности не всегда приходят вместе с текущей: NVML и разбор
+        # nvidia-smi допускают None, и f-строка с :.0f падала бы на каждом тике
+        if st["pl"] is None:
+            self.lbl_pl.setText("—")
+        elif st.get("pl_max") is None:
+            self.lbl_pl.setText(i18n.t("{v0:.0f} Вт", v0=st["pl"]))
+        else:
+            self.lbl_pl.setText(i18n.t("{v0:.0f}/{v1:.0f} Вт", v0=st["pl"], v1=st["pl_max"]))
         self.lbl_util.setText(f"{st['util']:.0f} %" if st["util"] is not None else "—")
         mem = ""
         if st["clock_mem"]:
@@ -492,11 +499,22 @@ class GpuWidget(QWidget):
         st = self._state
         if not st:
             return
-        cur = st["pl"]
-        nom = st["pl_default"]
-        lo, hi = st["pl_min"], st["pl_max"]
-        txt = (i18n.t("Номинал {v0:.0f} Вт · диапазон {v1:.0f}–{v2:.0f} Вт · сейчас {v3:.0f} Вт", v0=nom, v1=lo, v2=hi, v3=cur))
-        self.lbl_range.setText(txt)
+        cur = st.get("pl")
+        nom = st.get("pl_default")
+        lo, hi = st.get("pl_min"), st.get("pl_max")
+        # каждую часть показываем только если драйвер её сообщил
+        parts = []
+        if nom is not None:
+            parts.append(i18n.t("Номинал {v0:.0f} Вт", v0=nom))
+        if lo is not None and hi is not None:
+            parts.append(i18n.t("диапазон {v1:.0f}–{v2:.0f} Вт", v1=lo, v2=hi))
+        if cur is not None:
+            parts.append(i18n.t("сейчас {v3:.0f} Вт", v3=cur))
+        self.lbl_range.setText(" · ".join(parts) if parts else "")
+        # без границ ползунок бесполезен: не обещаем управление, которого нет
+        has_range = lo is not None and hi is not None
+        self.sl_pl.setEnabled(has_range)
+        self.btn_apply.setEnabled(has_range)
 
     def _on_slider(self, value):
         """Сдвиг слайдера — цель пользователя, а не состояние карты.

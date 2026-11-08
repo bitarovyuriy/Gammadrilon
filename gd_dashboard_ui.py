@@ -664,11 +664,23 @@ class Cs2Tile(Tile):
     def refresh_slow(self) -> None:
         snap = gd_cs2.snapshot()
         items = snap.get("items") or {}
-        on = bool(items) and all(items.values())
+        total = len(items)
         count = sum(1 for value in items.values() if value)
-        self.value.setText(i18n.t("ВКЛ") if on else i18n.t("ВЫКЛ"))
-        self.btn.setText(i18n.t("Выключить") if on else i18n.t("Включить"))
-        self.line.setText(i18n.t("w.cs2.count", v0=count, v1=len(items)))
+        on = bool(items) and count == total
+        partial = 0 < count < total
+        # откат возможен только при сохранённой резервной копии — страница живёт
+        # по этому же признаку, плитка не должна обещать недоступное действие
+        can_revert = bool(snap.get("can_revert"))
+        if on:
+            self.value.setText(i18n.t("ВКЛ"))
+            self.btn.setText(i18n.t("Выключить"))
+        elif partial:
+            self.value.setText(i18n.t("ЧАСТИЧНО"))
+            self.btn.setText(i18n.t("Выключить") if can_revert else i18n.t("Включить"))
+        else:
+            self.value.setText(i18n.t("ВЫКЛ"))
+            self.btn.setText(i18n.t("Включить"))
+        self.line.setText(i18n.t("w.cs2.count", v0=count, v1=total))
         self.state.setText(i18n.t("w.cs2.hint") if on else "")
 
 

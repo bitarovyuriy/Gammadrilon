@@ -868,6 +868,18 @@ def t(key: str, **fmt) -> str:
 
 # Прямые строки экранов: русская строка -> английская (ТЗ 5, «ни одного хардкода»).
 DIRECT: dict[str, str] = {
+    'ЧАСТИЧНО': 'PARTIAL',
+    'Видеокарта не ответила: профиль не применён.': 'GPU did not respond: profile not applied.',
+    'Драйвер не сообщил границы лимита: профиль не применён.':
+        'The driver reported no power limits: profile not applied.',
+    'Профиль не применён: видеокарта не ответила.': 'Profile not applied: GPU did not respond.',
+    'Номинал {v0:.0f} Вт': 'Rated {v0:.0f} W',
+    'диапазон {v1:.0f}–{v2:.0f} Вт': 'range {v1:.0f}–{v2:.0f} W',
+    'сейчас {v3:.0f} Вт': 'now {v3:.0f} W',
+    'Настройки не сохранены: файл настроек недоступен для записи. '
+    'После перезапуска сочетания вернутся к прежним.':
+        'Settings were not saved: the settings file is not writable. '
+        'Shortcuts will revert after a restart.',
     'Запускать с правами администратора': 'Run with administrator rights',
     'Автозапуск: с правами администратора': 'Startup: with administrator rights',
     'Автозапуск: обычные права': 'Startup: normal rights',

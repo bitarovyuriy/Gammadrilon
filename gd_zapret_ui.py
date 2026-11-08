@@ -1780,8 +1780,9 @@ class ZapretWidget(QWidget):
         self._gen += 1
         if self._snap.get("service_zapret") == "RUNNING" and not self._snap.get("ours"):
             self._set_status(i18n.t("GameFilter: {v0} — перезапускаю службу…", v0=msg))
-            self._worker = gd_bg.submit(lambda: self._job_service("restart"),
-                                        self._service_done, parent=self)
+            self._worker = gd_bg.submit(
+                lambda: self._job_service("restart", self._path(), None),
+                self._service_done, parent=self)
             self._poll.trigger()
             self._render()
             return

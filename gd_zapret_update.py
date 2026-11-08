@@ -241,7 +241,7 @@ def download(url: str, dest: str | Path, on_progress=None,
     part = dest.with_name(dest.name + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "Gammadrilon"})
     try:
-        if not trusted_release_url(url):
+        if not trusted_release_url(url) and not trusted_list_url(url):
             raise ValueError("untrusted release URL")
         opener = urllib.request.build_opener(_ReleaseRedirect())
         with opener.open(req, timeout=timeout) as resp, part.open("wb") as fh:
@@ -270,6 +270,22 @@ def download(url: str, dest: str | Path, on_progress=None,
     if dest.stat().st_size <= 0:
         return False, i18n.t("скачался пустой файл")
     return True, str(dest)
+
+
+def trusted_list_url(url: str) -> bool:
+    """Адрес списка обслуживания: только файлы этого репозитория на raw.
+
+    Отдельно от релизов: там скачивается архив с диска, здесь — маленькие
+    текстовые списки (`ipset-service.txt`, `hosts`, `version.txt`), и общая
+    проверка «только releases/download» их отвергала — обновление списков
+    ломалось целиком.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in (None, 443):
+        return False
+    if parsed.hostname != "raw.githubusercontent.com":
+        return False
+    return parsed.path.startswith(f"/{REPO}/refs/heads/")
 
 
 def trusted_release_url(url: str, *, redirect: bool = False) -> bool:

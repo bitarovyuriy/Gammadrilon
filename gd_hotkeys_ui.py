@@ -206,9 +206,16 @@ class HotkeysPanel(QWidget):
 
         if callable(self._save_fn):
             try:
-                self._save_fn()
+                saved = self._save_fn()
             except Exception as exc:  # noqa: BLE001
                 self._status(i18n.t("Не удалось сохранить настройки: {v0}", v0=exc), ok=False)
+                return
+            if saved is False:
+                # MainWindow.save_settings() возвращает False, когда файл не записался
+                self._status(
+                    i18n.t("Настройки не сохранены: файл настроек недоступен для записи. "
+                           "После перезапуска сочетания вернутся к прежним."),
+                    ok=False)
                 return
 
         applied = True

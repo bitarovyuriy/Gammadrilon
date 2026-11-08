@@ -28,6 +28,7 @@ from multiprocessing.connection import Listener
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gd_i18n as i18n  # noqa: E402
+import gd_helper  # noqa: E402
 import gd_power as gp  # noqa: E402
 
 i18n.init_for_process()      # компаньон — отдельный процесс: язык берём из presets.json
@@ -143,12 +144,13 @@ class PowerService:
         try:
             while True:
                 try:
-                    cmd = conn.recv()
-                except (EOFError, OSError):
+                    cmd = gd_helper.recv_message(conn)
+                except (EOFError, OSError, ValueError):
+                    # битое или слишком большое сообщение: соединению больше не верим
                     return
                 resp = handle(cmd)
                 try:
-                    conn.send(resp)
+                    gd_helper.send_message(conn, resp)
                 except OSError:
                     return
                 if cmd.get("cmd") == "shutdown":
