@@ -85,6 +85,16 @@ def _chips(
     return row, buttons
 
 
+def _select_only(buttons: dict[str, QPushButton], key: str) -> None:
+    """Оставить выбранным один сегмент из ряда.
+
+    Кнопки в `_chips` независимые: без этого клик по второму профилю оставлял
+    подсвеченным первый, и на плитке «горели» сразу несколько пресетов.
+    """
+    for name, button in buttons.items():
+        button.setChecked(name == key)
+
+
 class RowWidget(QWidget):
     """Строка сетки: раскладывает плитки по 12 колонкам вручную.
 
@@ -507,9 +517,13 @@ class GpuLimitTile(Tile):
         self.body.addLayout(row)
 
     def _pick(self, profile: str) -> None:
+        # профиль один: подсвечиваем выбранный и снимаем остальные
+        _select_only(self.chips, profile)
         page = self.board.ensure_page("tab.gpu")
         if page is not None:
             page.apply_profile(profile)
+        else:
+            _select_only(self.chips, "")     # применить некуда — не обманываем
 
     def update_metrics(self, snap: dict[str, Any]) -> None:
         gpu = snap.get("gpu")
