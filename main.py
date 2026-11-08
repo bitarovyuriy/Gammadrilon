@@ -3724,9 +3724,12 @@ class MainWindow(QMainWindow):
         import gd_rules
 
         gd_rules.log_fire(rule, result)
-        page = getattr(self, "_rules_page", None)
-        if page is not None:
-            page._reload_log()
+        # «Правила» — раздел «Утилит», отдельной страницы давно нет
+        utils = getattr(self, "_utils_page", None)
+        page = utils.section_widget("rules") if utils is not None else None
+        reload_log = getattr(page, "_reload_log", None)
+        if callable(reload_log):
+            reload_log()
 
     def _report_failure(self, status: str, detail: str | None = None) -> None:
         """Отказ фонового или внешнего действия: статус окна + тревожный тост.
@@ -3992,9 +3995,6 @@ class MainWindow(QMainWindow):
             (power.activate() if page is power else power.deactivate())
         if gpu is not None:
             (gpu.activate() if page is gpu else gpu.deactivate())
-        rules = getattr(self, "_rules_page", None)
-        if rules is not None and page is rules:
-            rules.reload()
         utils = getattr(self, "_utils_page", None)
         if utils is not None:
             (utils.activate() if page is getattr(self, "_utils_scroll", None) else utils.deactivate())
@@ -4004,9 +4004,6 @@ class MainWindow(QMainWindow):
         zapret = getattr(self, "_zapret_page", None)
         if zapret is not None:
             (zapret.activate() if page is zapret else zapret.deactivate())
-        cs2 = getattr(self, "_cs2_page", None)
-        if cs2 is not None:
-            (cs2.activate() if page is cs2 else cs2.deactivate())
         self._sync_metrics_activity()
 
     def open_dns_tab(self):

@@ -458,7 +458,15 @@ class UtilsWidget(QWidget):
                 continue
             self._lazy_built[key] = True
             self._build_section(key)
-            return
+            break
+        # прежний раздел закрываем, новый — открываем: у CS2 от этого зависит
+        # таймер слежения за игрой, у правил — чтение журнала
+        previous = getattr(self, "_last_section", -1)
+        if previous != index:
+            if previous >= 0:
+                self._section_lifecycle(previous, False)
+            self._last_section = index
+            self._section_lifecycle(index, True)
 
     def _build_section(self, key: str):
         box = getattr(self, f"_tab_{key}", None)
@@ -505,6 +513,7 @@ class UtilsWidget(QWidget):
             self._refresh()
         self._sync_startup()
         self._timer.start(2000)
+        self._section_lifecycle(self._tabs.currentIndex(), True)
         extra = getattr(self, "extra", None)
         if extra is not None:
             extra.refresh()
@@ -515,6 +524,23 @@ class UtilsWidget(QWidget):
 
     def deactivate(self):
         self._timer.stop()
+        self._section_lifecycle(self._tabs.currentIndex(), False)
+
+    def _section_lifecycle(self, index: int, active: bool) -> None:
+        """Передать разделу «вкладку открыли/закрыли».
+
+        Разделы стали внутренними вкладками, и их собственные циклы жизни
+        (таймер слежения за игрой у CS2, перечитывание журнала у правил) без
+        этого не запускались вовсе.
+        """
+        names = {v: k for k, v in self.SECTION_INDEX.items()}
+        widget = self._section_widgets.get(names.get(index))
+        handler = getattr(widget, "activate" if active else "deactivate", None)
+        if callable(handler):
+            try:
+                handler()
+            except Exception:  # noqa: BLE001 — раздел не должен ломать вкладку
+                pass
 
     # -- разделы снаружи -----------------------------------------------------
     SECTION_INDEX = {"mem": 0, "sys": 1, "games": 2, "rules": 3, "keys": 4}

@@ -68,6 +68,8 @@ class Cs2Widget(QWidget):
         self._busy = False
         self._reload_worker = None
         self._reload_again = False
+        self._ready = False           # первый снимок получен — можно действовать
+        self._want_toggle = False     # клик до готовности: выполним после reload
         self._client = gd_helper.HelperClient()
 
         root = QVBoxLayout(self)
@@ -241,10 +243,15 @@ class Cs2Widget(QWidget):
             self._note(str(result.get("error") or i18n.t("Состояние CS2 недоступно.")))
             return
         self._exe = snap.get("exe") or ""
+        self._ready = True
         self._render_state(snap)
         self._refresh_game()
         self._render_diagnostics(result.get("diagnostics") or [])
         self._render_video(result.get("video") or [], result.get("video_path"))
+        if self._want_toggle:
+            # клик с главного экрана ждал этого снимка
+            self._want_toggle = False
+            self._toggle()
         if self._reload_again:
             self._reload_again = False
             self.reload()
@@ -306,9 +313,19 @@ class Cs2Widget(QWidget):
         self.btn_prio.setVisible(show_prio)
 
     # -- действия -----------------------------------------------------------
-    def toggle(self) -> None:
-        """Публичная точка входа для плитки главного экрана."""
+    def toggle(self) -> bool:
+        """Публичная точка входа для плитки главного экрана.
+
+        Плитка зовёт это сразу после создания страницы, а её первый снимок ещё
+        в работе: путь к игре (`_exe`) пуст, часть пунктов пропускается, а
+        ``_on`` взят из конфига. Поэтому до готовности действие запоминается.
+        """
+        if not self._ready:
+            self._want_toggle = True
+            self._note(i18n.t("Читаю состояние игры — действие выполнится через секунду."))
+            return True
         self._toggle()
+        return True
 
     def _toggle(self) -> None:
         if self._busy:
