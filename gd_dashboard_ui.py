@@ -520,10 +520,14 @@ class GpuLimitTile(Tile):
         # профиль один: подсвечиваем выбранный и снимаем остальные
         _select_only(self.chips, profile)
         page = self.board.ensure_page("tab.gpu")
+        applied = False
         if page is not None:
-            page.apply_profile(profile)
-        else:
-            _select_only(self.chips, "")     # применить некуда — не обманываем
+            applied = page.apply_profile(profile) is not False
+        if not applied:
+            # применить не удалось (нет страницы, занят драйвер, нет данных) —
+            # кнопка не должна гореть, будто профиль включён
+            _select_only(self.chips, "")
+            self.line.setText(i18n.t("Профиль не применён: видеокарта не ответила."))
 
     def update_metrics(self, snap: dict[str, Any]) -> None:
         gpu = snap.get("gpu")

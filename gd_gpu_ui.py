@@ -523,16 +523,25 @@ class GpuWidget(QWidget):
 
         st = self._state or gd_metrics.gpu()
         if not st:
-            return
+            # Метрики собираются в фоне, и на старте их ещё нет. Раньше клик по
+            # профилю в этом состоянии молча ничего не делал — кнопка горела,
+            # лимит не менялся. Читаем состояние драйвера сами: NVML ~25 мс.
+            gd_metrics.refresh_now("gpu")
+            st = gd_gpu.read_state()
+        if not st:
+            self._set_status(i18n.t("Видеокарта не ответила: профиль не применён."), ok=False)
+            return False
         target = gd_gpu.profile_target(st, name)
         pl = target.get("pl")
         if pl is None:
-            return
+            self._set_status(i18n.t("Драйвер не сообщил границы лимита: профиль не применён."),
+                             ok=False)
+            return False
         self.sl_pl.setValue(int(pl))
         self.profile_desc.setText(
             i18n.t("Профиль «{v0}» → лимит {v1} Вт. Применяю…", v0=gd_gpu.GPU_PROFILES[name]['label'], v1=pl)
         )
-        self._apply({"pl": pl}, profile_name=name)
+        return self._apply({"pl": pl}, profile_name=name)
 
     def _on_apply(self):
         self._source = "UI"
@@ -565,7 +574,7 @@ class GpuWidget(QWidget):
         подписи и причину в журнале (нажатия пользователя не было), поведение то же."""
         # запуск хелпера (UAC) и запись nvidia-smi долгие — не морозим GUI
         if gd_bg.is_running(self._apply_worker):
-            return
+            return False        # уже применяется: второй клик не должен врать
         self.btn_apply.setEnabled(False)
         self.profile_desc.setText(i18n.t("Применяю…"))
 
@@ -576,6 +585,7 @@ class GpuWidget(QWidget):
             lambda resp: self._apply_done(resp, payload, profile_name, autostart=autostart),
             parent=self,
         )
+        return True
 
     def _apply_done(self, resp, payload: dict, profile_name, autostart: bool = False):
         self.btn_apply.setEnabled(True)
@@ -700,12 +710,12 @@ class GpuWidget(QWidget):
     def apply_profile(self, name: str, source: str = i18n.t("трей")):
         """Применить профиль GPU извне (или вернуть исходный лимит)."""
         if gd_bg.is_running(self._apply_worker) or gd_bg.is_running(self._restore_worker):
-            return
+            return False        # идёт другое применение — не обещаем успех
         self._source = source
         if name == "restore":
             self._on_restore()
-            return
-        self._on_profile(name)
+            return True
+        return self._on_profile(name)
 
     def apply_limit(self, watts: int, source: str = i18n.t("трей"),
                     autostart: bool = False):
