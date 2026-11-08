@@ -139,6 +139,18 @@ class ClickableLabel(QPushButton):
         self.setAccessibleName(text)
 
 
+class NoWheelCombo(QComboBox):
+    """Список, который не листается колесом мыши.
+
+    На плитке «Обход DPI» колесо над списком стратегий молча меняло стратегию:
+    человек листал страницу, а получал другое значение. Событие не принимаем —
+    оно уходит родителю, и страница прокручивается как обычно.
+    """
+
+    def wheelEvent(self, event):  # noqa: N802 — имя из Qt
+        event.ignore()
+
+
 class ClickableText(QLabel):
     """Подсказка-ссылка: переносится по словам, но работает и с клавиатуры.
 
@@ -712,7 +724,7 @@ class ZapretTile(Tile):
         self.line.setObjectName("Hint")
         self.body.addWidget(self.line)
 
-        self.combo = QComboBox()
+        self.combo = NoWheelCombo()
         self.combo.setFixedHeight(26)
         self.combo.setToolTip(i18n.t("Стратегия обхода: список general*.bat из папки zapret"))
         # activated, а не currentIndexChanged: программная подстановка текущего
