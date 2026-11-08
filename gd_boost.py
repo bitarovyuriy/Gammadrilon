@@ -203,6 +203,31 @@ def get_cpu_priority(pid: int) -> int | None:
     return int(result) if result else None
 
 
+def _process_created(pid: int) -> float | None:
+    """Время создания процесса: по нему отличаем «тот же» от «тот же PID»."""
+    try:
+        return float(psutil.Process(pid).create_time())
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+        return None
+
+
+def _same_process(pid: int, created: float | None) -> bool:
+    """Жив ли исходный процесс.
+
+    Без этой проверки сохранённые приоритеты после перезапуска Windows могли
+    достаться совсем другому процессу с тем же PID.
+    """
+    if created is None:
+        # снимок старого формата: времени создания нет, проверять нечем —
+        # ведём себя как раньше и просто пробуем вернуть приоритеты
+        return True
+    try:
+        proc = psutil.Process(pid)
+        return abs(float(proc.create_time()) - float(created)) < 0.5
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+        return False
+
+
 def foreground_pid() -> int:
     """PID процесса, чьё окно сейчас в фокусе (0 — нет такого)."""
     hwnd = user32.GetForegroundWindow()
@@ -381,6 +406,7 @@ class GameBoost:
             if set_eco_qos(pid, True):
                 touched = True
             if touched:
+                entry["created"] = _process_created(pid)
                 self._snapshot[str(pid)] = entry
                 changed += 1
 
@@ -428,6 +454,10 @@ class GameBoost:
         pending = {}
         for pid_text, entry in self._snapshot.items():
             pid = int(pid_text)
+            if not _same_process(pid, entry.get("created")):
+                # процесса уже нет или PID достался другому — трогать его нельзя
+                restored += 1
+                continue
             priority = entry.get("memory_priority")
             eco = entry.get("eco_qos")
             cpu = entry.get("cpu_priority")

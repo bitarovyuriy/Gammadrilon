@@ -233,6 +233,11 @@ def _apply(pl: float | None, lock_clocks: list | None,
             return False, i18n.t("лимит мощности: {v0}", v0=out)
         if _original is None:
             _original = before
+        elif _original.get("pl") is None:
+            # прошлый откат вернул мощность и обнулил её в снимке, но остался
+            # из-за неудачного сброса частот: без этой ветки следующий откат
+            # мощность уже не вернёт
+            _original["pl"] = before["pl"]
         if _applied is None:
             _applied = {}
         _applied["pl"] = pl
