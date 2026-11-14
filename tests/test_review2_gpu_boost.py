@@ -13,34 +13,34 @@ sys.path.insert(0, str(ROOT))
 import gd_boost  # noqa: E402
 import gd_gpu_service  # noqa: E402
 
+GPU_UUID = "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 # --- GPU: частичный откат не должен стирать исходный лимит -----------------
 
 def test_apply_remembers_pl_after_partial_restore(monkeypatch):
     monkeypatch.setattr(gd_gpu_service.gd_gpu, "read_state",
-                        lambda: {"pl": 340.0, "pl_min": 100.0, "pl_max": 366.0})
-    monkeypatch.setattr(gd_gpu_service, "_set_power", lambda pl: (True, ""))
-    monkeypatch.setattr(gd_gpu_service, "_keep_original", lambda: None)
+                        lambda: {"uuid": GPU_UUID, "pl": 340.0, "pl_min": 100.0, "pl_max": 366.0})
+    monkeypatch.setattr(gd_gpu_service, "_set_power", lambda uuid, pl: (True, ""))
+    monkeypatch.setattr(gd_gpu_service, "_save_snapshot", lambda original, applied: True)
     monkeypatch.setattr(gd_gpu_service, "_set_keep_on_exit", lambda value: None)
     # состояние после неудачного отката: мощность вернулась, частоты — нет
     monkeypatch.setitem(gd_gpu_service.__dict__, "_original",
-                        {"pl": None, "clocks_locked": False})
-    monkeypatch.setitem(gd_gpu_service.__dict__, "_applied", {"lock_clocks": None})
+                        {"pl": None, "uuid": GPU_UUID})
+    monkeypatch.setitem(gd_gpu_service.__dict__, "_applied", {"lock_clocks": [900, 1200]})
 
     ok, _msg = gd_gpu_service._apply(340.0, None, keep_on_exit=False)
 
     assert ok is True
-    assert gd_gpu_service._original == {"pl": 340.0, "clocks_locked": False}
+    assert gd_gpu_service._original == {"pl": 340.0, "uuid": GPU_UUID}
 
 
 def test_restore_skips_pl_when_it_was_already_returned(monkeypatch):
     calls = []
-    monkeypatch.setitem(gd_gpu_service.__dict__, "_original", {"pl": None, "clocks_locked": False})
+    monkeypatch.setitem(gd_gpu_service.__dict__, "_original", {"pl": None, "uuid": GPU_UUID})
     monkeypatch.setitem(gd_gpu_service.__dict__, "_applied", {})
-    monkeypatch.setattr(gd_gpu_service, "_set_power", lambda pl: calls.append(pl) or (True, ""))
-    monkeypatch.setattr(gd_gpu_service, "_run_smi", lambda args: (True, ""))
-    monkeypatch.setattr(gd_gpu_service, "_clear_kept_original", lambda: None)
-    monkeypatch.setattr(gd_gpu_service, "_keep_original", lambda: None)
+    monkeypatch.setattr(gd_gpu_service, "_set_power", lambda uuid, pl: calls.append(pl) or (True, ""))
+    monkeypatch.setattr(gd_gpu_service, "_clear_snapshot", lambda: True)
+    monkeypatch.setattr(gd_gpu_service, "_save_snapshot", lambda original, applied: True)
 
     ok, _msg = gd_gpu_service._restore()
 

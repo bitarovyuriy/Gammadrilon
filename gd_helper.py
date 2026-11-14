@@ -22,14 +22,19 @@ import threading
 import time
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client
+from weakref import WeakValueDictionary
 
 import gd_i18n as i18n
 import gd_paths
 import gd_proc
+import gd_state
 
 TCP_HOST = "127.0.0.1"
 TCP_PORT = 47318
 MAX_MESSAGE_BYTES = 1024 * 1024
+
+_LAUNCH_LOCKS = WeakValueDictionary()
+_LAUNCH_LOCKS_GUARD = threading.Lock()
 
 
 def send_message(conn, obj: dict) -> None:
@@ -85,6 +90,12 @@ class HelperClient:
         # различает, чей ответ пришёл: без замка ответы достались бы не тем,
         # кто спрашивал (та же болячка, что в PowerClient — см. _tmp_power_race.py).
         self._lock = threading.RLock()
+        launch_key = (os.path.normcase(os.path.realpath(session_file)), port or TCP_PORT)
+        with _LAUNCH_LOCKS_GUARD:
+            self._launch_lock = _LAUNCH_LOCKS.get(launch_key)
+            if self._launch_lock is None:
+                self._launch_lock = threading.Lock()
+                _LAUNCH_LOCKS[launch_key] = self._launch_lock
 
     # -- сессия ------------------------------------------------------------
     def _load_session(self) -> dict | None:
@@ -109,14 +120,7 @@ class HelperClient:
         return {"port": port, "token": token}
 
     def _save_session(self, port: int, token: str) -> None:
-        try:
-            import json
-
-            os.makedirs(os.path.dirname(self.session_file), exist_ok=True)
-            with open(self.session_file, "w", encoding="utf-8") as fh:
-                json.dump({"port": port, "token": token, "ui_pid": os.getpid()}, fh)
-        except OSError:
-            pass
+        gd_state.write_json_atomic(self.session_file, {"port": port, "token": token, "ui_pid": os.getpid()})
 
     # -- соединение --------------------------------------------------------
     def _connect(self, port: int, token: str) -> bool:
@@ -143,19 +147,21 @@ class HelperClient:
         """
         if self._conn is not None:
             return True
-        sess = self._load_session()
-        if sess and self._connect(sess["port"], sess["token"]):
-            return True
-
-        port = self.port or TCP_PORT
-        token = new_token()
-        self._save_session(port, token)
-        self._launch(port, token)
-        for _ in range(60):
-            time.sleep(0.25)
-            if self._connect(port, token):
+        # Другой клиент мог запустить компаньона, пока мы ждали замок.
+        with self._launch_lock:
+            sess = self._load_session()
+            if sess and self._connect(sess["port"], sess["token"]):
                 return True
-        return False
+
+            port = self.port or TCP_PORT
+            token = new_token()
+            self._launch(port, token)
+            for _ in range(60):
+                time.sleep(0.25)
+                if self._connect(port, token):
+                    self._save_session(port, token)
+                    return True
+            return False
 
     def _launch(self, port: int, token: str) -> None:
         """Запустить хелпер с правами администратора (однократный UAC)."""
@@ -192,7 +198,7 @@ class HelperClient:
             except Exception:  # noqa: BLE001
                 return False
 
-    def call(self, obj: dict, timeout: float = 15.0) -> dict:
+    def call(self, obj: dict, timeout: float | None = 15.0) -> dict:
         """Отправить команду, при необходимости запустив хелпер (UAC). Никогда не бросает."""
         try:
             with self._lock:
@@ -202,7 +208,7 @@ class HelperClient:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    def call_existing(self, obj: dict, timeout: float = 15.0) -> dict:
+    def call_existing(self, obj: dict, timeout: float | None = 15.0) -> dict:
         """Команда только в уже запущенный хелпер: UAC отсюда **не** поднимается.
 
         Нужно фоновым действиям (правила автоматизации): окно UAC, всплывшее
@@ -217,12 +223,43 @@ class HelperClient:
         with self._lock:
             return self._call_connected_locked(obj, timeout)
 
-    def _call_connected(self, obj: dict, timeout: float) -> dict:
+    def apply_zapret_hosts(self, check_shutdown) -> dict:
+        """Cancel the read phase without sending a privileged write on exit."""
+        session = HelperClient(self.port, self.session_file, self.service, self.service_flag)
+        try:
+            with self._lock:
+                check_shutdown()
+                if not self._ensure_locked():
+                    return {"ok": False, "error": i18n.t("хелпер не запустился (нужны права администратора)")}
+                port, token = self.port, self.token
+            # A cancelled download must not close the connection used to roll back on exit.
+            check_shutdown()
+            if token is None or not session._connect(port, token):
+                return {"ok": False, "error": i18n.t("связь с хелпером потеряна")}
+            response = session._call_connected_locked(
+                {"cmd": "zapret_update", "op": "hosts_prepare"}, 120, check_shutdown=check_shutdown)
+            if not response.get("ok"):
+                return response
+            check_shutdown()
+            # The write may already be in progress when transport fails.
+            # Wait for the local commit to answer, with no network timeout or exit cancellation.
+            try:
+                send_message(session._conn, {"cmd": "zapret_update", "op": "hosts"})
+                return recv_message(session._conn)
+            except (OSError, EOFError, ValueError):
+                return {"ok": None, "error": i18n.t("Связь с помощником потеряна. Результат записи hosts неизвестен.")}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            if session._conn is not None:
+                session._conn.close()
+
+    def _call_connected(self, obj: dict, timeout: float | None) -> dict:
         """Отправка в установленное соединение. Никогда не бросает исключение."""
         with self._lock:
             return self._call_connected_locked(obj, timeout)
 
-    def _call_connected_locked(self, obj: dict, timeout: float) -> dict:
+    def _call_connected_locked(self, obj: dict, timeout: float | None, *, check_shutdown=None) -> dict:
         """Отправка и приём ответа (замок уже взят). Никогда не бросает.
 
         Замок держится на всю пару «вопрос — ответ»: ждать ответа из одного
@@ -231,33 +268,64 @@ class HelperClient:
         держим локально: `shutdown` закрывает его из другого потока.
         """
         conn = self._conn
+        gpu_write = obj.get("cmd") in ("apply", "restore")
         try:
             send_message(conn, obj)
-            if not conn.poll(timeout):
+            if timeout is None:
+                return recv_message(conn)
+            if check_shutdown is None:
+                ready = conn.poll(timeout)
+            else:
+                deadline = time.monotonic() + timeout
+                while True:
+                    check_shutdown()
+                    remaining = max(0, deadline - time.monotonic())
+                    ready = conn.poll(min(0.05, remaining))
+                    if ready or remaining == 0:
+                        break
+            if ready:
+                return recv_message(conn)
+            error = i18n.t("таймаут ответа хелпера")
+        except InterruptedError:
+            if check_shutdown is not None:
                 conn.close()
                 self._conn = None
-                return {"ok": False, "error": i18n.t("таймаут ответа хелпера")}
-            return recv_message(conn)
+                raise
+            error = i18n.t("связь с хелпером потеряна")
         except (OSError, EOFError):
-            self._conn = None
-            return {"ok": False, "error": i18n.t("связь с хелпером потеряна")}
+            error = i18n.t("связь с хелпером потеряна")
         except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {exc}"
+        self._conn = None
+        if conn is not None:
             try:
                 conn.close()
-            except Exception:
+            except OSError:
                 pass
-            self._conn = None
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if gpu_write:
+            return {"ok": None, "error": i18n.t("Результат операции GPU неизвестен. {v0}", v0=error)}
+        if obj.get("cmd") in ("dns_apply", "dns_restore"):
+            return {"ok": None, "error": i18n.t("Результат операции DNS неизвестен. {v0}", v0=error)}
+        return {"ok": False, "error": error}
 
     def shutdown(self, restore: bool = True, force: bool = False) -> dict:
-        result = {"ok": True}
-        if self._conn is not None:
+        """Wait for cleanup on an existing session without starting a helper."""
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return {"ok": True}
             try:
-                result = self.call({"cmd": "shutdown", "restore": restore, "force": force})
-            except Exception as exc:  # noqa: BLE001
-                result = {"ok": False, "error": str(exc)}
-        self._conn = None
-        return result
+                send_message(conn, {"cmd": "shutdown", "restore": restore, "force": force})
+                return recv_message(conn)
+            except (OSError, EOFError, ValueError):
+                return {"ok": None, "error": i18n.t(
+                    "Связь с помощником потеряна. Результат отката неизвестен.")}
+            finally:
+                self._conn = None
+                try:
+                    conn.close()
+                except OSError:
+                    pass
 
     def shutdown_async(self, restore: bool = True, force: bool = False) -> None:
         """Попросить хелпер завершиться с откатом, не дожидаясь ответа.
@@ -269,14 +337,7 @@ class HelperClient:
         `force=True` — откат обязателен вопреки настройке «не возвращать лимит
         при выходе»: так уходит неподтверждённое изменение (ТЗ 4.3).
         """
-        if self._conn is None:
-            return
-        try:
-            send_message(self._conn, {"cmd": "shutdown", "restore": restore, "force": force})
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            self._conn = None
+        threading.Thread(target=self.shutdown, args=(restore, force), daemon=True).start()
 
 
 def run_async(fn, on_done, parent=None):

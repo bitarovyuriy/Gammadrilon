@@ -6,18 +6,18 @@
 
   * результат всегда приходит в GUI-поток (сигнал Qt);
   * повторный тик не запускает вторую задачу, пока первая в полёте;
-  * задачи не переживают свой виджет (``destroyed`` → ``stop()``).
-
-Модуль не хранит состояний между вызовами, поэтому его безопасно использовать
-из любого виджета и из тестов.
+  * результаты сетевых чтений отбрасываются при закрытии приложения или виджета.
 """
 from __future__ import annotations
 
+import queue
+import threading
 import time
 
 #: активные фоновые воркеры: нужны, чтобы дождаться их при выходе приложения
 _WORKERS: set = set()
 _CLOSING = False
+_SHUTDOWN = threading.Event()
 
 
 def submit(fn, on_done, parent=None, *, during_shutdown=False):
@@ -43,9 +43,114 @@ def register(worker):
     return worker
 
 
+def wait_network_read(fn):
+    """Run a read-only diagnostic without making exit depend on blocking socket I/O.
+
+    The daemon may still be in DNS or a socket read when the process exits.
+    Its callable must not touch Qt, change system settings or write to disk.
+    """
+    if _SHUTDOWN.is_set():
+        raise InterruptedError("application is closing")
+    ready = threading.Event()
+    result = None
+    error = None
+
+    def read():
+        nonlocal result, error
+        try:
+            result = fn()
+        except Exception as exc:  # noqa: BLE001
+            error = exc
+        finally:
+            ready.set()
+
+    threading.Thread(target=read, daemon=True).start()
+    while not _SHUTDOWN.is_set():
+        if ready.wait(0.05):
+            if error is not None:
+                raise error
+            return result
+    raise InterruptedError("application is closing")
+
+
+def submit_network_read(fn, on_done, parent=None):
+    """Run a read independently of the widget and its callback lifetime."""
+    from PyQt5 import sip
+
+    def deliver(result):
+        if not _SHUTDOWN.is_set() and (parent is None or not sip.isdeleted(parent)):
+            on_done(result)
+
+    # Closing a widget must not delete a QThread that is still running.
+    return submit(lambda: wait_network_read(fn), deliver)
+
+
+def transfer_network(open_response, write_chunk, on_headers, chunk_size):
+    """Pass socket data to the caller without letting the socket own the file.
+
+    Only the caller runs callbacks. On shutdown it can close and remove the
+    partial file even if the reader is still blocked in DNS or recv.
+    """
+    pending = queue.Queue(maxsize=2)
+    stop = threading.Event()
+
+    def publish(kind, value=None):
+        while not stop.is_set():
+            try:
+                pending.put((kind, value), timeout=0.05)
+                return True
+            except queue.Full:
+                pass
+        return False
+
+    def read():
+        try:
+            with open_response() as response:
+                if not publish("headers", (response.geturl(), response.headers)):
+                    return
+                while not stop.is_set():
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    if not publish("chunk", chunk):
+                        return
+            publish("done")
+        except Exception as exc:  # noqa: BLE001
+            publish("error", exc)
+
+    if _SHUTDOWN.is_set():
+        raise InterruptedError("application is closing")
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        while not _SHUTDOWN.is_set():
+            try:
+                kind, value = pending.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            check_shutdown()
+            if kind == "headers":
+                on_headers(*value)
+            elif kind == "chunk":
+                write_chunk(value)
+            elif kind == "error":
+                raise value
+            else:
+                return
+        raise InterruptedError("application is closing")
+    finally:
+        stop.set()
+
+
+def check_shutdown():
+    """Check cancellation immediately before starting a local transaction."""
+    if _SHUTDOWN.is_set():
+        raise InterruptedError("application is closing")
+
+
 def begin_shutdown() -> None:
     global _CLOSING
     _CLOSING = True
+    _SHUTDOWN.set()
 
 
 def is_running(worker) -> bool:

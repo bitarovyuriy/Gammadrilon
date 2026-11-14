@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from collections import deque
-from multiprocessing.connection import Client
+from multiprocessing.connection import Client, Listener
 
 import gd_helper
 import gd_proc
@@ -72,6 +72,8 @@ class PowerClient:
         self.pipe = pipe
         self._conn = None
         self._proc = None
+        self._closing = threading.Event()
+        self._was_connected = False
         # Один запрос — один ответ, и всё это на одном соединении. Из окна
         # запросы идут из разных фоновых потоков (применение профиля и опрос
         # статуса каждые 5 с), и без замка ответы доставались не тем, кто
@@ -82,7 +84,18 @@ class PowerClient:
 
     def ensure(self) -> bool:
         with self._lock:
-            return self._ensure_locked()
+            return not self._closing.is_set() and self._ensure_locked()
+
+    def _connect_locked(self) -> bool:
+        if self._conn is None:
+            try:
+                self._conn = Client(address=self.pipe)
+            except OSError:
+                return False
+            self._was_connected = True
+            if self._proc is not None and self._proc.poll() is not None:
+                self._proc = None
+        return True
 
     def _ensure_locked(self) -> bool:
         """Подключиться к живому компаньону или поднять его (замок уже взят).
@@ -90,13 +103,8 @@ class PowerClient:
         Отдельным методом — чтобы ``call()`` держал замок непрерывно от
         соединения до ответа, а не отпускал его между шагами.
         """
-        if self._conn is not None:
+        if self._connect_locked():
             return True
-        try:
-            self._conn = Client(address=self.pipe)
-            return True
-        except OSError:
-            pass
         svc = os.path.join(HERE, "gd_power_service.py")
         if getattr(sys, "frozen", False):
             # в собранном exe сервис — тот же исполняемый файл с флагом режима
@@ -106,15 +114,16 @@ class PowerClient:
             # pythonw: консольный python.exe дал бы мелькающее окно
             cmd = [gd_proc.python_exe(), svc, "--ui-pid", str(os.getpid()), "--pipe", self.pipe]
             cwd = HERE
-        self._proc = gd_proc.popen(cmd, cwd=cwd)
+        try:
+            self._proc = gd_proc.popen(cmd, cwd=cwd)
+        except OSError:
+            return False
         for _ in range(40):
             time.sleep(0.2)
-            try:
-                self._conn = Client(address=self.pipe)
+            if self._connect_locked():
                 return True
-            except OSError:
-                if self._proc.poll() is not None:
-                    return False
+            if self._proc.poll() is not None:
+                return False
         return False
 
     def call_existing(self, obj: dict, timeout: float = 10.0) -> dict:
@@ -125,58 +134,106 @@ class PowerClient:
         Нет живой сессии — честный отказ, без запуска и без UAC.
         """
         with self._lock:
-            if self._conn is None:
-                try:
-                    self._conn = Client(address=self.pipe)
-                except OSError:
-                    return {"ok": False, "error": i18n.t("компаньон не запущен")}
+            if self._closing.is_set():
+                return {"ok": False, "error": i18n.t("компаньон завершает работу")}
+            if not self._connect_locked():
+                return {"ok": False, "error": i18n.t("компаньон не запущен")}
             return self._request_locked(obj, timeout)
 
     def call(self, obj: dict, timeout: float = 10.0) -> dict:
         with self._lock:
+            if self._closing.is_set():
+                return {"ok": False, "error": i18n.t("компаньон завершает работу")}
             if not self._ensure_locked():
                 return {"ok": False, "error": i18n.t("компаньон не запустился")}
             return self._request_locked(obj, timeout)
 
-    def _request_locked(self, obj: dict, timeout: float) -> dict:
+    def _request_locked(self, obj: dict, timeout: float | None) -> dict:
         """Отправка и приём ответа в одном соединении (замок уже взят).
 
         Замок обязателен на всю пару «вопрос — ответ»: два потока, ждущих
-        ответа из одного пайпа, разбирают их в произвольном порядке. Ссылку на
-        соединение держим локально: выход приложения закрывает его из другого
-        потока (`shutdown_async`), не дожидаясь опроса.
+        ответа из одного пайпа, разбирают их в произвольном порядке.
         """
         conn = self._conn
         try:
             gd_helper.send_message(conn, obj)
-            if not conn.poll(timeout):
-                self._conn = None
-                return {"ok": False, "error": i18n.t("таймаут ответа компаньона")}
-            return gd_helper.recv_message(conn)
+            if conn.poll(timeout):
+                return gd_helper.recv_message(conn)
+            error = i18n.t("таймаут ответа компаньона")
         except (OSError, EOFError, ValueError):
             # ValueError — пришло не наше сообщение (чужой процесс на канале)
-            self._conn = None
-            return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
+            error = i18n.t("связь с компаньоном потеряна")
+        self._disconnect_locked()
+        return {"ok": False, "error": error}
+
+    def _disconnect_locked(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            conn.close()
 
     def alive(self) -> bool:
         """Живой ли компаньон — без запуска и без обращений к пайпу.
 
-        Если процесс поднимали мы (:attr:`_proc`), истина — его состояние
-        (``poll()`` это O(1)); если подключились к чужому экземпляру — пока
-        держится соединение. Нужно честному индикатору в футе сайдбара.
+        Учитываем открытое соединение и собственный процесс, который может
+        оставаться жив после таймаута запроса. Проверка нужна футу сайдбара.
         """
         proc = self._proc
-        if proc is not None:
-            return proc.poll() is None
-        return self._conn is not None
+        return proc.poll() is None if proc is not None else self._conn is not None
 
-    def shutdown(self, restore: bool = True) -> None:
-        if self._conn is not None:
+    def recover_leftover(self) -> dict | None:
+        with self._lock:
+            if self._closing.is_set():
+                return {"ok": False, "note": i18n.t("компаньон завершает работу")}
+            if self._connect_locked() or self.alive():
+                return None
+            return self._recover_without_service_locked()
+
+    def _recover_without_service_locked(self) -> dict | None:
+        import gd_power
+
+        # The service and this fallback must claim the same pipe before writing.
+        try:
+            guard = Listener(address=self.pipe, family="AF_PIPE")
+        except OSError:
+            return None
+        with guard:
+            return gd_power.restore_report()
+
+    def clean_clones(self) -> dict:
+        import gd_power
+
+        with self._lock:
+            if self._closing.is_set():
+                return {"ok": False, "error": i18n.t("компаньон завершает работу")}
+            if self._connect_locked():
+                return self._request_locked({"cmd": "clean_clones"}, 10.0)
+            if self.alive():
+                return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
             try:
-                self.call({"cmd": "shutdown", "restore": restore})
-            except Exception:  # noqa: BLE001
-                pass
-        self._conn = None
+                guard = Listener(address=self.pipe, family="AF_PIPE")
+            except OSError:
+                if self._connect_locked():
+                    return self._request_locked({"cmd": "clean_clones"}, 10.0)
+                return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
+            with guard:
+                return {"ok": True, "data": gd_power.cleanup_clones()}
+
+    def shutdown(self, restore: bool = True) -> dict:
+        self._closing.set()
+        with self._lock:
+            if self._conn is None:
+                if not self._was_connected and not self.alive():
+                    return {"ok": True}
+                if not self._connect_locked():
+                    if not self.alive() and restore:
+                        report = self._recover_without_service_locked()
+                        if report is not None:
+                            return {"ok": report["ok"], "data": report, "error": report["note"]}
+                    return {"ok": False, "error": i18n.t("связь с компаньоном потеряна")}
+            try:
+                return self._request_locked({"cmd": "shutdown", "restore": restore}, timeout=None)
+            finally:
+                self._disconnect_locked()
 
     def shutdown_async(self, restore: bool = True) -> None:
         """Попросить компаньон завершиться с откатом, не дожидаясь ответа.
@@ -185,14 +242,8 @@ class PowerClient:
         выходим. Если есть: ждать ответа нельзя, а откат подстрахует watchdog
         компаньона по смерти UI-процесса.
         """
-        if self._conn is None:
-            return
-        try:
-            gd_helper.send_message(self._conn, {"cmd": "shutdown", "restore": restore})
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            self._conn = None
+        self._closing.set()
+        threading.Thread(target=self.shutdown, args=(restore,), daemon=True).start()
 
 
 def read_status(client: PowerClient) -> dict:
@@ -277,8 +328,7 @@ def make_card(title: str, tip: str = ""):
         lbl = QLabel(title)
         lbl.setObjectName("CardLabel")
         lbl.setWordWrap(True)
-        row.addWidget(lbl)
-        row.addStretch(1)
+        row.addWidget(lbl, 1)
         if tip:
             info = QPushButton("i")
             info.setObjectName("CardInfo")
@@ -314,6 +364,8 @@ class PowerWindow(QWidget):
 
         self._started = False
         self._apply_busy = False       # идёт apply/restore (фон) — блокирует кнопки
+        self._mutation_worker = None
+        self._resetting = False
         # Компаньон пропал в работе (его смерть = профиль без сторожа отката):
         self._service_seen_alive = False    # был ли он жив в этой сессии
         self._service_gone_reported = False  # о смерти уже сказано — не повторяемся
@@ -325,6 +377,7 @@ class PowerWindow(QWidget):
         self._clones_notified = False   # о найденных копиях сказано один раз
         self._state_note_shown = False  # о непригодном state сказано один раз
         self._active_is_clone = False   # активна наша копия схемы без живого профиля?
+        self._tracked_clone_active = False
         self._clones: list = []
         self._build()
 
@@ -356,11 +409,20 @@ class PowerWindow(QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         """Заблокировать управление, пока идёт операция (запуск компаньона + запись)."""
+        busy = busy or getattr(self, "_resetting", False)
         for btn in self.profile_btns.values():
             btn.setEnabled(not busy)
         self.btn_apply_custom.setEnabled(not busy)
         self.btn_restore.setEnabled(not busy)
         self.btn_clean_clones.setEnabled(not busy)
+
+    def _mutation_busy(self) -> bool:
+        return (self._shutting_down or getattr(self, "_resetting", False)
+                or self._apply_busy or self._leftover_busy or self._clones_busy)
+
+    def set_resetting(self, resetting: bool) -> None:
+        self._resetting = resetting
+        self._set_busy(self._mutation_busy())
 
     # -- построение --------------------------------------------------------
     def _build(self):
@@ -561,14 +623,14 @@ class PowerWindow(QWidget):
     def _call_apply(self, payload: dict):
         """Применить профиль: компаньон поднимается здесь (это осознанный клик
         пользователя), а запись идёт в фоне — окно не замирает."""
-        if self._apply_busy:
+        if self._mutation_busy():
             return
         self._apply_busy = True
         self._freq_before = self._last_mhz
         self._set_busy(True)
         self._set_bottom_status(i18n.t("Применяю профиль CPU…"), ok=True)
-        gd_bg.submit(
-            lambda: self.client.call(payload),
+        self._mutation_worker = gd_bg.submit(
+            lambda: self.client.call(payload, timeout=None),
             lambda resp: self._apply_done(resp, payload),
             parent=self,
         )
@@ -644,18 +706,20 @@ class PowerWindow(QWidget):
 
     def _restore(self):
         """Вернуть исходную схему — компаньон отвечает в фоне."""
-        if self._apply_busy:
+        if self._mutation_busy():
             return
         self._apply_busy = True
         self._set_busy(True)
         self._set_bottom_status(i18n.t("Возвращаю исходную схему…"), ok=True)
-        gd_bg.submit(lambda: self.client.call({"cmd": "restore"}), self._restore_done, parent=self)
+        self._mutation_worker = gd_bg.submit(
+            lambda: self.client.call({"cmd": "restore"}, timeout=None), self._restore_done, parent=self)
 
     def _restore_done(self, resp: dict):
         self._apply_busy = False
         self._set_busy(False)
         if resp.get("ok"):
             self._profile = None      # фут честен сразу, не ждёт фонового опроса
+            self._tracked_clone_active = False
             self._set_bottom_status(i18n.t("Схема возвращена к исходной."), ok=True)
             self._refresh_status()
             try:
@@ -676,7 +740,7 @@ class PowerWindow(QWidget):
     # -- внешнее управление (трей, палитра команд) -------------------------
     def apply_profile(self, pid: str, source: str = i18n.t("трей")):
         """Применить профиль извне — как действие, а не загрузку пресета в контролы."""
-        if self._apply_busy:
+        if self._mutation_busy():
             return
         self._source = source
         if pid == "restore":
@@ -744,7 +808,7 @@ class PowerWindow(QWidget):
             )
         except Exception:  # noqa: BLE001
             pass
-        if self._profile:
+        if self._tracked_clone_active:
             # сторожа отката больше нет: остаток профиля убираем сами (как при
             # профиле от прошлой сессии) — иначе клон схемы живёт вечно
             self._set_bottom_status(
@@ -805,6 +869,8 @@ class PowerWindow(QWidget):
         profile = data.get("profile")
         self._profile = profile
         self._active_is_clone = bool(data.get("active_is_clone"))
+        clone = data.get("clone_scheme")
+        self._tracked_clone_active = bool(profile or (clone and clone == data.get("active_scheme")))
         self._orig_values = values_dict(data.get("original_values")) or None
 
         # файл состояния есть, но непригоден: «профиль не применён» и «откатывать
@@ -821,7 +887,7 @@ class PowerWindow(QWidget):
         # профиль от прошлой сессии, а компаньона (он сторожит откат) нет:
         # откатываем сами — иначе чужой клон схемы живёт до следующего
         # применения, а фут честно пишет «служба не запущена»
-        if profile and not self._leftover_checked:
+        if self._tracked_clone_active and not self._leftover_checked and not self._mutation_busy():
             self._leftover_checked = True
             if not self.client.alive():
                 self._rollback_leftover()
@@ -891,20 +957,21 @@ class PowerWindow(QWidget):
         прав администратора не требует, поэтому откатываем сами — в фоне — и
         говорим об этом честно (журнал + строка состояния).
         """
-        if self._leftover_busy or self._apply_busy:
+        if self._mutation_busy():
             return
         self._leftover_busy = True
+        self._set_busy(True)
         self.status_name.setText(i18n.t("откатываю профиль прошлой сессии…"))
-        gd_bg.submit(self._do_rollback, self._rollback_done, parent=self)
-
-    @staticmethod
-    def _do_rollback() -> dict:
-        import gd_power
-
-        return gd_power.restore_report()
+        self._mutation_worker = gd_bg.submit(self.client.recover_leftover, self._rollback_done, parent=self)
 
     def _rollback_done(self, rep) -> None:
         self._leftover_busy = False
+        self._set_busy(False)
+        if rep is None:
+            self._refresh_status()
+            return
+        if isinstance(rep, Exception):
+            rep = {"ok": False, "note": str(rep)}
         if not isinstance(rep, dict):          # совместимость с простым bool
             rep = {"ok": bool(rep), "applied": bool(rep), "note": "", "clones": []}
         note = rep.get("note") or ""
@@ -994,23 +1061,22 @@ class PowerWindow(QWidget):
 
     def _clean_clones(self) -> None:
         """Убрать свои копии схем (явное действие пользователя)."""
-        if self._clones_busy or self._apply_busy:
+        if self._mutation_busy():
             return
         self._clones_busy = True
-        self.btn_clean_clones.setEnabled(False)
+        self._set_busy(True)
         self._set_bottom_status(i18n.t("Убираю свои копии схем питания…"), ok=True)
-        gd_bg.submit(self._do_clean_clones, self._clones_cleaned, parent=self)
-
-    @staticmethod
-    def _do_clean_clones() -> dict:
-        import gd_power
-
-        return gd_power.cleanup_clones()
+        self._mutation_worker = gd_bg.submit(self.client.clean_clones, self._clones_cleaned, parent=self)
 
     def _clones_cleaned(self, rep) -> None:
         self._clones_busy = False
-        self.btn_clean_clones.setEnabled(True)
-        rep = rep if isinstance(rep, dict) else {"removed": [], "failed": {}}
+        self._set_busy(False)
+        rep = rep if isinstance(rep, dict) else {}
+        if not rep.get("ok"):
+            error = rep.get("error") or i18n.t("причина неизвестна")
+            self._set_bottom_status(i18n.t("Ошибка: {v0}", v0=error), ok=False)
+            return
+        rep = rep["data"]
         removed = list(rep.get("removed") or [])
         failed = dict(rep.get("failed") or {})
         activated = rep.get("activated") or ""

@@ -85,31 +85,64 @@ $zipMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 function Invoke-SelfTest {
     param([string]$PathToExe, [string]$Title)
     Write-Host "== Самопроверка: $Title ==" -ForegroundColor Cyan
-    $si = New-Object System.Diagnostics.ProcessStartInfo
-    $si.FileName = $PathToExe
-    $si.Arguments = "--selftest"
-    $si.UseShellExecute = $false
-    $si.RedirectStandardOutput = $true
-    $si.RedirectStandardError = $true
-    $si.CreateNoWindow = $true
-    $si.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $tempRoot = Get-Item -LiteralPath ([System.IO.Path]::GetTempPath())
+    $profile = New-Item -ItemType Directory -Path (
+        Join-Path $tempRoot.FullName ("Gammadrilon-selftest-" + [guid]::NewGuid().ToString("N")))
+    $reportPath = Join-Path $profile.FullName "report.txt"
+
     $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo = $si
-    $null = $proc.Start()
-    $out = $proc.StandardOutput.ReadToEndAsync()
-    $err = $proc.StandardError.ReadToEndAsync()
-    if (-not $proc.WaitForExit(120000)) {
-        try { $proc.Kill() } catch { }
-        throw "Самопроверка $Title не завершилась за 120 с"
-    }
-    $proc.WaitForExit()
-    $code = $proc.ExitCode
-    $proc.Dispose()
-    ($out.Result + $err.Result).Split("`n") | ForEach-Object {
-        if ($_.Trim()) { Write-Host "   $($_.TrimEnd())" }
-    }
-    if ($code -ne 0) {
-        throw "Самопроверка $Title нашла провалы (код $code) - релиз остановлен"
+    try {
+        $si = New-Object System.Diagnostics.ProcessStartInfo
+        $si.FileName = $PathToExe
+        $si.Arguments = "--selftest"
+        $si.WorkingDirectory = $profile.FullName
+        $si.UseShellExecute = $false
+        $si.RedirectStandardOutput = $true
+        $si.RedirectStandardError = $true
+        $si.CreateNoWindow = $true
+        $si.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+        # onefile распаковывается в отдельный TEMP, обе проверки читают пустой профиль.
+        foreach ($name in @("APPDATA", "LOCALAPPDATA", "ProgramData", "USERPROFILE", "TEMP", "TMP")) {
+            $dir = New-Item -ItemType Directory -Path (Join-Path $profile.FullName $name)
+            $si.EnvironmentVariables[$name] = $dir.FullName
+        }
+        $si.EnvironmentVariables["GD_PORTABLE"] = "0"
+        $si.EnvironmentVariables["GD_QUIET"] = "1"
+        $si.EnvironmentVariables["GD_SELFTEST_REPORT"] = $reportPath
+        $si.EnvironmentVariables.Remove("GD_BOOT_LOG")
+        $proc.StartInfo = $si
+        $null = $proc.Start()
+        $out = $proc.StandardOutput.ReadToEndAsync()
+        $err = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit(120000)) {
+            try { $proc.Kill() } catch { }
+            throw "Самопроверка $Title не завершилась за 120 с"
+        }
+        $proc.WaitForExit()
+        # У windowed onefile вывод через pipe может быть пустым.
+        $report = if (Test-Path -LiteralPath $reportPath) {
+            Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8
+        }
+        $output = if ($report) { $report } else { $out.Result }
+        ($output + $err.Result).Split("`n") | ForEach-Object {
+            if ($_.Trim()) { Write-Host "   $($_.TrimEnd())" }
+        }
+        if ($proc.ExitCode -ne 0) {
+            throw "Самопроверка $Title нашла провалы (код $($proc.ExitCode)) - релиз остановлен"
+        }
+        if ([string]::IsNullOrWhiteSpace($report)) {
+            throw "Самопроверка $Title завершилась без отчёта"
+        }
+    } finally {
+        $proc.Dispose()
+        $cleanupTarget = Get-Item -LiteralPath $profile.FullName -ErrorAction SilentlyContinue
+        if ($cleanupTarget -and $cleanupTarget.Parent.FullName.TrimEnd('\') -eq $tempRoot.FullName.TrimEnd('\')) {
+            try {
+                Remove-Item -LiteralPath $cleanupTarget.FullName -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-Warning "Временный профиль сохранён: $($cleanupTarget.FullName)"
+            }
+        }
     }
 }
 

@@ -28,6 +28,7 @@ from typing import Optional
 
 import gd_i18n as i18n
 import gd_paths
+import gd_state
 
 # --------------------------------------------------------------------------
 # GUID'ы (подтверждены на живой системе, см. шапку файла)
@@ -243,8 +244,10 @@ def list_schemes() -> list[str]:
         size = wintypes.DWORD(16)
         # буфер — массивом (см. rename_scheme: ctypes.cast роняет вызов)
         r = _p.PowerEnumerate(None, None, None, ACCESS_SCHEME, index, buf, byref(size))
-        if r != 0:                      # ERROR_NO_MORE_ITEMS или отказ — список кончился
+        if r == ERROR_NO_MORE_ITEMS:
             return out
+        if r != 0:
+            raise ctypes.WinError(r)
         out.append(guid_to_str(ctypes.cast(buf, POINTER(GUID)).contents))
         index += 1
 
@@ -477,11 +480,13 @@ def read_state_report() -> tuple[Optional[dict], str]:
     Молчать об этом нельзя: по этому файлу приложение решает, что «профиль не
     применён», а клон схемы с нашими настройками при этом живёт в системе.
     """
-    if not os.path.exists(STATE_FILE):
-        return None, ""
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             text = f.read()
+    except FileNotFoundError:
+        return None, ""
+    except UnicodeError as exc:
+        return None, f"UTF-8: {exc}"
     except OSError as exc:
         return None, f"{type(exc).__name__}: {exc}"
     try:
@@ -492,6 +497,13 @@ def read_state_report() -> tuple[Optional[dict], str]:
         return None, i18n.t("в файле не объект, а {v0}", v0=type(data).__name__)
     if not data.get("original_scheme") and not data.get("clone_scheme"):
         return None, i18n.t("в файле нет ни исходной схемы, ни клона")
+    for key in ("original_scheme", "clone_scheme"):
+        guid = data.get(key)
+        if guid not in (None, ""):
+            try:
+                uuid.UUID(guid)
+            except (AttributeError, TypeError, ValueError):
+                return None, f"{key}: {guid!r}"
     return data, ""
 
 
@@ -506,11 +518,8 @@ def state_problem() -> str:
 
 
 def save_state(state: dict) -> None:
-    os.makedirs(STATE_DIR, exist_ok=True)
-    tmp = STATE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, STATE_FILE)
+    if not gd_state.write_json_atomic(STATE_FILE, state):
+        raise OSError(i18n.t("не удалось записать файл: {v0}", v0=STATE_FILE))
 
 
 def clear_state() -> bool:
@@ -590,7 +599,7 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
     """Клонирует активную схему, пишет профиль, активирует клон.
 
     Возвращает state-словарь (сохраняется в STATE_FILE для отката).
-    При любой ошибке новый клон удаляется, активная схема не меняется.
+    Данные отката сохраняются до изменения настроек и активации клона.
 
     Повторное применение не плодит копии: если активна наша же копия и файл
     состояния помнит настоящую исходную схему, профиль пишется в эту копию.
@@ -613,33 +622,10 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
         original = original_for_clone(current, prev)
         if original.upper() == clone.upper():
             original = ""       # исходную узнать не удалось — вернёмся к переименованию
-        rename_scheme(clone, clone_name(original or clone))
     else:
         reuse = False
         original = current
         clone = duplicate_scheme(original)
-        # метка в имени копии: её видно в панели управления Windows и по ней потом
-        # находится остаток, если файл состояния пропадёт (см. list_clones)
-        rename_scheme(clone, clone_name(original))
-
-    try:
-        res = write_values(clone, values)
-        if res["failed"]:
-            raise OSError(i18n.t("не удалось записать настройки: {v0}", v0=res['failed']))
-        if not set_active_scheme(clone):
-            raise OSError(i18n.t("PowerSetActiveScheme не сработал"))
-    except Exception:
-        if reuse:
-            # копия была рабочей: возвращаем в неё прошлые значения, а не удаляем
-            old_values = prev.get("values")
-            if old_values:
-                try:
-                    write_values(clone, old_values)
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            delete_scheme(clone)
-        raise
 
     state = {
         "version": 1,
@@ -650,7 +636,41 @@ def apply_profile(profile_id: str, custom: Optional[dict] = None) -> dict:
         "values": values,
         "applied_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    save_state(state)
+    try:
+        save_state(state)
+    except Exception:
+        if not reuse:
+            delete_scheme(clone)
+        raise
+
+    try:
+        # Метка помогает найти копию в панели Windows и при потере state.
+        rename_scheme(clone, clone_name(original or clone))
+        res = write_values(clone, values)
+        if res["failed"]:
+            raise OSError(i18n.t("не удалось записать настройки: {v0}", v0=res['failed']))
+        if not set_active_scheme(clone):
+            raise OSError(i18n.t("PowerSetActiveScheme не сработал"))
+    except Exception:
+        # При неудачной компенсации оставляем запись, по которой сторож может
+        # вернуть исходную схему. Прошлый профиль относится только к своему клону.
+        try:
+            if not reuse and delete_scheme(clone):
+                if prev:
+                    save_state(prev)
+                else:
+                    clear_state()
+            elif reuse and prev.get("clone_scheme") == clone and prev.get("values"):
+                reverted = write_values(clone, prev["values"])
+                if not reverted["failed"]:
+                    save_state(prev)
+                else:
+                    save_state({**state, "profile": None})
+            else:
+                save_state({**state, "profile": None})
+        except Exception:  # noqa: BLE001 — the rollback record is still available
+            pass
+        raise
 
     # В системе не должно оставаться других наших копий. Одну прошлую копию
     # убирал и прежний код, но остатки от старых версий и потерянного state
@@ -679,8 +699,7 @@ def restore_report(state: Optional[dict] = None) -> dict:
     скажут причину. Раньше state удалялся всегда — повторной попытки не было,
     и о неудаче не узнавал никто.
     """
-    st = state if state is not None else load_state()
-    problem = state_problem()
+    st, problem = read_state_report() if state is None else (state, "")
     if not st:
         clones = list_clones()
         note = ""
@@ -702,10 +721,11 @@ def restore_report(state: Optional[dict] = None) -> dict:
     problems = []
     orig = st.get("original_scheme")
     clone = st.get("clone_scheme")
-    if orig and not set_active_scheme(orig):
+    active = get_active_scheme() if orig and clone else None
+    if orig and (not clone or clone.upper() == active.upper()) and not set_active_scheme(orig):
         problems.append(i18n.t("не удалось вернуть исходную схему {v0}", v0=orig))
-    if clone and clone != orig:
-        if delete_scheme(clone):
+    if not problems and clone and clone != orig:
+        if delete_scheme(clone) or clone.upper() not in {g.upper() for g in list_schemes()}:
             pass
         elif not orig:
             # исходную схему узнать не удалось, а копию нельзя удалить, пока она

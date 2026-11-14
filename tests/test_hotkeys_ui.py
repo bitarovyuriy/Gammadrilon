@@ -107,3 +107,29 @@ def test_known_specs_pass_validation(spec):
     panel._fields["reset"].setText(spec)
 
     assert panel._validate()[0] is True
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+def test_styled_rows_fit_the_shortcut_editors(monkeypatch, language):
+    monkeypatch.setattr(ui.i18n, "_current", language)
+    old_style = _APP.styleSheet()
+    _APP.setStyleSheet(_gd_main.build_app_stylesheet())
+    panel, _, _ = _panel()
+    panel.resize(440, 500)
+    panel.show()
+    _APP.processEvents()
+    panel.table.doItemsLayout()
+    try:
+        for row in range(panel.table.rowCount()):
+            editor = panel.table.cellWidget(row, 1)
+            clear = panel.table.cellWidget(row, 2)
+            assert panel.table.rowHeight(row) >= editor.minimumSizeHint().height()
+            assert panel.table.rowHeight(row) >= clear.sizeHint().height()
+            assert editor.height() >= 32
+            assert panel.table.viewport().rect().contains(editor.geometry())
+            assert panel.table.viewport().rect().contains(clear.geometry())
+            assert clear.width() >= 32 and clear.height() >= 32
+            assert clear.accessibleName() and clear.toolTip()
+        assert panel.table.horizontalScrollBar().maximum() == 0
+    finally:
+        panel.close()
+        _APP.setStyleSheet(old_style)

@@ -13,8 +13,11 @@
 """
 from __future__ import annotations
 
+import csv
 import json
+import math
 import os
+import re
 
 import gd_helper
 import gd_i18n as i18n
@@ -160,8 +163,13 @@ _FIELDS = (
     "name", "driver_version", "power.limit", "power.min_limit", "power.max_limit",
     "power.default_limit", "clocks.gr", "clocks.max.gr", "clocks.mem",
     "temperature.gpu", "utilization.gpu", "memory.used", "memory.total",
-    "fan.speed",
+    "fan.speed", "uuid",
 )
+
+
+def valid_uuid(value) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(
+        r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value, re.IGNORECASE))
 
 
 def read_state() -> dict | None:
@@ -170,24 +178,26 @@ def read_state() -> dict | None:
         instance = _nvml()
         if instance is not None and instance.available():
             state = instance.read()
-            if state:
+            if state and valid_uuid(state.get("uuid")):
                 return state
     except Exception:  # noqa: BLE001 — NVML может отказать на любом шаге
         pass
 
     out = _smi([
+        "-i", "0",
         f"--query-gpu={','.join(_FIELDS)}",
         "--format=csv,noheader,nounits",
     ])
     if not out:
         return None
-    parts = [p.strip() for p in out.splitlines()[0].split(",")]
-    if len(parts) < len(_FIELDS):
+    parts = [p.strip() for p in next(csv.reader(out.splitlines(), skipinitialspace=True))]
+    if len(parts) != len(_FIELDS):
         return None
 
     def num(idx):
         try:
-            return float(parts[idx])
+            value = float(parts[idx])
+            return value if math.isfinite(value) else None
         except (ValueError, IndexError):
             return None
 
@@ -206,6 +216,7 @@ def read_state() -> dict | None:
         "mem_used": num(11),
         "mem_total": num(12),
         "fan": num(13),
+        "uuid": parts[14] if valid_uuid(parts[14]) else None,
     }
 
 

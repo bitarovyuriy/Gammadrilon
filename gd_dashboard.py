@@ -35,7 +35,7 @@ ROW_HEIGHTS = {"S": 104, "M": 140, "L": 208}
 CATALOG: dict[str, dict] = {
     "w.cpu": {"min_w": 4, "max_w": 12, "kind": "metric"},
     "w.gpu": {"min_w": 4, "max_w": 12, "kind": "metric"},
-    "w.ram": {"min_w": 3, "max_w": 12, "kind": "metric"},
+    "w.ram": {"min_w": 3, "max_w": 12, "min_h": "M", "kind": "metric"},
     "w.power": {"min_w": 3, "max_w": 12, "kind": "action"},
     "w.gpu_limit": {"min_w": 3, "max_w": 12, "kind": "action"},
     "w.cs2": {"min_w": 3, "max_w": 12, "kind": "action"},
@@ -81,17 +81,12 @@ def load_layout(path: str | Path | None = None) -> Layout:
     """Загрузить раскладку из файла.
 
     Нет файла — раскладка по умолчанию. Битый JSON — раскладка по умолчанию, и
-    битый файл уезжает в ``.bak`` через :func:`gd_state.quarantine`. Чужая
+    битый файл уезжает в ``.bak``. Чужая
     структура (валидный JSON, но не раскладка) — просто раскладка по
     умолчанию, без карантина.
     """
     path = Path(path or layout_path())
-    if not path.exists():
-        return default_layout()
-    data = gd_state.read_json(path)
-    if data is None:
-        gd_state.quarantine(path)
-        return default_layout()
+    data, _ = gd_state.read_json_with_recovery(path)
     if not isinstance(data, dict):
         return default_layout()
     return normalize(data)

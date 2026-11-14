@@ -373,6 +373,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "Буст выключен, восстановлено процессов: {v0}.": "Буст выключен, восстановлено процессов: {v0}.",
         # диагностика
         "tab.diagnose": "Диагностика",
+        "tab.diagnose.full": "Диагностика",
+        "tab.diagnose.title": "Диагностика",
+        "tab.diagnose.sub": "Проверки системы и отчёт для поддержки",
         "Диагностика": "Диагностика",
         "ДИАГНОСТИКА ОКРУЖЕНИЯ": "ДИАГНОСТИКА ОКРУЖЕНИЯ",
         "Проверяет Windows, права, пути, видеокарту, датчики, .NET, zapret, прокси и UAC. Отчёт обезличен: имя пользователя, IP и MAC заменяются.": "Проверяет Windows, права, пути, видеокарту, датчики, .NET, zapret, прокси и UAC. Отчёт обезличен: имя пользователя, IP и MAC заменяются.",
@@ -724,6 +727,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "Буст выключен, восстановлено процессов: {v0}.": "Boost is off, processes restored: {v0}.",
         # diagnostics
         "tab.diagnose": "Diagnostics",
+        "tab.diagnose.full": "Diagnostics",
+        "tab.diagnose.title": "Diagnostics",
+        "tab.diagnose.sub": "System checks and support report",
         "Диагностика": "Diagnostics",
         "ДИАГНОСТИКА ОКРУЖЕНИЯ": "ENVIRONMENT DIAGNOSTICS",
         "Проверяет Windows, права, пути, видеокарту, датчики, .NET, zapret, прокси и UAC. Отчёт обезличен: имя пользователя, IP и MAC заменяются.": "Checks Windows, rights, paths, graphics card, sensors, .NET, zapret, proxy and UAC. The report is anonymized: user name, IP and MAC are replaced.",
@@ -1003,7 +1009,10 @@ DIRECT: dict[str, str] = {
         "The settings folder is not writable ({v0}). Turn on portable mode in Utilities or run the app as administrator.",
     # --- строки страницы CS2, обхода, NVML и служебных сообщений ---
     "Поднимите тени так, чтобы плитки различались": "Raise the shadows until the tiles become distinguishable",
-    "Слева почти чёрное, справа светло-серое. Если тёмные плитки ": "Left is nearly black, right is light grey. If the dark tiles ",
+    "Слева почти чёрное, справа светло-серое. Если тёмные плитки "
+    "сливаются с фоном — добавьте тени; если картинка стала серой — уберите.":
+        "The tiles range from near-black on the left to light grey on the right. "
+        "Raise the shadows if the dark tiles blend into the background, or lower them if the image looks washed out.",
     "реестр недоступен": "registry is not available",
     "ни один пункт не выбран": "no item selected",
     "cs2.exe не найдена — «{v0}» пропущен": "cs2.exe not found — “{v0}” skipped",
@@ -1476,7 +1485,8 @@ DIRECT: dict[str, str] = {
     "Профиль CPU": "CPU profile",
     "Профиль GPU": "GPU profile",
     "Свой": "Custom",
-    "Смена DNS может ухудшить резолв в вашей сети. Сравнивайте латентность до и после.": "Changing DNS may worsen resolution on your network. Compare latency before and after.",
+    "Смена DNS может ухудшить резолв в вашей сети. Сравнивайте латентность до и после.":
+        "Changing DNS may affect name resolution on your network. Compare latency before and after.",
     "Сменить DNS": "Switch DNS",
     "Тихий": "Quiet",
     "Измерение, а не «оптимизатор пинга»: повторные сегменты TCP, джиттер, потери и рост задержки под нагрузкой (bufferbloat).": "A measurement, not a “ping optimizer”: retransmitted TCP segments, jitter, loss and latency growth under load (bufferbloat).",
@@ -1609,6 +1619,7 @@ DIRECT: dict[str, str] = {
         "the profile was left over from the previous session, and no companion was running",
     "автооткат": "auto rollback",
     "компаньон не запущен": "companion is not running",
+    "компаньон завершает работу": "companion is shutting down",
     # --- компаньон питания пропал в работе (не сон и не сброс — процесс умер) ---
     "toast.power_service_gone":
         "Power service stopped outside Gammadrilon — a profile may be left in the system.",
@@ -1892,6 +1903,25 @@ DIRECT: dict[str, str] = {
     "клоки {v0}–{v1} МГц": "clocks {v0}–{v1} MHz",
     "применено: {v0}": "applied: {v0}",
     "нечего применять": "nothing to apply",
+    "Не удалось определить видеокарту для изменения.": "Could not identify the GPU to modify.",
+    "Сначала восстановите настройки видеокарты из сохранённого снимка.":
+        "Restore the GPU settings from the saved snapshot first.",
+    "Драйвер не сообщил исходный лимит мощности. Изменение отменено.":
+        "The driver did not report the original power limit. The change was cancelled.",
+    "Не удалось связать снимок GPU с конкретной картой. Проверьте исходный лимит, "
+    "переместите файл {v0} в резервную папку и перезапустите приложение. Инструкция есть в README.":
+        "Could not match the GPU snapshot to a specific adapter. Verify the original power limit, "
+        "move {v0} to a backup folder, then restart the app. See the README for instructions.",
+    "Не удалось сохранить снимок для отката GPU.": "Could not save the GPU rollback snapshot.",
+    "Результат изменения GPU неизвестен. Снимок для отката сохранён. {v0}":
+        "The GPU change is unconfirmed. The rollback snapshot was kept. {v0}",
+    "Результат операции GPU неизвестен. {v0}": "The GPU operation outcome is unknown. {v0}",
+    "Изменение GPU не подтверждено.": "The GPU change is unconfirmed.",
+    "Откат GPU не подтверждён: {v0}": "GPU rollback is unconfirmed: {v0}",
+    "Помощник не подтвердил настройку: {v0}": "The helper did not confirm the setting: {v0}",
+    "не удалось выполнить откат": "rollback failed",
+    "Связь с помощником потеряна. Результат отката неизвестен.":
+        "Lost connection to the helper. The rollback outcome is unknown.",
     "нечего откатывать": "nothing to roll back",
     "исходные значения возвращены": "original values restored",
     "не удалось прочитать командную строку: {v0}": "could not read the command line: {v0}",
@@ -2140,6 +2170,17 @@ DIRECT: dict[str, str] = {
         "Add or replace the managed Gammadrilon block in the system hosts? Other lines are untouched and a file copy is saved.",
     "Обновляю hosts…": "Updating hosts…",
     "hosts обновлён. Резервная копия: {v0}": "hosts updated. Backup: {v0}",
+    "Файл hosts создан.": "The hosts file was created.",
+    "{v0}. Резервная копия: {v1}": "{v0}. Backup: {v1}",
+    "Связь с помощником потеряна. Результат записи hosts неизвестен.":
+        "The helper disconnected. The outcome of the hosts write is unknown.",
+    "повреждены границы управляемого блока hosts": "the managed hosts block has invalid markers",
+    "hosts изменился во время подготовки. Повторите обновление.":
+        "The hosts file changed while the update was being prepared. Try the update again.",
+    "Не удалось вернуть исходный hosts: {v0}. Оригинал сохранён в {v1}. "
+    "Если hosts отсутствует, верните оригиналу имя hosts с правами администратора.":
+        "Could not restore the original hosts file: {v0}. The original is saved at {v1}. "
+        "If hosts is missing, rename the original to hosts with administrator rights.",
     "блок обновлён": "block updated",
     "Установлено: {v0} · доступна {v1}": "Installed: {v0} · available {v1}",
     "Установлено: {v0} · это последняя версия": "Installed: {v0} · this is the latest version",
@@ -2217,6 +2258,27 @@ DIRECT: dict[str, str] = {
     "неверная конфигурация DNS": "invalid DNS configuration",
     "неверный адрес DNS": "invalid DNS address",
     "DNS изменён частично: {v0}": "DNS was partially changed: {v0}",
+    "Включить DoH для выбранного резолвера": "Enable DoH for the selected resolver",
+    "{v0} · IPv4: {v1} ({v2})": "{v0} · IPv4: {v1} ({v2})",
+    "Windows 11 применит DoH для этих адресов на всех адаптерах. Без галочки действующие настройки DoH сохраняются.":
+        "Windows 11 enables DoH for these addresses on all adapters. Leave unchecked to keep existing DoH settings.",
+    "Windows не подтвердила настройки DNS для IPv{v0}.": "Windows did not confirm the IPv{v0} DNS settings.",
+    "Windows не подтвердила настройки DoH.": "Windows did not confirm the DoH settings.",
+    "не удалось прочитать конфигурацию DoH": "could not read the DoH settings",
+    "не удалось сохранить резервную копию DNS": "could not save the DNS backup",
+    "сетевой адаптер не найден": "network adapter not found",
+    "не удалось прочитать конфигурацию DNS для IPv{v0}": "could not read IPv{v0} DNS settings",
+    "Не удалось прочитать конфигурацию DNS": "Could not read the DNS settings",
+    "Нет сохранённых изменений DNS.": "There are no saved DNS changes.",
+    "Прежняя конфигурация DNS восстановлена.": "The previous DNS configuration was restored.",
+    "Восстановить старый снимок DNS": "Restore legacy DNS backup",
+    "Снимок хранит только имя адаптера «{v0}». Убедитесь, что это тот же адаптер, затем подтвердите восстановление IPv4.":
+        "The backup only contains the adapter name “{v0}”. Verify that it is the same adapter, then confirm the IPv4 restore.",
+    "Проверьте адаптер «{v0}» и восстановите старый снимок на вкладке DNS.":
+        "Verify adapter “{v0}” and restore the legacy backup on the DNS tab.",
+    "Результат операции DNS неизвестен. {v0}": "The DNS operation outcome is unknown. {v0}",
+    "«{v0}»: ошибка применения DNS — {v1}": "“{v0}”: could not apply DNS — {v1}",
+    "Правило «{v0}»: ошибка применения DNS.": "Rule “{v0}”: could not apply DNS.",
     "DNS: ошибка применения, проверьте текущее состояние: {v0}":
         "DNS: application failed, check the current state: {v0}",
     "Возвращаю изменения…": "Restoring changes…",

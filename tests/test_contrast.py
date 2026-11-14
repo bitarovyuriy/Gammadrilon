@@ -10,6 +10,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -69,3 +71,82 @@ def test_ratio_math_is_right():
     # белое на чёрном — максимум 21:1, одинаковые цвета — 1:1
     assert round(contrast_ratio("#FFFFFF", "#000000"), 1) == 21.0
     assert round(contrast_ratio("#777777", "#777777"), 2) == 1.0
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+@pytest.mark.parametrize(("role", "checked"), [
+    ("PrimaryButton", None),
+    ("Segment", True),
+    ("Segment", False),
+    ("ToggleButton", True),
+    ("ToggleButton", False),
+])
+def test_keyboard_focus_renders_a_contrasting_button_border(theme, role, checked, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication, QPushButton, QVBoxLayout, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    previous_theme = gd_theme.active_name()
+    window = QWidget()
+    window.setObjectName("PanelRoot")
+    layout = QVBoxLayout(window)
+    start = QPushButton("Start", window)
+    target = QPushButton("Action", window)
+    target.setObjectName(role)
+    target.setFocusPolicy(Qt.StrongFocus)
+    target.setFixedSize(160, 40)
+    if checked is not None:
+        target.setCheckable(True)
+        target.setChecked(checked)
+    layout.addWidget(start)
+    layout.addWidget(target)
+
+    def top_colors():
+        grab = target.grab()
+        image = grab.toImage()
+        center = image.width() // 2
+        return [image.pixelColor(center, row).name()
+                for row in range(round(6 * grab.devicePixelRatioF()))]
+
+    try:
+        gd_theme.apply(theme)
+        window.setStyleSheet(gd_theme.STYLESHEET)
+        window.show()
+        start.setFocus()
+        app.processEvents()
+        assert start.hasFocus()
+        before = top_colors()
+
+        QTest.keyClick(start, Qt.Key_Tab)
+        assert target.hasFocus()
+        focused = top_colors()
+        filled = checked or role == "PrimaryButton"
+        expected = gd_theme.active()["FOCUS_ON_ACCENT" if filled else "ACCENT"]
+        border_width = round(2 * target.devicePixelRatioF())
+        assert focused[:border_width] == [expected.lower()] * border_width
+        assert focused[-1] == before[-1]
+        assert contrast_ratio(focused[0], focused[-1]) >= 3
+        assert contrast_ratio(focused[border_width - 1], before[border_width - 1]) >= 3
+        if filled:
+            for backdrop in (gd_theme.PAPER, gd_theme.SURFACE):
+                assert contrast_ratio(focused[0], backdrop) >= 3
+
+        QApplication.sendEvent(target, QEvent(QEvent.Enter))
+        hovered = top_colors()
+        assert hovered[:border_width] == focused[:border_width]
+        assert hovered[-1] != focused[-1]
+        assert contrast_ratio(hovered[0], hovered[-1]) >= 3
+
+        QTest.keyPress(target, Qt.Key_Space)
+        assert target.isDown()
+        pressed = top_colors()
+        assert pressed[:border_width] == focused[:border_width]
+        assert contrast_ratio(pressed[0], pressed[-1]) >= 3
+        QTest.keyRelease(target, Qt.Key_Space)
+        QTest.keyClick(target, Qt.Key_Backtab, Qt.ShiftModifier)
+        assert start.hasFocus()
+    finally:
+        window.close()
+        gd_theme.apply(previous_theme)

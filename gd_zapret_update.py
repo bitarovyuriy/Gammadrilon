@@ -19,14 +19,16 @@
 """
 from __future__ import annotations
 
-import json
+import codecs
 import hashlib
 import hmac
+import json
 import os
 import re
 import shutil
 import time
 import tempfile
+from http.client import HTTPException
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -44,6 +46,7 @@ RAW_BASE = f"https://raw.githubusercontent.com/{REPO}/refs/heads/main"
 IPSET_URL = f"{RAW_BASE}/.service/ipset-service.txt"
 VERSION_URL = f"{RAW_BASE}/.service/version.txt"
 HOSTS_URL = f"{RAW_BASE}/.service/hosts"
+HOSTS_MAX_BYTES = 1024 * 1024
 
 #: проверять обновления не чаще раза в сутки (щадим лимит GitHub API)
 CHECK_TTL = 24 * 3600
@@ -163,7 +166,8 @@ def latest_from_raw(timeout: float = NET_TIMEOUT) -> str | None:
     return text.splitlines()[0].strip() if text else None
 
 
-def check_updates(root: str | None = None, force: bool = False) -> dict:
+def check_updates(root: str | None = None, force: bool = False, *,
+                  network_read=None) -> dict:
     """Сверить установленную версию с последним релизом Flowseal.
 
     Возвращает словарь (никогда не бросает):
@@ -191,11 +195,19 @@ def check_updates(root: str | None = None, force: bool = False) -> dict:
     error = None
     latest = None
     try:
-        release = _release_from_api(_http_json(API_LATEST))
+        def fetch():
+            return _http_json(API_LATEST)
+
+        release = _release_from_api(network_read(fetch) if network_read else fetch())
         latest = release.get("tag") or None
+    except InterruptedError:
+        return {"ok": False, "error": None}
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as exc:
         error = f"{type(exc).__name__}: {exc}"
-        latest = latest_from_raw()
+        try:
+            latest = network_read(latest_from_raw) if network_read else latest_from_raw()
+        except InterruptedError:
+            return {"ok": False, "error": None}
         if latest:
             release = {"tag": latest, "name": latest, "published_at": "",
                        "body": "", "url": f"{REPO_URL}/releases/tag/{latest}", "assets": []}
@@ -234,23 +246,29 @@ def release_zip_url(release: dict) -> str | None:
 
 
 def download(url: str, dest: str | Path, on_progress=None,
-             timeout: float = 120.0) -> tuple[bool, str]:
+             timeout: float = 120.0, *, transfer=None) -> tuple[bool, str]:
     """Скачать файл на диск кусками. ``on_progress(done, total)`` — по желанию."""
     dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_name(dest.name + ".part")
-    req = urllib.request.Request(url, headers={"User-Agent": "Gammadrilon"})
+    part = None
     try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "Gammadrilon"})
         if not trusted_release_url(url) and not trusted_list_url(url):
             raise ValueError("untrusted release URL")
         opener = urllib.request.build_opener(_ReleaseRedirect())
-        with opener.open(req, timeout=timeout) as resp, part.open("wb") as fh:
-            total = int(resp.headers.get("Content-Length") or 0)
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=dest.parent, prefix=f"{dest.name}.", suffix=".part", delete=False,
+        ) as fh:
+            part = Path(fh.name)
+            total = 0
             done = 0
-            while True:
-                chunk = resp.read(256 * 1024)
-                if not chunk:
-                    break
+
+            def on_headers(_url, headers):
+                nonlocal total
+                total = int(headers.get("Content-Length") or 0)
+
+            def write(chunk):
+                nonlocal done
                 fh.write(chunk)
                 done += len(chunk)
                 if on_progress:
@@ -258,17 +276,29 @@ def download(url: str, dest: str | Path, on_progress=None,
                         on_progress(done, total)
                     except Exception:  # noqa: BLE001 — прогресс не должен ломать загрузку
                         pass
-        if dest.exists():
-            dest.unlink()
+
+            def open_response():
+                return opener.open(req, timeout=timeout)
+
+            if transfer is None:
+                with open_response() as resp:
+                    on_headers(url, resp.headers)
+                    for chunk in iter(lambda: resp.read(256 * 1024), b""):
+                        write(chunk)
+            else:
+                transfer(open_response, write, on_headers, 256 * 1024)
+
+        if done == 0 or total and done != total:
+            raise ValueError(i18n.t("скачался пустой или неполный файл"))
         os.replace(part, dest)
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (OSError, HTTPException, ValueError) as exc:
+        return False, i18n.t("не удалось скачать: {v0}", v0=exc)
+    finally:
         try:
-            part.unlink(missing_ok=True)
+            if part is not None:
+                part.unlink(missing_ok=True)
         except OSError:
             pass
-        return False, i18n.t("не удалось скачать: {v0}", v0=exc)
-    if dest.stat().st_size <= 0:
-        return False, i18n.t("скачался пустой файл")
     return True, str(dest)
 
 
@@ -302,6 +332,11 @@ class _ReleaseRedirect(urllib.request.HTTPRedirectHandler):
         if not trusted_release_url(newurl, redirect=True):
             raise ValueError("untrusted release redirect")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _HostsRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("unexpected hosts redirect")
 
 
 def release_sha256(release: dict, url: str) -> str:
@@ -603,7 +638,7 @@ def _looks_like_data(text: str) -> bool:
     return "<html" not in head and "<!doctype" not in head
 
 
-def update_ipset(root: str | Path, on_progress=None) -> dict:
+def update_ipset(root: str | Path, on_progress=None, *, transfer=None, before_apply=None) -> dict:
     """Обновить ``lists/ipset-all.txt`` из служебного списка Flowseal."""
     root = Path(root)
     lists = root / "lists"
@@ -611,7 +646,8 @@ def update_ipset(root: str | Path, on_progress=None) -> dict:
         return {"ok": False, "error": i18n.t("папки lists нет")}
     target = lists / "ipset-all.txt"
     tmp = target.with_name("ipset-all.txt.download")
-    ok, msg = download(IPSET_URL, tmp, on_progress=on_progress)
+    kwargs = {"transfer": transfer} if transfer is not None else {}
+    ok, msg = download(IPSET_URL, tmp, on_progress=on_progress, **kwargs)
     if not ok:
         return {"ok": False, "error": msg}
     try:
@@ -626,6 +662,12 @@ def update_ipset(root: str | Path, on_progress=None) -> dict:
     # заботимся о режиме «none»: placeholder не должен затирать рабочий backup
     from gd_zapret import ipset_info  # локальный импорт: без цикла на старте
 
+    if before_apply is not None:
+        try:
+            before_apply()
+        except InterruptedError:
+            tmp.unlink(missing_ok=True)
+            raise
     mode = (ipset_info(str(root)) or {}).get("mode")
     backup = Path(str(target) + ".backup")
     if mode == "loaded" and target.is_file():
@@ -638,10 +680,11 @@ def update_ipset(root: str | Path, on_progress=None) -> dict:
     return {"ok": True, "lines": lines, "size": target.stat().st_size}
 
 
-def fetch_hosts() -> tuple[bool, str]:
+def fetch_hosts(*, transfer=None) -> tuple[bool, str]:
     """Скачать официальный hosts-файл Flowseal в временный файл."""
     tmp = _data_dir() / "zapret_hosts.download"
-    ok, msg = download(HOSTS_URL, tmp)
+    kwargs = {"transfer": transfer} if transfer is not None else {}
+    ok, msg = download(HOSTS_URL, tmp, **kwargs)
     if not ok:
         return False, msg
     try:
@@ -653,6 +696,21 @@ def fetch_hosts() -> tuple[bool, str]:
         tmp.unlink(missing_ok=True)
         return False, i18n.t("hosts похож на ошибку загрузки")
     return True, str(tmp)
+
+
+def fetch_hosts_content() -> str:
+    """Read the official HTTPS response without staging it in a writable directory."""
+    req = urllib.request.Request(HOSTS_URL, headers={"User-Agent": "Gammadrilon"})
+    opener = urllib.request.build_opener(_HostsRedirect())
+    with opener.open(req, timeout=NET_TIMEOUT) as response:
+        raw = response.read(HOSTS_MAX_BYTES + 1)
+        size = response.headers.get("Content-Length")
+    if not raw or len(raw) > HOSTS_MAX_BYTES or (size is not None and int(size) != len(raw)):
+        raise ValueError(i18n.t("скачался пустой или неполный файл"))
+    content = raw.decode("utf-8-sig", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    if not content.strip() or "<html" in content.lower() or HOSTS_BEGIN in content or HOSTS_END in content:
+        raise ValueError(i18n.t("hosts похож на ошибку загрузки"))
+    return content
 
 
 def hosts_status(downloaded: str | Path) -> dict:
@@ -677,38 +735,120 @@ def hosts_status(downloaded: str | Path) -> dict:
     }
 
 
-def _replace_managed_block(current: str, block: str) -> str:
-    """Заменить блок Gammadrilon, не задевая остальные строки hosts."""
-    if HOSTS_BEGIN in current and HOSTS_END in current:
-        start = current.index(HOSTS_BEGIN)
-        end = current.index(HOSTS_END) + len(HOSTS_END)
-        return current[:start] + block + current[end:]
-    if current and not current.endswith("\n"):
-        current += "\n"
-    return current + ("\n" if current else "") + block + "\n"
+def _replace_managed_block(current: bytes, content: str) -> bytes:
+    """Replace an exact pair of marker lines and preserve the other bytes."""
+    bom = b""
+    if current.startswith(codecs.BOM_UTF8):
+        bom = codecs.BOM_UTF8
+        current = current[len(bom):]
+    begin, end = HOSTS_BEGIN.encode(), HOSTS_END.encode()
+    matches = list(re.finditer(rb"(?:\A|(?<=[\r\n]))(" + re.escape(begin) + b"|" + re.escape(end)
+                               + rb")(?=\r\n|\r|\n|\Z)", current))
+    if matches and [m[1] for m in matches] != [begin, end]:
+        raise ValueError(i18n.t("повреждены границы управляемого блока hosts"))
+    offset = matches[0].end() if matches else 0
+    newline = re.search(rb"\r\n|\r|\n", current[offset:])
+    separator = newline[0] if newline else b"\r\n"
+    block = separator.join((begin, content.strip().encode().replace(b"\n", separator), end))
+    if matches:
+        return bom + current[:matches[0].start()] + block + current[matches[1].end():]
+    if not current:
+        return bom + block + separator
+    gap = separator if current.endswith((b"\r", b"\n")) else separator * 2
+    return bom + current + gap + block + separator
 
 
-def apply_hosts(downloaded: str | Path) -> dict:
+def _install_hosts(hosts: Path, staged: Path, existed: bool) -> None:
+    if not existed:
+        if os.name == "nt":
+            os.rename(staged, hosts)  # Windows refuses to overwrite a newly created file.
+        else:
+            os.link(staged, hosts)
+    elif os.name == "nt":
+        # ReplaceFileW preserves the target ACL and attributes on Windows.
+        import ctypes
+        from ctypes import wintypes
+
+        replace_file = ctypes.WinDLL("kernel32", use_last_error=True).ReplaceFileW
+        replace_file.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID)
+        replace_file.restype = wintypes.BOOL
+        # Keep the original file on the same volume during the Win32 rename.
+        # Some ReplaceFileW errors occur after it has renamed the original.
+        original = staged.with_suffix(".original")
+        if not replace_file(str(hosts), str(staged), str(original), 0, None, None):
+            error = ctypes.WinError(ctypes.get_last_error())
+            if original.exists() and not hosts.exists():
+                try:
+                    os.rename(original, hosts)
+                except OSError as recovery_error:
+                    raise OSError(i18n.t(
+                        "Не удалось вернуть исходный hosts: {v0}. Оригинал сохранён в {v1}. "
+                        "Если hosts отсутствует, верните оригиналу имя hosts с правами администратора.",
+                        v0=recovery_error, v1=original,
+                    )) from error
+            raise error
+        try:
+            original.unlink()
+        except OSError:
+            pass  # The update succeeded. Leave the extra original copy intact.
+    else:
+        os.replace(staged, hosts)
+
+
+def _read_optional_hosts(hosts: Path) -> bytes | None:
+    try:
+        return hosts.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def apply_hosts(content: str) -> dict:
     """Применить скачанный hosts безопасно: бэкап + управляемый блок.
 
     Требует прав администратора (пишет системный hosts), поэтому вызывается
     из elevated-хелпера.
     """
     hosts = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "drivers" / "etc" / "hosts"
+    bak = None
+    staged = None
     try:
-        content = Path(downloaded).read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return {"ok": False, "error": str(exc)}
-    block = HOSTS_BEGIN + "\n" + content.strip() + "\n" + HOSTS_END
-    try:
-        current = hosts.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        current = ""
-    HOSTS_BAK_DIR.mkdir(parents=True, exist_ok=True)
-    bak = HOSTS_BAK_DIR / f"hosts-{time.strftime('%Y%m%d-%H%M%S')}.bak"
-    try:
-        shutil.copy2(hosts, bak)
-        hosts.write_text(_replace_managed_block(current, block), encoding="utf-8")
-    except OSError as exc:
-        return {"ok": False, "error": i18n.t("не удалось обновить hosts: {v0}", v0=exc)}
-    return {"ok": True, "backup": str(bak), "path": str(hosts)}
+        current = _read_optional_hosts(hosts)
+        replacement = _replace_managed_block(current or b"", content)
+        with tempfile.NamedTemporaryFile(
+            dir=hosts.parent, prefix=".hosts-", suffix=".tmp", delete=False,
+        ) as temp:
+            staged = Path(temp.name)
+            temp.write(replacement)
+            temp.flush()
+            os.fsync(temp.fileno())
+        if current is not None:
+            HOSTS_BAK_DIR.mkdir(parents=True, exist_ok=True)
+            backup_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=HOSTS_BAK_DIR, prefix=f"hosts-{time.strftime('%Y%m%d-%H%M%S')}-",
+                    suffix=".bak", delete=False,
+                ) as backup:
+                    backup_path = Path(backup.name)
+                    backup.write(current)
+                    backup.flush()
+                    os.fsync(backup.fileno())
+            except OSError:
+                if backup_path is not None:
+                    backup_path.unlink(missing_ok=True)
+                raise
+            bak = str(backup_path)
+        # This is a preflight check. External writers do not share _OP_LOCK.
+        if _read_optional_hosts(hosts) != current:
+            raise ValueError(i18n.t("hosts изменился во время подготовки. Повторите обновление."))
+        _install_hosts(hosts, staged, current is not None)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": i18n.t("не удалось обновить hosts: {v0}", v0=exc), "backup": bak}
+    finally:
+        if staged is not None:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return {"ok": True, "backup": bak, "path": str(hosts)}

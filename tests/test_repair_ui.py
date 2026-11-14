@@ -93,19 +93,158 @@ def test_doh_failure_is_not_shown_as_success(monkeypatch):
     import gd_toast
 
     resolver = next(r for r in dnsui.gd_dns.RESOLVERS if r.get("doh"))
-    client = NS(call=Mock(side_effect=[{"ok": True}, {"ok": False, "error": "DoH denied"}]))
-    window = NS(_apply_worker=None, _selected_key=lambda: resolver["key"],
-                _ensure=lambda: client, chk_doh=NS(isChecked=lambda: True),
-                btn_apply=NS(setEnabled=Mock()), _set_status=Mock(), _refresh_now=Mock())
-    window._apply_done = lambda result, r, servers: dnsui.DnsWidget._apply_done(window, result, r, servers)
-    monkeypatch.setattr(dnsui.gd_dns, "remember_before_change", lambda: (True, {"iface": "test"}))
+    client = NS(call=Mock(return_value={"ok": False, "error": "DoH denied"}))
+    app()
+    window = dnsui.DnsWidget()
+    window.client = client
+    window.table.setCurrentCell(window._row_of(resolver["key"]), 0)
+    window.chk_doh.setChecked(True)
+    monkeypatch.setattr(window, "_set_status", Mock())
+    monkeypatch.setattr(window, "_refresh_now", Mock())
     monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: done(fn()))
     toast = Mock()
     monkeypatch.setattr(gd_toast, "show_toast", toast)
     dnsui.DnsWidget._apply(window)
+    client.call.assert_called_once_with({"cmd": "dns_apply", "mode": "static", "servers": resolver["servers"],
+                                        "template": resolver["doh"]}, timeout=None)
     assert window._set_status.call_args.kwargs.get("ok") is False
     assert "DoH" in window._set_status.call_args.args[0]
     assert not toast.called or toast.call_args.args[1] != "ok"
+    window.deleteLater()
+
+
+@pytest.mark.parametrize("lang,label,warning", [
+    ("ru", "Свой", "Смена DNS может ухудшить резолв в вашей сети. Сравнивайте латентность до и после."),
+    ("en", "Custom", "Changing DNS may affect name resolution on your network. Compare latency before and after."),
+])
+def test_dns_localizes_warning_and_custom_resolver(lang, label, warning, monkeypatch):
+    from PyQt5.QtWidgets import QLabel
+
+    import gd_toast
+
+    app()
+    monkeypatch.setattr(i18n, "_current", lang)
+    page = dnsui.DnsWidget()
+    assert any(widget.text() == warning for widget in page.findChildren(QLabel))
+    assert page.table.item(page._row_of("custom"), 0).text() == label
+
+    page.client = NS(call=Mock(return_value={"ok": True}))
+    monkeypatch.setattr(page, "_refresh_now", Mock())
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: done(fn()))
+    monkeypatch.setattr(dnsui.gd_journal, "record", Mock())
+    toast = Mock()
+    monkeypatch.setattr(gd_toast, "show_toast", toast)
+    page.ed_custom.setText("192.168.0.1")
+    page.ed_custom.editingFinished.emit()
+    assert page._selected_key() == "custom"
+    page.btn_apply.click()
+    page.client.call.assert_called_once_with({"cmd": "dns_apply", "mode": "static", "servers": ["192.168.0.1"],
+                                             "template": None}, timeout=None)
+    assert label in page.status.text()
+    toast.assert_called_once_with(i18n.t("toast.dns_apply", name=label), "ok")
+    page.deleteLater()
+
+
+def test_dns_buttons_and_direct_actions_stay_disabled_until_restore_finishes(monkeypatch):
+    app()
+    jobs = []
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: jobs.append((fn, done)))
+    monkeypatch.setattr(dnsui.gd_dns, "legacy_snapshot_aliases", lambda: [])
+    page = dnsui.DnsWidget()
+    page.client = NS(call=Mock(return_value={"ok": True, "changed": False}))
+    monkeypatch.setattr(page, "_refresh_now", Mock())
+    page._restore()
+    assert not page.btn_apply.isEnabled() and not page.btn_restore.isEnabled()
+    page.set_provider("google")
+    assert len(jobs) == 1
+    page.set_resetting(True)
+    execute, complete = jobs.pop()
+    complete(execute())
+    page.client.call.assert_called_once_with({"cmd": "dns_restore"}, timeout=None)
+    assert not page.btn_apply.isEnabled() and not page.btn_restore.isEnabled()
+    page.set_provider("cloudflare")
+    assert not jobs
+    page.set_resetting(False)
+    assert page.btn_apply.isEnabled() and page.btn_restore.isEnabled()
+    page.deleteLater()
+
+
+def test_legacy_dns_restore_requires_confirmation_for_named_adapter(monkeypatch):
+    import gd_dialog
+
+    app()
+    confirm = Mock(side_effect=[False, True])
+    monkeypatch.setattr(gd_dialog, "confirm", confirm)
+    monkeypatch.setattr(dnsui.gd_dns, "legacy_snapshot_aliases", lambda: ["Old Ethernet"])
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: done(fn()))
+    page = dnsui.DnsWidget()
+    page.client = NS(call=Mock(return_value={"ok": True, "changed": False}))
+    monkeypatch.setattr(page, "_refresh_now", Mock())
+    page._restore()
+    page.client.call.assert_not_called()
+    assert "Old Ethernet" in confirm.call_args.args[2]
+    page._restore()
+    page.client.call.assert_called_once_with({"cmd": "dns_restore", "confirmed_aliases": ["Old Ethernet"]},
+                                           timeout=None)
+    page.deleteLater()
+
+
+def test_dns_refresh_ignores_old_results_after_new_read(monkeypatch):
+    app()
+    jobs = []
+    monkeypatch.setattr(gd_bg, "submit_network_read", lambda fn, done, **kw: jobs.append(done))
+    page = dnsui.DnsWidget()
+    refresh = Mock()
+    monkeypatch.setattr(page, "_refresh_done", refresh)
+    page._refresh_now()
+    page._refresh_now()
+    jobs[1]({"servers": ["1.1.1.1"]})
+    jobs[0]({"servers": ["8.8.8.8"]})
+    refresh.assert_called_once_with({"servers": ["1.1.1.1"]})
+    page.deleteLater()
+
+
+def test_emergency_reset_waits_for_existing_dns_changes_and_blocks_new_rules(monkeypatch):
+    import gd_extra
+    import gd_helper
+    import gd_profiles
+    import gd_rules
+    import gd_zapret
+
+    jobs, events = [], []
+    helper = NS(call=lambda request, **kw: events.append(request["cmd"]) or {"ok": True})
+    power_page = NS(
+        client=NS(call=lambda request, **kw: events.append("CPU " + request["cmd"]) or {"ok": True}),
+        _mutation_worker=NS(wait=lambda: events.append("CPU finished")),
+        set_resetting=lambda value: events.append(("CPU", value)),
+    )
+    gpu_page = NS(
+        _apply_worker=NS(wait=lambda: events.append("GPU finished")),
+        set_resetting=lambda value: events.append(("GPU", value)),
+    )
+    rule_worker = NS(wait=lambda: events.append("rule finished"))
+    ui_worker = NS(wait=lambda: events.append("manual action finished"))
+    dns_page = NS(_apply_worker=ui_worker, set_resetting=lambda value: events.append(value))
+    window = NS(_dns_page=dns_page, _rule_dns_workers=[rule_worker], _rule_engine=NS(evaluate=Mock()),
+                _power_page=power_page, _gpu_page=gpu_page,
+                _quiet_cpu_worker=NS(wait=lambda: events.append("quiet CPU finished")),
+                set_status=Mock(), gamma_animation_timer=NS(stop=Mock()), _cancel_cat_vision=Mock(),
+                set_ui_values=Mock(), _gamma_pending=None, _reset_system_done=Mock())
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: jobs.append((fn, done)))
+    monkeypatch.setattr(gd_helper, "HelperClient", lambda: helper)
+    monkeypatch.setattr(gd_rules, "load_rules", lambda: [])
+    monkeypatch.setattr(gd_zapret, "our_state", lambda: {})
+    monkeypatch.setattr(gd_profiles, "_read_autoclean", lambda: {})
+    monkeypatch.setattr(gd_profiles, "load_quiet", lambda: {})
+    monkeypatch.setattr(gd_extra, "set_timer_resolution", lambda value: (True, ""))
+    main.MainWindow.reset_everything(window)
+    main.MainWindow._rules_tick(window)
+    window._rule_engine.evaluate.assert_not_called()
+    result = jobs[0][0]()
+    assert "DNS" in result["done"] and not result["errors"]
+    assert events == [("CPU", True), ("GPU", True), True, "CPU finished", "quiet CPU finished",
+                      "CPU restore", "GPU finished", "restore", "rule finished",
+                      "manual action finished", "dns_restore"]
 
 
 def test_onboarding_describes_actual_gpu_policy():

@@ -158,6 +158,43 @@ def test_intermediate_config_from_programdata_is_picked_up(tmp_path, monkeypatch
     assert moved.is_file() and "en" in moved.read_text(encoding="utf-8")
 
 
+def test_interrupted_migration_leaves_no_partial_config(tmp_path, monkeypatch):
+    app = _env_for(tmp_path, monkeypatch, flag=None, marker=False)
+    legacy = app / gd_paths.CONFIG_NAME
+    legacy.write_bytes(b'{"settings": {"theme": "dark"}}')
+    target = gd_paths.config_path()
+
+    def fail_copy(source, destination):
+        destination.write(source.read(1))
+        raise OSError("copy interrupted")
+
+    with monkeypatch.context() as interrupt:
+        interrupt.setattr(gd_paths.shutil, "copyfileobj", fail_copy)
+        assert gd_paths.migrate_legacy_config() is None
+
+    assert list(target.parent.iterdir()) == []
+    assert gd_paths.migrate_legacy_config() == target
+    assert target.read_bytes() == legacy.read_bytes()
+
+
+def test_migration_preserves_config_created_during_copy(tmp_path, monkeypatch):
+    app = _env_for(tmp_path, monkeypatch, flag=None, marker=False)
+    legacy = app / gd_paths.CONFIG_NAME
+    legacy.write_bytes(b'{"settings": {"theme": "light"}}')
+    target = gd_paths.config_path()
+    current = b'{"settings": {"theme": "dark"}}'
+    copy = gd_paths.shutil.copyfileobj
+
+    def copy_with_concurrent_save(source, destination):
+        copy(source, destination)
+        target.write_bytes(current)
+
+    monkeypatch.setattr(gd_paths.shutil, "copyfileobj", copy_with_concurrent_save)
+    assert gd_paths.migrate_legacy_config() is None
+    assert target.read_bytes() == current
+    assert list(target.parent.iterdir()) == [target]
+
+
 def test_programdata_wins_over_repository_copy(tmp_path, monkeypatch):
     """Если файлов два, берём тот, с которым работало приложение (ProgramData)."""
     app = _env_for(tmp_path, monkeypatch, flag=None, marker=False)

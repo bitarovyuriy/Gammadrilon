@@ -6,8 +6,8 @@
 (принимаются и ``portable.marker`` / ``.portable``). Тогда журнал, правила,
 state-файлы, токен локального API и логи пишутся в ту же папку — её можно
 унести на флешке вместе с настройками. Без маркера поведение прежнее:
-``presets.json`` рядом с приложением (так было всегда), данные — в
-``%ProgramData%\\Gammadrilon``, логи — в ``%LOCALAPPDATA%\\Gammadrilon``.
+общие данные — в ``%ProgramData%\\Gammadrilon``, настройки и логи — в
+``%LOCALAPPDATA%\\Gammadrilon``.
 
 Переменная ``GD_PORTABLE=1``/``0`` сильнее маркера: приборы и тесты не должны
 зависеть от того, что случайно лежит рядом с проектом.
@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 APP_NAME = "Gammadrilon"
@@ -121,6 +122,11 @@ def config_path() -> Path:
     return log_dir() / CONFIG_NAME
 
 
+def legacy_config_paths(root: Path | None = None) -> tuple[Path, Path]:
+    """Прежние места настроек в порядке использования при обновлении."""
+    return data_dir() / CONFIG_NAME, (root if root is not None else app_dir()) / CONFIG_NAME
+
+
 def migrate_legacy_config() -> Path | None:
     """Перенести старый ``presets.json`` в профиль пользователя.
 
@@ -134,14 +140,37 @@ def migrate_legacy_config() -> Path | None:
     try:
         if target.is_file():
             return None
-        for legacy in (data_dir() / CONFIG_NAME, app_dir() / CONFIG_NAME):
-            if not legacy.is_file():
-                continue
-            ensure(target.parent)
-            shutil.copy2(legacy, target)
-            return target
     except OSError:
         return None
+    for legacy in legacy_config_paths():
+        staged = None
+        try:
+            if not legacy.is_file():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with legacy.open("rb") as source, tempfile.NamedTemporaryFile(
+                mode="wb", dir=target.parent, prefix=target.name + ".", suffix=".tmp", delete=False,
+            ) as destination:
+                staged = Path(destination.name)
+                shutil.copyfileobj(source, destination)
+                destination.flush()
+                os.fsync(destination.fileno())
+            # На Windows rename отказывает, если другой процесс уже создал target.
+            if os.name == "nt":
+                staged.rename(target)
+            else:
+                os.link(staged, target)
+            return target
+        except FileExistsError:
+            return None
+        except OSError:
+            continue
+        finally:
+            if staged is not None:
+                try:
+                    staged.unlink(missing_ok=True)
+                except OSError:
+                    pass
     return None
 
 

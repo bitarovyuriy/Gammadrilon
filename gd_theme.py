@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Общая палитра, токены и единственный стиль приложения (монохром «Пульт»).
+"""Общая палитра, токены и единственный стиль приложения (монохром).
 
 Один источник стиля: и главное окно, и страницы, и диалоги используют
 `STYLESHEET` из этого модуля. Раньше существовали два похожих QSS (в `main.py`
@@ -13,61 +13,61 @@
 значения, версии и пути; весь остальной текст — один шрифт Segoe UI.
 """
 
+# Neutral surfaces and high-contrast monochrome actions in both modes.
 DARK = {
-    "PAPER": "#000000",
-    "SURFACE": "#0B0B0B",
-    "RULE": "#1F1F1F",
-    "MUTED": "#8A8A8A",
-    "INK2": "#C4C4C4",
+    "PAPER": "#0D0D0D",
+    "SURFACE": "#181818",
+    "RULE": "#363636",
+    "MUTED": "#ABABAB",
+    "INK2": "#D1D1D1",
     "INK": "#F5F5F5",
-    "ACCENT": "#FFFFFF",
-    "NAVY": "#FFFFFF",
-    "NAVY_HOVER": "#E6E6E6",
-    "NAVY_PRESSED": "#D2D2D2",
-    "ON_ACCENT": "#000000",
-    "TRACK": "#2E2E2E",
-    "GOOD": "#FFFFFF",
-    "WARN": "#B0B0B0",
-    "PRESSED": "#161616",
-    "TEMP_WARM": "#5A5A5A",     # градиент обесцвечен (строгий монохром)
-    "TEMP_COLD": "#E8E8E8",
-    "DANGER": "#D6D6D6",
-    "DANGER_BG": "#1A1A1A",
-    "DANGER_BORDER": "#3A3A3A",
-    "DANGER_BORDER2": "#5A5A5A",
-    "DANGER_HOVER": "#222222",
-    "MID": "#2A2A2A",
-    "DEEP": "#070707",
+    "ACCENT": "#F0F0F0",
+    "FOCUS_ON_ACCENT": "#6C6C6C",
+    "NAVY": "#F0F0F0",
+    "NAVY_HOVER": "#FFFFFF",
+    "NAVY_PRESSED": "#CECECE",
+    "ON_ACCENT": "#111111",
+    "TRACK": "#444444",
+    "GOOD": "#E2E2E2",
+    "WARN": "#CCCCCC",
+    "PRESSED": "#252525",
+    "TEMP_WARM": "#777777",
+    "TEMP_COLD": "#D8D8D8",
+    "DANGER": "#EFEFEF",
+    "DANGER_BG": "#262626",
+    "DANGER_BORDER": "#777777",
+    "DANGER_BORDER2": "#AAAAAA",
+    "DANGER_HOVER": "#333333",
+    "MID": "#3A3A3A",
+    "DEEP": "#121212",
 }
 
-# Светлая тема — тоже строгий монохром: чёрный текст на белом, активные — чёрной заливкой.
-# MUTED подобран по контрасту: #6E6E6E на PRESSED #EAEAEA давал 4.23:1 (ниже нормы 4.5),
-# #666666 даёт 4.75:1 и остаётся «тихим» серым на белом (5.7:1).
 LIGHT = {
-    "PAPER": "#FFFFFF",
-    "SURFACE": "#F7F7F7",
-    "RULE": "#D8D8D8",
-    "MUTED": "#666666",
-    "INK2": "#3A3A3A",
-    "INK": "#111111",
-    "ACCENT": "#111111",
-    "NAVY": "#111111",
-    "NAVY_HOVER": "#2C2C2C",
-    "NAVY_PRESSED": "#000000",
+    "PAPER": "#F2F2F2",
+    "SURFACE": "#FFFFFF",
+    "RULE": "#D0D0D0",
+    "MUTED": "#595959",
+    "INK2": "#3C3C3C",
+    "INK": "#141414",
+    "ACCENT": "#202020",
+    "FOCUS_ON_ACCENT": "#858585",
+    "NAVY": "#202020",
+    "NAVY_HOVER": "#363636",
+    "NAVY_PRESSED": "#080808",
     "ON_ACCENT": "#FFFFFF",
-    "TRACK": "#D8D8D8",
-    "GOOD": "#111111",
-    "WARN": "#4A4A4A",
-    "PRESSED": "#EAEAEA",
-    "TEMP_WARM": "#8A8A8A",
-    "TEMP_COLD": "#2A2A2A",
-    "DANGER": "#4A4A4A",
-    "DANGER_BG": "#F0F0F0",
-    "DANGER_BORDER": "#C0C0C0",
-    "DANGER_BORDER2": "#9A9A9A",
-    "DANGER_HOVER": "#E4E4E4",
-    "MID": "#C9C9C9",
-    "DEEP": "#FBFBFB",
+    "TRACK": "#CBCBCB",
+    "GOOD": "#303030",
+    "WARN": "#484848",
+    "PRESSED": "#E6E6E6",
+    "TEMP_WARM": "#888888",
+    "TEMP_COLD": "#343434",
+    "DANGER": "#242424",
+    "DANGER_BG": "#E8E8E8",
+    "DANGER_BORDER": "#858585",
+    "DANGER_BORDER2": "#5A5A5A",
+    "DANGER_HOVER": "#DADADA",
+    "MID": "#C2C2C2",
+    "DEEP": "#ECECEC",
 }
 
 #: пары «текст на фоне», обязанные держать контраст ≥ 4.5:1 в обеих темах
@@ -134,8 +134,8 @@ HEAD_SPACING = SPACE_XS                              # зазор «заголо
 DIALOG_MARGINS = (SPACE_XL, SPACE_XL, SPACE_XL, SPACE_XL)   # окно-диалог: воздух со всех сторон
 DIALOG_SPACING = SPACE_L                             # шаг между блоками диалога
 
-RADIUS = "8px"        # карточки, поля, кнопки, попапы, таблицы
-RADIUS_SMALL = "4px"  # слайдеры, ползунки, скроллбары
+RADIUS = "10px"        # карточки, поля, кнопки, попапы, таблицы
+RADIUS_SMALL = "5px"  # слайдеры, ползунки, скроллбары
 CONTROL_HEIGHT = "32px"   # единая высота кнопок, полей и комбобоксов
 
 # шкала шрифтов: числа храним отдельно — их же используют холсты (тики графика,
@@ -566,7 +566,8 @@ QLabel#NavText {
 }
 
 QWidget#NavItem[active="true"] QLabel#NavText {
-    color: @INK@;
+    color: @ACCENT@;
+    font-weight: 600;
 }
 
 QLabel#NavBadge {
@@ -708,10 +709,6 @@ QPushButton#PrimaryButton:pressed:enabled {
     border-color: @NAVY_PRESSED@;
 }
 
-QPushButton#PrimaryButton:focus {
-    border: 2px solid @ACCENT@;
-}
-
 QPushButton#PrimaryButton:disabled {
     background: @TRACK@;
     border-color: @RULE@;
@@ -751,10 +748,6 @@ QPushButton#Segment:checked:disabled {
     background: @TRACK@;
     border-color: @TRACK@;
     color: @MUTED@;
-}
-
-QPushButton#Segment:focus {
-    border-color: @ACCENT@;
 }
 
 QPushButton#GhostButton {
@@ -803,13 +796,21 @@ QPushButton#ToggleButton:checked:hover:enabled {
     border-color: @NAVY_HOVER@;
 }
 
-QPushButton#ToggleButton:focus {
-    border-color: @ACCENT@;
-}
-
 QPushButton#ToggleButton:disabled {
     border-color: @RULE@;
     color: @MUTED@;
+}
+
+QPushButton#Segment:focus:enabled,
+QPushButton#ToggleButton:focus:enabled {
+    border: 2px solid @ACCENT@;
+}
+
+/* Рамка контрастирует с акцентной заливкой и фоном контейнера. */
+QPushButton#PrimaryButton:focus:enabled,
+QPushButton#Segment:checked:focus:enabled,
+QPushButton#ToggleButton:checked:focus:enabled {
+    border: 2px solid @FOCUS_ON_ACCENT@;
 }
 
 /* destructive: пунктирная рамка вместо красного (строгий монохром) */

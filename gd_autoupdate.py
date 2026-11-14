@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 """Автообновление портативной сборки: скачать, проверить, заменить, откатить.
 
-Идея простая и намеренно скучная. Настройки (пресеты, горячие клавиши, тема)
-лежат в ``presets.json`` **рядом с exe**. Обновление не трогает папку целиком:
-оно заменяет только ``Gammadrilon.exe`` и ``_internal`` (или один exe в
-onefile-сборке). Поэтому настройки, журнал, правила и state-файлы остаются на
+Обновление заменяет только ``Gammadrilon.exe`` и ``_internal`` (или один exe в
+onefile-сборке). Настройки, журнал, правила и state-файлы остаются на
 месте — даже если что-то пойдёт не так.
 
 Запущенный exe нельзя заменить на Windows. Поэтому приложение скачивает и
@@ -24,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from http.client import HTTPException
 import urllib.error
 import urllib.request
 import zipfile
@@ -34,7 +33,6 @@ import gd_net
 import gd_paths
 
 APP_EXE = "Gammadrilon.exe"
-CONFIG_NAME = "presets.json"
 CONFIG_BACKUP = "presets.before-update.json"
 INTERNAL = "_internal"
 BACKUP_INTERNAL = "_internal.old"
@@ -152,7 +150,8 @@ def _check_host(url: str) -> None:
         raise UpdateError(i18n.t("Неожиданный адрес обновления: {v0}", v0=host or url))
 
 
-def download_asset(asset: dict, destination: Path, timeout: float = 30.0) -> Path:
+def download_asset(asset: dict, destination: Path, timeout: float = 30.0, *,
+                   transfer=None) -> Path:
     """Скачать ассет GitHub в файл. Бросает UpdateError с понятным текстом."""
     url = str(asset.get("url") or "")
     if not url.lower().startswith("https://"):
@@ -163,31 +162,59 @@ def download_asset(asset: dict, destination: Path, timeout: float = 30.0) -> Pat
         "User-Agent": "Gammadrilon-auto-update",
         "Accept": "application/octet-stream",
     })
+    expected = received = 0
+    part = None
+
+    def open_response():
+        return gd_net.open_url(request, timeout=timeout)
+
+    def on_headers(url, headers):
+        nonlocal expected
+        _check_host(url)
+        expected = int(headers.get("Content-Length") or 0)
+
     try:
-        with gd_net.open_url(request, timeout=timeout) as response:
-            _check_host(response.geturl())
-            expected = int(response.headers.get("Content-Length") or 0)
-            received = 0
-            with open(destination, "wb") as fh:
-                while True:
-                    chunk = response.read(256 * 1024)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
-                    received += len(chunk)
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=destination.parent, prefix=f"{destination.name}.", suffix=".part", delete=False,
+        ) as fh:
+            part = Path(fh.name)
+
+            def write(chunk):
+                nonlocal received
+                fh.write(chunk)
+                received += len(chunk)
+
+            if transfer is None:
+                with open_response() as response:
+                    on_headers(response.geturl(), response.headers)
+                    for chunk in iter(lambda: response.read(256 * 1024), b""):
+                        write(chunk)
+            else:
+                transfer(open_response, write, on_headers, 256 * 1024)
+
+        if not received:
+            raise UpdateError(i18n.t("скачался пустой файл"))
+        if expected and received != expected:
+            raise UpdateError(i18n.t("Файл скачался не целиком: {v0} из {v1} байт.",
+                                     v0=received, v1=expected))
+        size = int(asset.get("size") or 0)
+        if size and received != size:
+            raise UpdateError(i18n.t("Размер файла не совпал с релизом."))
+        os.replace(part, destination)
+    except InterruptedError:
+        raise
     except urllib.error.HTTPError as exc:
         raise UpdateError(i18n.t("GitHub ответил {v0}", v0=exc.code)) from exc
     except urllib.error.URLError as exc:
         raise UpdateError(i18n.t("нет связи: {v0}", v0=exc.reason)) from exc
-    except OSError as exc:
+    except (OSError, HTTPException, ValueError) as exc:
         raise UpdateError(i18n.t("не удалось скачать файл: {v0}", v0=exc)) from exc
-
-    if expected and received != expected:
-        raise UpdateError(i18n.t("Файл скачался не целиком: {v0} из {v1} байт.",
-                                 v0=received, v1=expected))
-    size = int(asset.get("size") or 0)
-    if size and destination.stat().st_size != size:
-        raise UpdateError(i18n.t("Размер файла не совпал с релизом."))
+    finally:
+        try:
+            if part is not None:
+                part.unlink(missing_ok=True)
+        except OSError:
+            pass
     return destination
 
 
@@ -267,31 +294,44 @@ def _free_space(path: Path) -> int:
 
 
 def _copy_settings_backup(root: Path) -> Path | None:
-    """Копия presets.json до обновления — на случай совсем странного отказа.
-
-    Настройки бывают и рядом с exe (portable, старые сборки), и в data_dir
-    (установленная версия) — берём тот файл, который реально существует.
-    """
-    candidates = (root / CONFIG_NAME, gd_paths.config_path())
+    """Сохранить активный конфиг или последний доступный конфиг старой схемы."""
+    active = gd_paths.config_path()
+    candidates = (active,) if gd_paths.portable_enabled() else (active, *gd_paths.legacy_config_paths(root))
     source = next((path for path in candidates if path.is_file()), None)
     if source is None:
         return None
     backup = source.with_name(CONFIG_BACKUP)
+    staged = None
     try:
-        shutil.copy2(source, backup)
+        with source.open("rb") as original, tempfile.NamedTemporaryFile(
+            mode="wb", dir=backup.parent, prefix=backup.name + ".", suffix=".tmp", delete=False,
+        ) as destination:
+            staged = Path(destination.name)
+            shutil.copyfileobj(original, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(staged, backup)
     except OSError as exc:
         raise UpdateError(i18n.t("Не удалось сохранить копию настроек: {v0}", v0=exc)) from exc
+    finally:
+        if staged is not None:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
     return backup
 
 
 def prepare_update(info: dict, mode: str | None = None, *,
                    root: Path | None = None, work_root: Path | None = None,
-                   download=download_asset) -> dict:
+                   download=download_asset, before_stage=None) -> dict:
     """Скачать и подготовить обновление. Возврат — dict для GUI.
 
     Всё, что может упасть (сеть, диск, хэш, структура архива), превращается в
     ``{"ok": False, "error": "текст"}``: вызывающий не обязан ловить исключения.
     """
+    work = None
+    successful = False
     try:
         if not isinstance(info, dict) or not info.get("ok"):
             raise UpdateError(i18n.t("Нет данных о новом релизе."))
@@ -324,6 +364,8 @@ def prepare_update(info: dict, mode: str | None = None, *,
         filename = str(asset.get("name") or "update.bin")
         package = work / filename
         download(asset, package)
+        if before_stage is not None:
+            before_stage()
         verify_digest(package, expected)
 
         staging = work / "staging"
@@ -353,14 +395,19 @@ def prepare_update(info: dict, mode: str | None = None, *,
             "restart": True,
             "wait_seconds": WAIT_SECONDS,
             "settings_backup": str(backup) if backup else "",
+            "settings_path": str(backup.with_name(gd_paths.CONFIG_NAME)) if backup else "",
         }
         plan["script_path"] = str(_write_helper(work))
         plan["config_path"] = str(_write_config(work, plan))
+        successful = True
         return {"ok": True, "plan": plan, "version": plan["version"]}
     except UpdateError as exc:
         return {"ok": False, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 — сеть/диск умеют удивлять
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if not successful and work_root is None and work is not None:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 def _write_config(work: Path, plan: dict) -> Path:
@@ -460,10 +507,12 @@ function Move-WithRetry([string]$Source, [string]$Destination) {
     throw $last
 }
 
-function Copy-WithRetry([string]$Source, [string]$Destination) {
+function Copy-WithRetry([string]$Source, [string]$Destination, [switch]$Directory) {
     $last = $null
     for ($i = 0; $i -lt 24; $i++) {
         try {
+            # Copy-Item nests the source if a partial destination directory exists.
+            if ($Directory -and $i -gt 0) { Remove-Any $Destination }
             Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
             return
         } catch {
@@ -474,13 +523,25 @@ function Copy-WithRetry([string]$Source, [string]$Destination) {
     throw $last
 }
 
+function Restore-Item([string]$Destination, [string]$Backup, [bool]$BackedUp, [bool]$CopyStarted) {
+    if (-not ($BackedUp -or $CopyStarted)) { return $true }
+    try {
+        Remove-Any $Destination
+        if ($BackedUp) { Move-WithRetry $Backup $Destination }
+        return $true
+    } catch {
+        Write-Log ("rollback failed for {0}: {1}" -f $Destination, $_.Exception.Message)
+        return $false
+    }
+}
+
 $target = [string]$cfg.target_dir
 $exePath = Join-Path $target ([string]$cfg.exe_name)
 $internal = Join-Path $target "_internal"
 $backupInternal = Join-Path $target "_internal.old"
 $backupExe = $exePath + ".old"
-$presets = Join-Path $target "presets.json"
-$presetsBackup = Join-Path $target "presets.before-update.json"
+$presets = [string]$cfg.settings_path
+$presetsBackup = [string]$cfg.settings_backup
 $sourceDir = [string]$cfg.source_dir
 $sourceExe = [string]$cfg.source_exe
 $workDir = [string]$cfg.work_dir
@@ -517,14 +578,24 @@ try {
     }
 } catch { }
 
-# Копия настроек: основной файл остаётся на месте, это страховка.
-try {
-    if (Test-Path -LiteralPath $presets) {
-        Copy-Item -LiteralPath $presets -Destination $presetsBackup -Force
+# Учесть настройки, сохранённые приложением во время выхода.
+if ($presets -and $presetsBackup -and (Test-Path -LiteralPath $presets -PathType Leaf)) {
+    $pendingBackup = $presetsBackup + "." + [guid]::NewGuid().ToString("N") + ".tmp"
+    try {
+        [IO.File]::WriteAllBytes($pendingBackup, [IO.File]::ReadAllBytes($presets))
+        Move-Item -LiteralPath $pendingBackup -Destination $presetsBackup -Force
+    } catch {
+        Write-Log ("settings backup refresh failed: {0}" -f $_.Exception.Message)
+    } finally {
+        try { Remove-Item -LiteralPath $pendingBackup -Force -ErrorAction SilentlyContinue } catch { }
     }
-} catch { }
+}
 
 $swapped = $false
+$internalBackedUp = $false
+$exeBackedUp = $false
+$internalCopyStarted = $false
+$exeCopyStarted = $false
 try {
     if ($cfg.mode -eq "onedir") {
         $srcExe = Join-Path $sourceDir "Gammadrilon.exe"
@@ -534,14 +605,26 @@ try {
 
         Remove-Any $backupInternal
         Remove-Any $backupExe
-        if (Test-Path -LiteralPath $internal) { Move-WithRetry $internal $backupInternal }
-        if (Test-Path -LiteralPath $exePath) { Move-WithRetry $exePath $backupExe }
-        Copy-WithRetry $srcInternal $internal
+        if (Test-Path -LiteralPath $internal) {
+            Move-WithRetry $internal $backupInternal
+            $internalBackedUp = $true
+        }
+        if (Test-Path -LiteralPath $exePath) {
+            Move-WithRetry $exePath $backupExe
+            $exeBackedUp = $true
+        }
+        $internalCopyStarted = $true
+        Copy-WithRetry $srcInternal $internal -Directory
+        $exeCopyStarted = $true
         Copy-WithRetry $srcExe $exePath
     } elseif ($cfg.mode -eq "onefile") {
         if (-not (Test-Path -LiteralPath $sourceExe)) { throw "new exe missing in staging" }
         Remove-Any $backupExe
-        if (Test-Path -LiteralPath $exePath) { Move-WithRetry $exePath $backupExe }
+        if (Test-Path -LiteralPath $exePath) {
+            Move-WithRetry $exePath $backupExe
+            $exeBackedUp = $true
+        }
+        $exeCopyStarted = $true
         Copy-WithRetry $sourceExe $exePath
     } else {
         throw "unknown mode"
@@ -554,24 +637,10 @@ try {
 
 if (-not $swapped) {
     Write-Log "rollback before swap"
-    try {
-        if (Test-Path -LiteralPath $backupInternal) {
-            Remove-Any $internal
-            Move-WithRetry $backupInternal $internal
-        }
-        if (Test-Path -LiteralPath $backupExe) {
-            Remove-Any $exePath
-            Move-WithRetry $backupExe $exePath
-        }
-        Write-Log "rollback done"
-    } catch {
-        Write-Log ("rollback failed: {0}" -f $_.Exception.Message)
-    }
+    $restoredInternal = Restore-Item $internal $backupInternal $internalBackedUp $internalCopyStarted
+    $restoredExe = Restore-Item $exePath $backupExe $exeBackedUp $exeCopyStarted
+    if ($restoredInternal -and $restoredExe) { Write-Log "rollback done" }
     exit 2
-}
-
-if (-not (Test-Path -LiteralPath $presets) -and (Test-Path -LiteralPath $presetsBackup)) {
-    try { Copy-Item -LiteralPath $presetsBackup -Destination $presets -Force } catch { }
 }
 
 $ok = $false
@@ -603,8 +672,8 @@ if ($cfg.restart) {
 
 if ($ok) {
     if ($cfg.restart) {
-        try { Remove-Any $backupInternal } catch { }
-        try { Remove-Any $backupExe } catch { }
+        if ($internalBackedUp) { try { Remove-Any $backupInternal } catch { } }
+        if ($exeBackedUp) { try { Remove-Any $backupExe } catch { } }
         try { Remove-Any $workDir } catch { }
     }
     exit 0
@@ -612,17 +681,17 @@ if ($ok) {
 
 # Новая версия не поднялась — возвращаем старые файлы и запускаем их.
 Write-Log "rollback after failed restart"
-try {
-    Remove-Any $internal
-    if (Test-Path -LiteralPath $backupInternal) { Move-WithRetry $backupInternal $internal }
-    Remove-Any $exePath
-    if (Test-Path -LiteralPath $backupExe) { Move-WithRetry $backupExe $exePath }
-    if (Test-Path -LiteralPath $exePath) {
-        Start-Process -FilePath $exePath -WorkingDirectory $target | Out-Null
-    }
+$restoredInternal = Restore-Item $internal $backupInternal $internalBackedUp $internalCopyStarted
+$restoredExe = Restore-Item $exePath $backupExe $exeBackedUp $exeCopyStarted
+if ($restoredInternal -and $restoredExe) {
     Write-Log "rollback done"
-} catch {
-    Write-Log ("rollback failed: {0}" -f $_.Exception.Message)
+    if ($exeBackedUp) {
+        try {
+            Start-Process -FilePath $exePath -WorkingDirectory $target | Out-Null
+        } catch {
+            Write-Log ("previous app restart failed: {0}" -f $_.Exception.Message)
+        }
+    }
 }
 exit 2
 '''

@@ -78,7 +78,8 @@ class JournalDialog(QDialog):
 
         self.empty = QLabel(i18n.t("Пока пусто — изменений не было."))
         self.empty.setObjectName("Hint")
-        root.addWidget(self.empty)
+        self.empty.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        root.addWidget(self.empty, 1)
 
         row = QHBoxLayout()
         btn_copy = QPushButton(i18n.t("Скопировать путь"))

@@ -19,6 +19,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+_profile = tempfile.TemporaryDirectory(prefix="gd_offscreen_smoke_")
+for _key in ("APPDATA", "LOCALAPPDATA", "ProgramData"):
+    os.environ[_key] = str(Path(_profile.name) / _key)
+os.environ["GD_PORTABLE"] = "0"
+_settings_path = Path(os.environ["LOCALAPPDATA"]) / "Gammadrilon" / "presets.json"
+_settings_path.parent.mkdir(parents=True)
+_settings_path.write_text(json.dumps({"settings": {"first_run_done": True, "sensors": False}}),
+                          encoding="utf-8")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)   # скрипт лежит в tests/, проект — на уровень выше
@@ -49,8 +57,21 @@ import gd_dashboard  # noqa: E402
 import gd_dashboard_ui  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 import gd_metrics  # noqa: E402
+import gd_power_ui  # noqa: E402
 import gd_rules  # noqa: E402
 import main as gd_main  # noqa: E402
+
+# Проверяем интерфейс с заглушками записи системных настроек.
+gd_main.GammaController._set_on_hdc = lambda *args: True
+gd_main.gd_hz.set_refresh = lambda *args, **kwargs: (True, "smoke test")
+_power_client_init = gd_power_ui.PowerClient.__init__
+
+
+def _isolated_power_client(self, pipe=rf"\\.\pipe\GammadrilonSmokePower-{os.getpid()}"):
+    _power_client_init(self, pipe)
+
+
+gd_power_ui.PowerClient.__init__ = _isolated_power_client
 
 OUT = os.path.join(ROOT, "build", "shots")
 os.makedirs(OUT, exist_ok=True)
@@ -105,8 +126,7 @@ check("DNS: повторный вызов из кэша (≤50 мкс)", per_cal
 
 src = open(os.path.join(ROOT, "gd_dns.py"), encoding="utf-8").read()
 check("DNS: в чтении состояния не осталось powershell",
-      src.count('"powershell", "-NoProfile", "-Command"') == 1,
-      f"вызовов powershell в модуле: {src.count(chr(34) + 'powershell' + chr(34))} (ожидается 1 — только DoH)")
+      '"powershell"' not in src[src.index("def _read_family("):src.index("def _adapter_id(")])
 
 # --- 2. gd_metrics: адаптивный темп; DNS — только по запросу ----------------
 gd_metrics.set_activity(visible=True, gpu_focus=False)
@@ -624,8 +644,8 @@ try:
     check("правила: смена DNS попала в журнал и тост",
           # тостов три: успешная очистка, отказ очистки (теперь тоже говорит) и DNS
           _records["journal"] == 2 and _records["toast"] == 3, str(_records))
-    check("правила: «как было» для DNS записано до смены",
-          gd_dns.state_path().exists(), str(gd_dns.state_path()))
+    check("правила: снимок DNS поручен помощнику",
+          not gd_dns.state_path().exists(), str(gd_dns.state_path()))
 
     # --- 4.2.1 переключатель производительности: отказ и успех видны ------------
     # Раньше set_status принимал только текст, а переключатель передавал ok=False:
@@ -754,27 +774,43 @@ try:
     _quiet_dir = Path(tempfile.mkdtemp(prefix="gd_quiet_"))
     gd_profiles.quiet_path = lambda: _quiet_dir / "quiet_hour.json"
     _power_calls: list = []
-    win._power_page.apply_profile = lambda *a, **kw: _power_calls.append(a[:1])
+    _real_power_call = win._power_page.client.call
+
+    def _power_call(command, **_kwargs):
+        _power_calls.append(command)
+        return {"ok": True}
+
+    def _wait_quiet_result():
+        deadline = time.monotonic() + 3
+        while not _fail_toasts and time.monotonic() < deadline:
+            pump(10)
+
+    win._power_page.client.call = _power_call
 
     win.gamma_controller.apply = lambda *a, **kw: False
     _fail_toasts.clear()
     win.apply_values(0.9, 0.95, 1.15, 5500, save=False)
+    deadline = time.monotonic() + 3
+    while win._gamma_busy and time.monotonic() < deadline:
+        pump(10)
     check("гамма: отказ подсвечен тревогой в статусе окна",
           th.WARN in win.status_label.styleSheet(), repr(win.status_label.styleSheet()))
 
     _fail_toasts.clear()
     win._quiet_apply({"enabled": True, "start": "23:00", "end": "08:00"})
+    _wait_quiet_result()
     check("тихий час: отказ гаммы не выдаётся за «ЭКО включён»",
           bool(_fail_toasts) and _fail_toasts[-1] == (i18n.t("toast.quiet_no_dim"), "warn"),
           str(_fail_toasts[-1:] or None))
     check("тихий час: ЭКО при этом всё равно запущен (яркость — не повод молчать)",
-          _power_calls[-1:] == [("eco",)], str(_power_calls[-1:]))
+          _power_calls[-1:] == [{"cmd": "apply", "profile": "eco"}], str(_power_calls[-1:]))
     check("тихий час: состояние «применён» записано, чтобы тик не спамил тостами",
           bool(gd_profiles.load_quiet().get("applied")))
 
     win.gamma_controller.apply = lambda *a, **kw: True
     _fail_toasts.clear()
     win._quiet_apply({"enabled": True, "start": "23:00", "end": "08:00"})
+    _wait_quiet_result()
     check("тихий час: полный успех — прежний спокойный тост",
           _fail_toasts[-1:] == [(i18n.t("toast.quiet_on"), "info")],
           str(_fail_toasts[-1:] or None))
@@ -782,12 +818,13 @@ try:
     win.gamma_controller.apply = lambda *a, **kw: False
     _fail_toasts.clear()
     win._quiet_release({"enabled": True, "start": "23:00", "end": "08:00"})
+    _wait_quiet_result()
     check("тихий час: неудачный возврат яркости не выдаётся за успех",
           bool(_fail_toasts) and _fail_toasts[-1] == (i18n.t("toast.quiet_keep_dim"), "warn"),
           str(_fail_toasts[-1:] or None))
 
     win.gamma_controller.apply = _real_gamma_apply
-    win._power_page.apply_profile = _real_cpu_apply
+    win._power_page.client.call = _real_power_call
     gd_profiles.quiet_path = _real_quiet_path
     shutil.rmtree(_quiet_dir, ignore_errors=True)
     gd_toast.show_toast = lambda *a, **kw: _records.__setitem__("toast", _records["toast"] + 1)
@@ -1008,7 +1045,6 @@ finally:
 # --- 4.4 CPU: состояние читается без компаньона, компаньон — только на запись --
 import gd_power  # noqa: E402
 import gd_power_service  # noqa: E402
-import gd_power_ui  # noqa: E402
 
 _snap = gd_power.state_snapshot()
 _svc_status = gd_power_service.handle({"cmd": "status"})["data"]

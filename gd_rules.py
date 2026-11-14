@@ -28,6 +28,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 try:
     import psutil
@@ -99,16 +100,10 @@ def load_rules() -> list[dict]:
     а вкладка «Правила» честно говорит о восстановлении.
     """
     global RECOVERY
-    p = rules_path()
-    if not p.exists():
-        return []
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        RECOVERY = "backup" if gd_state.quarantine(p) else "no_backup"
-        return []
-    if not isinstance(data, list):
-        RECOVERY = "backup" if gd_state.quarantine(p) else "no_backup"
+    data, recovery = gd_state.read_json_with_recovery(rules_path(), expected_type=list)
+    if recovery:
+        RECOVERY = recovery
+    if data is None:
         return []
     # мусорная запись (строка, число) раньше роняла таблицу и движок — отбрасываем
     return [r for r in data if isinstance(r, dict)]
@@ -136,7 +131,7 @@ def recovery_note() -> str:
 
 def new_rule() -> dict:
     return {
-        "id": f"r{int(time.time())}",
+        "id": f"r{uuid4().hex}",
         "enabled": True,
         "name": i18n.t("Новое правило"),
         "trigger": {"type": "process_start", "process": ""},
@@ -390,7 +385,8 @@ class RuleEngine:
     def _load_state():
         return _env["load"] if _env_fresh() else cpu_load()
 
-    def _trigger_fired(self, rule: dict, now: datetime) -> bool:
+    def _trigger_fired(self, rule: dict, now: datetime, appeared: set[str],
+                       battery_transition: bool) -> bool:
         t = rule.get("trigger") or {}
         ttype = t.get("type")
 
@@ -398,18 +394,10 @@ class RuleEngine:
             wanted = (t.get("process") or "").strip().lower()
             if not wanted:
                 return False
-            running = self._running_processes()
-            appeared = wanted in running and wanted not in self._seen
-            self._seen = running if not appeared else self._seen | {wanted}
-            return appeared
+            return wanted in appeared
 
         if ttype == "on_battery":
-            now_ac = self._ac_state()
-            if now_ac is None:
-                return False
-            fired = self._on_ac is True and now_ac is False
-            self._on_ac = now_ac
-            return fired
+            return battery_transition
 
         if ttype == "schedule":
             return self._schedule_fired(rule, now)
@@ -471,6 +459,18 @@ class RuleEngine:
         if not self._primed:
             self.prime()
         now = now or datetime.now()
+        need = env_need(rules)
+        appeared: set[str] = set()
+        if "procs" in need:
+            running = self._running_processes()
+            appeared = running - self._seen
+            self._seen = running
+        battery_transition = False
+        if "on_ac" in need:
+            now_ac = self._ac_state()
+            battery_transition = self._on_ac is True and now_ac is False
+            if now_ac is not None:
+                self._on_ac = now_ac
         fired = []
         for rule in rules:
             if not rule.get("enabled"):
@@ -478,7 +478,7 @@ class RuleEngine:
             kind = (rule.get("action") or {}).get("kind")
             if kind in UNAVAILABLE_ACTIONS:
                 continue
-            if self._trigger_fired(rule, now) and self._condition_ok(rule):
+            if self._trigger_fired(rule, now, appeared, battery_transition) and self._condition_ok(rule):
                 fired.append((rule, i18n.t("условие выполнено")))
         self._last_check = now
         return fired

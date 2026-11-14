@@ -21,7 +21,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QSignalBlocker, Qt
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -178,6 +178,8 @@ class RulesWidget(QWidget):
         super().__init__()
         self.setObjectName("PanelRoot")
         self._standalone = standalone
+        self._resetting = False
+        self._reset_generation = 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(*th.PAGE_MARGINS)
@@ -250,10 +252,20 @@ class RulesWidget(QWidget):
 
         self._rules: list[dict] = []
         self.reload()
+        self.table.itemChanged.connect(self._on_item_changed)
 
     # -- данные ------------------------------------------------------------
+    def set_resetting(self, resetting: bool) -> None:
+        self._resetting = resetting
+        if resetting:
+            self._reset_generation += 1
+        else:
+            self.reload()
+        self.setEnabled(not resetting)
+
     def reload(self):
         self._rules = gd_rules.load_rules()
+        blocker = QSignalBlocker(self.table)
         self.table.setRowCount(len(self._rules))
         for row, rule in enumerate(self._rules):
             trig, cond, act = gd_rules.describe(rule)
@@ -266,9 +278,7 @@ class RulesWidget(QWidget):
             chk.setCheckState(Qt.Checked if rule.get("enabled") else Qt.Unchecked)
             self.table.setItem(row, 3, chk)
 
-        self.table.itemChanged.connect(self._on_item_changed) \
-            if not getattr(self, "_hooked", False) else None
-        self._hooked = True
+        del blocker
 
         self.lbl_count.setText(i18n.t("правил: {v0}", v0=len(self._rules)))
         self.empty_hint.setVisible(not self._rules)
@@ -294,7 +304,7 @@ class RulesWidget(QWidget):
             self.log.addItem(QListWidgetItem(i18n.t("Пока ничего не срабатывало.")))
 
     def _on_item_changed(self, item):
-        if item.column() != 3:
+        if self._resetting or item.column() != 3:
             return
         row = item.row()
         if row >= len(self._rules):
@@ -358,24 +368,32 @@ class RulesWidget(QWidget):
         return rule
 
     def _add(self):
+        if self._resetting:
+            return
+        generation = self._reset_generation
         dlg = RuleDialog(parent=self)
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec_() == QDialog.Accepted and generation == self._reset_generation:
             self._rules.append(self._apply_dialog(dlg, dlg.rule))
             self._save()
             self.reload()
 
     def _edit(self):
+        if self._resetting:
+            return
+        generation = self._reset_generation
         row = self._selected()
         if row is None:
             return
         dlg = RuleDialog(self._rules[row], parent=self)
-        if dlg.exec_() != QDialog.Accepted:
+        if dlg.exec_() != QDialog.Accepted or generation != self._reset_generation:
             return
         self._rules[row] = self._apply_dialog(dlg, dlg.rule)
         self._save()
         self.reload()
 
     def _delete(self):
+        if self._resetting:
+            return
         row = self._selected()
         if row is None:
             return

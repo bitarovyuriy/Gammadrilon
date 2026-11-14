@@ -4,15 +4,15 @@
 Установка лимита мощности и частот требует прав администратора (драйвер
 отвечает «Insufficient Permissions» обычному пользователю). Поэтому запись
 выполняет этот процесс: он запускается один раз через UAC
-(`Start-Process -Verb RunAs`) и далее обслуживает окно по именованному каналу.
+(`Start-Process -Verb RunAs`) и далее обслуживает окно по TCP loopback.
 
 Держит исходные значения и откатывает их:
   * при штатном выходе (команда shutdown),
   * при падении окна-владельца (watchdog по PID — как у CPU-компаньона).
 
 Если включена настройка «не возвращать лимит при выходе» (`keep_on_exit`), откат
-не делается ни при выходе, ни при крахе: лимит остаётся в драйвере, а исходное
-значение уходит в gpu_state.json — следующая сессия вернёт именно его.
+не делается ни при выходе, ни при крахе: лимит остаётся в драйвере. Снимок в
+gpu_state.json записывается до изменения, чтобы его можно было вернуть.
 
 Команды (версия протокола 1):
   {"v":1,"cmd":"ping"}
@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from ctypes import wintypes
+import json
 import os
 import math
 from pathlib import Path
@@ -42,19 +44,20 @@ import gd_gpu  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 import gd_paths  # noqa: E402
 import gd_proc  # noqa: E402
+import gd_state  # noqa: E402
 from gd_helper import recv_message, send_message  # noqa: E402
 
 i18n.init_for_process()      # компаньон — отдельный процесс: язык берём из presets.json
 
 _OP_LOCK = threading.Lock()
+_stopping = False
 _original: dict | None = None
 _applied: dict | None = None
+_snapshot_problem = False
 # Настройка UI «не возвращать лимит при выходе приложения». Приходит с командой
 # apply (и отдельной командой keep при переключении галочки) — решает, что делать
 # при выходе и при смерти окна-владельца. Хелпер — единственный, кто живёт дольше
-# окна, поэтому решение об откате принимает он, а не тот, кто успел крикнуть первым:
-# вкладка zapret тоже шлёт shutdown(restore=True), и раньше она могла вернуть лимит
-# вопреки настройке.
+# окна. При смерти окна хелпер использует последнее полученное значение.
 _keep_on_exit = False
 _boost = None
 
@@ -113,7 +116,7 @@ def _state_path():
     return gd_paths.data_dir() / "gpu_state.json"
 
 
-def _read_keep_setting() -> bool:
+def _read_keep_setting(default: bool = True) -> bool:
     """Настройка «не возвращать лимит при выходе» из presets.json.
 
     Хелпер читает её сам (как gd_i18n.init_for_process читает язык): его мог
@@ -121,13 +124,10 @@ def _read_keep_setting() -> bool:
     приложения. Нет файла или ключа — включена: так решил пользователь
     («по умолчанию — не откатывать»).
     """
-    try:
-        import json
-
-        data = json.loads(gd_paths.config_path().read_text(encoding="utf-8"))
-        return bool((data.get("settings") or {}).get("gpu_keep_on_exit", True))
-    except Exception:  # noqa: BLE001
-        return True
+    data = gd_state.read_json(gd_paths.config_path())
+    settings = data.get("settings") if isinstance(data, dict) else None
+    value = settings.get("gpu_keep_on_exit") if isinstance(settings, dict) else None
+    return value if type(value) is bool else default
 
 
 def _set_keep_on_exit(on) -> None:
@@ -136,56 +136,77 @@ def _set_keep_on_exit(on) -> None:
 
 
 def _load_kept_original() -> None:
-    """Прочитать исходный лимит, оставленный прошлой сессией (если был)."""
-    global _original, _applied, _keep_on_exit
+    """Прочитать снимок прошлой сессии (включая старый формат)."""
+    global _original, _applied, _snapshot_problem
+    _original, _applied, _snapshot_problem = None, None, False
     _set_keep_on_exit(_read_keep_setting())
     try:
-        import json
-
         data = json.loads(_state_path().read_text(encoding="utf-8"))
-        original = data.get("original") or {"pl": float(data["original_pl"])}
+        if not isinstance(data, dict):
+            raise ValueError("invalid GPU snapshot")
+        original = data["original"] if "original" in data else {"pl": float(data["original_pl"])}
+        if not isinstance(original, dict):
+            raise ValueError("invalid original GPU state")
         pl = original.get("pl")
-        if pl is not None and (not isinstance(pl, (int, float)) or not math.isfinite(pl) or not 0 < pl <= 2000):
-            return
-    except Exception:  # noqa: BLE001 — файла нет, битый JSON или не число
+        uuid = original.get("uuid")
+        applied = data.get("applied")
+        if applied is None:
+            applied = {}
+        if (pl is not None and not _valid_power(pl)) or (
+                uuid is not None and not gd_gpu.valid_uuid(uuid)) or not isinstance(applied, dict):
+            raise ValueError("invalid GPU snapshot")
+        if not _valid_clocks(applied.get("lock_clocks")):
+            raise ValueError("invalid clock snapshot")
+        if pl is None and applied.get("pl") is not None:
+            raise ValueError("missing original power limit")
+    except FileNotFoundError:
+        return
+    except (KeyError, OSError, OverflowError, TypeError, ValueError):
+        _snapshot_problem = True
+        return
+    if pl is None and not applied.get("lock_clocks"):
         return
     _original = original
-    _applied = data.get("applied")
+    _applied = applied
     # i18n: skip-start — строка лога компаньона (для разработчика)
     _log(f"состояние отката с прошлой сессии: {_original}")
     # i18n: skip-end
 
 
-def _keep_original() -> None:
-    """Запомнить исходный лимит на диск: лимит остался на карте после выхода."""
-    if not _original:
-        return
-    try:
-        import gd_state
-
-        path = _state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        gd_state.write_json_atomic(path, {"original_pl": _original.get("pl"),
-                                          "original": _original, "applied": _applied})
-    except OSError:
-        pass
+def _save_snapshot(original: dict, applied: dict) -> bool:
+    return gd_state.write_json_atomic(_state_path(), {"original_pl": original.get("pl"),
+                                                     "original": original, "applied": applied})
 
 
-def _clear_kept_original() -> None:
-    """Лимит вернулся к исходному — помнить больше нечего."""
+def _clear_snapshot() -> bool:
     try:
         _state_path().unlink(missing_ok=True)
     except OSError:
-        pass
+        return False
+    return True
 
 
-def _run_smi(args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
+def _valid_power(value) -> bool:
+    return type(value) in (int, float) and 0 < value <= 2000
+
+
+def _valid_clocks(value) -> bool:
+    return value is None or (isinstance(value, list) and len(value) == 2
+                             and all(type(v) is int and 0 < v <= 10000 for v in value)
+                             and value[0] <= value[1])
+
+
+class _GpuWriteNotStarted(Exception):
+    """The command was never sent to the driver."""
+
+
+def _run_smi(gpu_uuid: str, args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
     path = gd_gpu._smi_path()  # noqa: SLF001 — путь ищется в одном месте
     if path is None:
-        return False, i18n.t("nvidia-smi не найден")
+        raise _GpuWriteNotStarted(i18n.t("nvidia-smi не найден"))
     try:
-        proc = gd_proc.run([path, *args], text=True, timeout=timeout)
-    except (OSError, gd_proc.TimeoutExpired) as exc:
+        proc = gd_proc.run([path, "-i", gpu_uuid, *args], text=True, timeout=timeout)
+    except OSError as exc:
         return False, str(exc)
     text = ((proc.stdout or "") + (proc.stderr or "")).strip()
     low = text.lower()
@@ -197,111 +218,170 @@ def _run_smi(args: list[str], timeout: float = 20.0) -> tuple[bool, str]:
     return True, text
 
 
-def _set_power(pl: float) -> tuple[bool, str]:
+def _set_power(gpu_uuid: str, pl: float) -> tuple[bool, str]:
     """Лимит мощности: сначала NVML (без процесса), затем nvidia-smi."""
     try:
         import gd_nvml
 
-        nv = gd_nvml.Nvml()
-        if nv.available():
-            ok, message = nv.set_power_limit(pl)
-            nv.shutdown()
-            if ok:
-                return True, message
+        nv = gd_nvml.Nvml(gpu_uuid)
     except Exception:  # noqa: BLE001 — нет NVML или драйвер старый
-        pass
-    return _run_smi(["-pl", str(int(pl))])
+        nv = None
+    nvml_error = None
+    if nv is not None:
+        try:
+            if nv.available():
+                ok, nvml_error = nv.set_power_limit(pl)
+                if ok:
+                    return True, nvml_error
+        finally:
+            try:
+                nv.shutdown()
+            except Exception as exc:  # noqa: BLE001 — cleanup cannot change the write result
+                _log(f"NVML shutdown: {exc}")  # i18n: skip (лог)
+    try:
+        return _run_smi(gpu_uuid, ["-pl", f"{pl:.3f}".rstrip("0").rstrip(".")])
+    except _GpuWriteNotStarted:
+        if nvml_error is not None:
+            return False, nvml_error
+        raise
 
 
 # -- операции с GPU ---------------------------------------------------------
 
 
 def _apply(pl: float | None, lock_clocks: list | None,
-           keep_on_exit: bool | None = None) -> tuple[bool, str]:
-    global _original, _applied
+           keep_on_exit: bool | None = None) -> tuple[bool | None, str]:
     if keep_on_exit is not None:
         _set_keep_on_exit(keep_on_exit)
+    if pl is None and not lock_clocks:
+        return True, i18n.t("нечего применять")
+    if problem := _snapshot_error():
+        return False, problem
     state = gd_gpu.read_state()
     if state is None:
         return False, i18n.t("nvidia-smi недоступен")
-    before = {"pl": state.get("pl"), "clocks_locked": False}
+    uuid = state.get("uuid")
+    if not gd_gpu.valid_uuid(uuid):
+        return False, i18n.t("Не удалось определить видеокарту для изменения.")
+    if _original and _original["uuid"].casefold() != uuid.casefold():
+        return False, i18n.t("Сначала восстановите настройки видеокарты из сохранённого снимка.")
+    if pl is not None and not _valid_power(state.get("pl")):
+        return False, i18n.t("Драйвер не сообщил исходный лимит мощности. Изменение отменено.")
 
     what = []
     if pl is not None:
-        ok, out = _set_power(pl)
+        original = dict(_original or {}, uuid=uuid)
+        if original.get("pl") is None:
+            original["pl"] = state["pl"]
+        applied = dict(_applied or {}, pl=pl)
+        ok, out = _apply_with_snapshot(original, applied, lambda: _set_power(uuid, pl))
         if not ok:
-            return False, i18n.t("лимит мощности: {v0}", v0=out)
-        if _original is None:
-            _original = before
-        elif _original.get("pl") is None:
-            # прошлый откат вернул мощность и обнулил её в снимке, но остался
-            # из-за неудачного сброса частот: без этой ветки следующий откат
-            # мощность уже не вернёт
-            _original["pl"] = before["pl"]
-        if _applied is None:
-            _applied = {}
-        _applied["pl"] = pl
-        _keep_original()
+            return ok, i18n.t("лимит мощности: {v0}", v0=out)
         what.append(i18n.t("PL {v0} Вт", v0=int(pl)))
     if lock_clocks:
-        lo, hi = int(lock_clocks[0]), int(lock_clocks[1])
-        ok, out = _run_smi(["-lgc", f"{lo},{hi}"])
+        lo, hi = lock_clocks
+        original = dict(_original or {"pl": None}, uuid=uuid)
+        applied = dict(_applied or {}, lock_clocks=lock_clocks)
+        ok, out = _apply_with_snapshot(original, applied, lambda: _run_smi(uuid, ["-lgc", f"{lo},{hi}"]))
         if not ok:
-            return False, i18n.t("частоты: {v0}", v0=out)
-        if _original is None:
-            _original = before
-        if _applied is None:
-            _applied = {}
-        _applied["lock_clocks"] = lock_clocks
+            return ok, i18n.t("частоты: {v0}", v0=out)
         what.append(i18n.t("клоки {v0}–{v1} МГц", v0=lo, v1=hi))
 
-    # исходное состояние запоминаем только когда изменение действительно прошло
-    if what and _original is None:
-        _original = before
-    if what and _keep_on_exit:
-        # исходное значение — на диск сразу: лимит может пережить и крах окна,
-        # и аварийное завершение хелпера, а следующая сессия всё равно должна
-        # знать, к чему возвращаться по кнопке «Вернуть как было»
-        _keep_original()
-    if what:
-        if _keep_on_exit:
-            return True, i18n.t("применено: {v0} (лимит останется после выхода)",
-                                v0=", ".join(what))
-        return True, i18n.t("применено: {v0}", v0=", ".join(what))
-    return True, i18n.t("нечего применять")
+    if _keep_on_exit:
+        return True, i18n.t("применено: {v0} (лимит останется после выхода)", v0=", ".join(what))
+    return True, i18n.t("применено: {v0}", v0=", ".join(what))
+
+
+def _snapshot_error() -> str:
+    if _snapshot_problem or (_original and not _original.get("uuid")):
+        return i18n.t("Не удалось связать снимок GPU с конкретной картой. "
+                      "Проверьте исходный лимит, переместите файл {v0} в резервную папку "
+                      "и перезапустите приложение. Инструкция есть в README.", v0=_state_path())
+    return ""
+
+
+def _record_snapshot(original: dict | None, applied: dict | None) -> bool:
+    global _original, _applied
+    pending = (original or {}).get("pl") is not None or bool((applied or {}).get("lock_clocks"))
+    # Write an empty snapshot before removing it: even when unlink fails, a
+    # restarted helper will not retry an already completed rollback.
+    if not _save_snapshot(original if pending else {}, applied if pending else {}):
+        return False
+    _original = original if pending else None
+    _applied = applied if pending else None
+    if not pending:
+        _clear_snapshot()
+    return True
+
+
+def _apply_with_snapshot(original, applied, write_device) -> tuple[bool | None, str]:
+    previous = _original, _applied
+    if not _record_snapshot(original, applied):
+        return False, i18n.t("Не удалось сохранить снимок для отката GPU.")
+    try:
+        ok, out = write_device()
+    except _GpuWriteNotStarted as exc:
+        if not _record_snapshot(*previous):
+            return False, f"{exc}. {i18n.t('Не удалось сохранить снимок для отката GPU.')}"
+        return False, str(exc)
+    except Exception as exc:  # noqa: BLE001 — the driver may have changed the GPU
+        ok, out = False, str(exc) or type(exc).__name__
+    if ok:
+        return True, out
+    # Even a reported error can follow a successful write. Retain the snapshot
+    # unless the command is known to have stopped before reaching the driver.
+    return None, i18n.t("Результат изменения GPU неизвестен. Снимок для отката сохранён. {v0}", v0=out)
 
 
 def _restore() -> tuple[bool, str]:
     """Вернуть исходный лимит мощности и снять блокировку частот."""
     global _original, _applied
+    if problem := _snapshot_error():
+        return False, problem
     if _original is None:
         return True, i18n.t("нечего откатывать")
+    uuid = _original["uuid"]
     errors = []
-    if (_applied or {}).get("lock_clocks"):
-        ok, out = _run_smi(["-rgc"])
+    original, applied = dict(_original), dict(_applied or {})
+    if applied.get("lock_clocks"):
+        ok, out = _attempt_rollback(lambda: _run_smi(uuid, ["-rgc"]))
         if not ok:
             errors.append(i18n.t("сброс частот: {v0}", v0=out))
         else:
-            _applied["lock_clocks"] = None
-    orig_pl = _original.get("pl")
+            applied.pop("lock_clocks")
+    orig_pl = original.get("pl")
     if orig_pl is not None:
-        ok, out = _set_power(float(orig_pl))
+        ok, out = _attempt_rollback(lambda: _set_power(uuid, orig_pl))
         if not ok:
             errors.append(i18n.t("лимит мощности: {v0}", v0=out))
         else:
-            _original["pl"] = None
+            original["pl"] = None
+            applied.pop("pl", None)
+    if not _record_snapshot(original, applied):
+        # Preserve progress in this process even if we could not update disk.
+        _original, _applied = original, applied
+        errors.append(i18n.t("Не удалось сохранить снимок для отката GPU."))
     if errors:
-        _keep_original()
         return False, "; ".join(errors)
-    _original = None
-    _applied = None
-    _clear_kept_original()          # лимит вернулся — «исходный» больше не нужен
     return True, i18n.t("исходные значения возвращены")
+
+
+def _attempt_rollback(rollback) -> tuple[bool, str]:
+    try:
+        return rollback()
+    except Exception as exc:  # noqa: BLE001 — other rollback steps must run
+        return False, str(exc) or type(exc).__name__
 
 
 def _status() -> dict:
     return {
         "state": gd_gpu.read_state(),
+        **_snapshot_status(),
+    }
+
+
+def _snapshot_status() -> dict:
+    return {
         "original": _original,
         "applied": _applied,
     }
@@ -335,14 +415,15 @@ def _zapret_stop(pid: int):
     return ok, msg
 
 
-def _zapret_shutdown() -> None:
+def _zapret_shutdown() -> tuple[bool, str]:
     """При выходе хелпера — обход возвращается к состоянию «до включения».
 
     Вторая линия — job-объект kill-on-close в gd_zapret: он гасит winws даже
     при убийстве хелпера, когда до этой функции дело не доходит.
     """
     if _zapret_pid:
-        _zapret_stop(_zapret_pid)
+        return _zapret_stop(_zapret_pid)
+    return True, ""
 
 
 def _zapret_adopt(pid: int):
@@ -371,7 +452,7 @@ def _zapret_adopt(pid: int):
 
 def _validate_command(obj: dict) -> None:
     commands = {"ping", "status", "apply", "keep", "restore", "shutdown", "purge_standby",
-                "empty_working_sets", "sensors_start", "sensors_stop", "dns_apply", "doh", "dns_flush",
+                "empty_working_sets", "sensors_start", "sensors_stop", "dns_apply", "dns_restore", "dns_flush",
                 "zapret_recon", "zapret_start", "zapret_stop", "zapret_adopt", "zapret_probe",
                 "zapret_service", "zapret_update", "cs2_apply", "cs2_revert",
                 "boost_start", "boost_stop", "boost_restore"}
@@ -394,11 +475,11 @@ def _validate_command(obj: dict) -> None:
         if value is not None and (type(value) not in (int, float) or not math.isfinite(value)
                                   or not 0 < value <= (600 if key == "seconds" else 2000)):
             raise ValueError(f"invalid {key}")
-    clocks = obj.get("lock_clocks")
-    if clocks is not None and (not isinstance(clocks, list) or len(clocks) != 2
-                               or any(type(v) is not int or not 0 < v <= 10000 for v in clocks)
-                               or clocks[0] > clocks[1]):
+    if not _valid_clocks(obj.get("lock_clocks")):
         raise ValueError("invalid clocks")
+    for key in ("keep_on_exit", "on", "restore", "force"):
+        if key in obj and type(obj[key]) is not bool:
+            raise ValueError(f"invalid {key}")
     if obj["cmd"] == "cs2_apply":
         import gd_cs2
 
@@ -416,7 +497,7 @@ def _validate_command(obj: dict) -> None:
     if obj["cmd"] == "zapret_service" and obj.get("op", "status") not in {
             "status", "install", "remove", "start", "stop", "restart"}:
         raise ValueError("invalid service operation")
-    if obj["cmd"] == "zapret_update" and obj.get("op", "apply") not in {"apply", "rollback", "ipset", "hosts"}:
+    if obj["cmd"] == "zapret_update" and obj.get("op", "apply") not in {"apply", "rollback", "ipset"}:
         raise ValueError("invalid update operation")
 
 
@@ -429,10 +510,37 @@ def handle(obj: dict) -> dict:
     """
     try:
         _validate_command(obj)
-        return _handle(obj)
+        if obj["cmd"] == "ping":
+            return {"ok": True, "data": "pong"}
+        if obj["cmd"] == "shutdown":
+            return _shutdown(obj) or _stopping_reply()
+        with _OP_LOCK:
+            return _stopping_reply() if _stopping else _handle(obj)
     except Exception as exc:  # noqa: BLE001
         _log(f"ошибка команды: {type(exc).__name__}: {exc}")  # i18n: skip (лог)
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _stopping_reply() -> dict:
+    return {"ok": False, "error": i18n.t("компаньон завершает работу")}
+
+
+def _shutdown(obj: dict) -> dict | None:
+    """The first shutdown caller owns cleanup and the subsequent process exit."""
+    global _stopping
+    with _OP_LOCK:
+        if _stopping:
+            return None
+        _stopping = True
+        operations = [_stop_boost, _zapret_shutdown]
+        if obj.get("force") or obj.get("restore", not _keep_on_exit):
+            operations.append(_restore)
+        errors = []
+        for operation in operations:
+            ok, message = _attempt_rollback(operation)
+            if not ok:
+                errors.append(message or i18n.t("не удалось выполнить откат"))
+        return {"ok": not errors, "data": "bye", "error": "; ".join(errors) or None}
 
 
 def _handle(obj: dict) -> dict:
@@ -441,77 +549,57 @@ def _handle(obj: dict) -> dict:
     if cmd in {"boost_start", "boost_stop", "boost_restore"}:
         import gd_boost
 
-        with _OP_LOCK:
-            if _boost is None:
-                _boost = gd_boost.GameBoost()
-            if cmd == "boost_restore":
-                _boost.restore_from_disk()
-                ok, message = not _boost.active(), ""
-            else:
-                ok, message = _boost.start() if cmd == "boost_start" else _boost.stop()
+        if _boost is None:
+            _boost = gd_boost.GameBoost()
+        if cmd == "boost_restore":
+            _boost.restore_from_disk()
+            ok, message = not _boost.active(), ""
+        else:
+            ok, message = _boost.start() if cmd == "boost_start" else _boost.stop()
         return {"ok": ok, "message": message, "data": _boost.status(), "error": None if ok else message}
     if cmd in {"cs2_apply", "cs2_revert"}:
         import gd_cs2
 
-        with _OP_LOCK:
-            report = (gd_cs2.revert() if cmd == "cs2_revert"
-                      else gd_cs2.apply(obj["items"], obj.get("exe") or ""))
+        report = (gd_cs2.revert() if cmd == "cs2_revert"
+                  else gd_cs2.apply(obj["items"], obj.get("exe") or ""))
         return {"ok": report["ok"], "data": report,
                 "error": "; ".join(report.get("errors") or [])}
-    if cmd == "ping":
-        return {"ok": True, "data": "pong"}
     if cmd == "status":
         return {"ok": True, "data": _status()}
     if cmd == "apply":
-        with _OP_LOCK:
-            ok, msg = _apply(obj.get("pl"), obj.get("lock_clocks"),
-                             obj.get("keep_on_exit"))
-        return {"ok": ok, "data": _status(), "error": None if ok else msg}
+        ok, msg = _apply(obj.get("pl"), obj.get("lock_clocks"),
+                         obj.get("keep_on_exit"))
+        return {"ok": ok, "data": _snapshot_status(), "error": None if ok else msg}
     if cmd == "keep":
         # галочка «не возвращать лимит при выходе» переключена: решение об откате
         # принимает хелпер — сообщаем ему сразу, без повторного UAC-цикла
         _set_keep_on_exit(obj.get("on"))
-        return {"ok": True, "data": _status()}
+        return {"ok": True, "data": _snapshot_status()}
     if cmd == "restore":
-        with _OP_LOCK:
-            ok, msg = _restore()
-        return {"ok": ok, "data": _status(), "error": None if ok else msg}
-    if cmd == "shutdown":
-        ok, message = True, "bye"
-        with _OP_LOCK:
-            boost_ok, boost_message = _stop_boost()
-            _zapret_shutdown()               # обход DPI — к состоянию «до включения»
-            # решение об откате принимает хелпер: клиентов несколько (вкладка GPU,
-            # вкладка zapret, выход приложения), и они не должны перебивать друг
-            # друга. force остаётся в протоколе, но окно его больше не выставляет:
-            # «неподтверждённых» изменений нет с 12.10.2026 (таймер подтверждения
-            # убран), каждое применение сразу становится состоянием карты.
-            if obj.get("force") or (obj.get("restore", True) and not _keep_on_exit):
-                ok, message = _restore()
-            else:
-                _keep_original()             # лимит остаётся: исходный — на диск
-        return {"ok": ok and boost_ok, "data": "bye",
-                "error": None if ok and boost_ok else "; ".join(filter(None, [message if not ok else "", boost_message]))}
+        ok, msg = _restore()
+        return {"ok": ok, "data": _snapshot_status(), "error": None if ok else msg}
     # -- утилиты (ТЗ 6.1/6.2): требуют прав администратора, поэтому живут в хелпере --
     if cmd == "purge_standby":
-        with _OP_LOCK:
-            import gd_memory
+        import gd_memory
 
-            sensors = gd_memory.MemorySensors()
+        sensors = gd_memory.MemorySensors()
+        try:
             before = sensors.sample()
             ok, msg = gd_memory.purge_standby_native()
             after = sensors.sample()
+        finally:
             sensors.close()
         return {"ok": ok, "data": {"before": before, "after": after},
                 "error": None if ok else msg}
     if cmd == "empty_working_sets":
-        with _OP_LOCK:
-            import gd_memory
+        import gd_memory
 
-            sensors = gd_memory.MemorySensors()
+        sensors = gd_memory.MemorySensors()
+        try:
             before = sensors.sample()
             ok, msg, count = gd_memory.empty_working_sets_native(obj.get("pids") or [])
             after = sensors.sample()
+        finally:
             sensors.close()
         return {"ok": ok, "data": {"before": before, "after": after, "count": count},
                 "error": None if ok else msg}
@@ -538,104 +626,85 @@ def _handle(obj: dict) -> dict:
             except psutil.Error:
                 continue
         return {"ok": True, "data": stopped}
-    if cmd == "dns_apply":
-        with _OP_LOCK:
-            import gd_dns
+    if cmd in ("dns_apply", "dns_restore"):
+        import gd_dns
 
-            ok, msg = gd_dns.apply_native(
-                obj.get("mode") or "dhcp",
-                obj.get("servers") or [],
-                obj.get("iface") or gd_dns.active_interface(),
-            )
-        return {"ok": ok, "data": msg, "error": None if ok else msg}
-    if cmd == "doh":
-        with _OP_LOCK:
-            import gd_dns
-
-            ok, msg = gd_dns.doh_native(
-                obj.get("servers") or [], obj.get("template"), bool(obj.get("enable"))
-            )
-        return {"ok": ok, "data": msg, "error": None if ok else msg}
+        if cmd == "dns_restore":
+            aliases = obj.get("confirmed_aliases", [])
+            if not isinstance(aliases, list) or not all(isinstance(alias, str) for alias in aliases):
+                raise ValueError("invalid DNS aliases")
+            return gd_dns.restore_backups(aliases)
+        return gd_dns.apply_provider(obj.get("servers", []), template=obj.get("template"),
+                                     mode=obj.get("mode", "static"), iface=obj.get("iface"))
     if cmd == "dns_flush":
-        with _OP_LOCK:
-            import gd_dns
+        import gd_dns
 
-            ok, msg = gd_dns.flush_native()
+        ok, msg = gd_dns.flush_native()
         return {"ok": ok, "data": msg, "error": None if ok else msg}
     # -- zapret (ТЗ 8): освоение и управление winws.exe ----------------------
     if cmd == "zapret_recon":
-        with _OP_LOCK:
-            import gd_zapret
+        import gd_zapret
 
-            ok, res = gd_zapret.recon(obj.get("path") or "", obj.get("strategy") or "")
+        ok, res = gd_zapret.recon(obj.get("path") or "", obj.get("strategy") or "")
         return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
     if cmd == "zapret_start":
-        with _OP_LOCK:
-            ok, res = _zapret_start(
-                obj.get("path") or "", obj.get("argv") or [],
-                obj.get("log") or "", obj.get("note") or "")
+        ok, res = _zapret_start(
+            obj.get("path") or "", obj.get("argv") or [],
+            obj.get("log") or "", obj.get("note") or "")
         return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
     if cmd == "zapret_stop":
-        with _OP_LOCK:
-            ok, msg = _zapret_stop(int(obj.get("pid") or 0))
+        ok, msg = _zapret_stop(int(obj.get("pid") or 0))
         return {"ok": ok, "data": msg, "error": None if ok else msg}
     if cmd == "zapret_adopt":
-        with _OP_LOCK:
-            ok, res = _zapret_adopt(int(obj.get("pid") or 0))
+        ok, res = _zapret_adopt(int(obj.get("pid") or 0))
         return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
     # -- служба zapret и автообновление (ТЗ 8): без консоли service.bat --------
     if cmd == "zapret_probe":
         # перебор стратегий: каждая проба поднимает winws.exe на секунды.
         # Лок держим на весь перебор: две пробы разом подерутся за WinDivert
         files = obj.get("files") or []
-        with _OP_LOCK:
-            import gd_zapret
+        import gd_zapret
 
-            results = gd_zapret.probe_round(
-                obj.get("path") or "", files or None,
-                seconds=float(obj.get("seconds") or 3.0),
-                limit=int(obj.get("limit") or 0))
+        results = gd_zapret.probe_round(
+            obj.get("path") or "", files or None,
+            seconds=float(obj.get("seconds") or 3.0),
+            limit=int(obj.get("limit") or 0))
         passed = [item for item in results if item.get("ok")]
         return {"ok": True, "data": {"results": results, "passed": passed}}
     if cmd == "zapret_service":
         op = str(obj.get("op") or "status")
-        with _OP_LOCK:
-            import gd_zapret
+        import gd_zapret
 
-            if op == "status":
-                return {"ok": True, "data": gd_zapret.service_status()}
-            if op == "install":
-                ok, res = gd_zapret.service_install(
-                    obj.get("path") or "", obj.get("strategy") or "",
-                    obj.get("argv") or [], bool(obj.get("start", True)))
-            elif op == "remove":
-                ok, res = gd_zapret.service_remove()
-            elif op == "start":
-                ok, res = gd_zapret.service_start()
-            elif op == "stop":
-                ok, res = gd_zapret.service_stop()
-            elif op == "restart":
-                ok, res = gd_zapret.service_restart()
-            else:
-                return {"ok": False, "error": i18n.t("неизвестная операция службы: {v0}", v0=op)}
+        if op == "status":
+            return {"ok": True, "data": gd_zapret.service_status()}
+        if op == "install":
+            ok, res = gd_zapret.service_install(
+                obj.get("path") or "", obj.get("strategy") or "",
+                obj.get("argv") or [], bool(obj.get("start", True)))
+        elif op == "remove":
+            ok, res = gd_zapret.service_remove()
+        elif op == "start":
+            ok, res = gd_zapret.service_start()
+        elif op == "stop":
+            ok, res = gd_zapret.service_stop()
+        elif op == "restart":
+            ok, res = gd_zapret.service_restart()
+        else:
+            return {"ok": False, "error": i18n.t("неизвестная операция службы: {v0}", v0=op)}
         return {"ok": ok, "data": res if ok else None, "error": None if ok else res}
     if cmd == "zapret_update":
         op = str(obj.get("op") or "apply")
-        with _OP_LOCK:
-            import gd_zapret_update as upd
+        import gd_zapret_update as upd
 
-            if op == "apply":
-                res = upd.apply_verified_update(obj.get("path") or "", obj.get("zip") or "",
-                                                obj.get("version") or "", obj.get("sha256") or "")
-            elif op == "rollback":
-                res = upd.rollback_update()
-            elif op == "ipset":
-                res = upd.update_ipset(obj.get("path") or "")
-            elif op == "hosts":
-                ok, tmp = upd.fetch_hosts()
-                res = upd.apply_hosts(tmp) if ok else {"ok": False, "error": tmp}
-            else:
-                return {"ok": False, "error": i18n.t("неизвестная операция обновления: {v0}", v0=op)}
+        if op == "apply":
+            res = upd.apply_verified_update(obj.get("path") or "", obj.get("zip") or "",
+                                            obj.get("version") or "", obj.get("sha256") or "")
+        elif op == "rollback":
+            res = upd.rollback_update()
+        elif op == "ipset":
+            res = upd.update_ipset(obj.get("path") or "")
+        else:
+            return {"ok": False, "error": i18n.t("неизвестная операция обновления: {v0}", v0=op)}
         return {"ok": bool(res.get("ok")), "data": res if res.get("ok") else None,
                 "error": None if res.get("ok") else res.get("error")}
     return {"ok": False, "error": i18n.t("неизвестная команда: {v0}", v0=cmd)}
@@ -658,6 +727,8 @@ def _client_is_owner(peer, port: int, ui_pid: int, created: float) -> bool:
 
 
 def serve_client(conn) -> None:
+    prepared_hosts = None
+    shutdown_owner = False
     try:
         while True:
             if not conn.poll(1.0):
@@ -670,38 +741,85 @@ def serve_client(conn) -> None:
                 send_message(conn, {"ok": False, "error": i18n.t("ожидался объект")})
                 continue
             try:
-                send_message(conn, handle(obj))
+                if obj == {"cmd": "zapret_update", "op": "hosts_prepare"}:
+                    import gd_zapret_update as upd
+
+                    # No shared operation lock or disk writes during network I/O.
+                    # The verified response can only be used on this connection.
+                    prepared_hosts = None
+                    try:
+                        prepared_hosts = upd.fetch_hosts_content()
+                        result = {"ok": True}
+                    except Exception as exc:  # noqa: BLE001 — always reply to the UI
+                        result = {"ok": False, "error": str(exc)}
+                elif obj == {"cmd": "zapret_update", "op": "hosts"} and prepared_hosts is not None:
+                    content, prepared_hosts = prepared_hosts, None
+                    try:
+                        with _OP_LOCK:
+                            if _stopping:
+                                result = _stopping_reply()
+                            else:
+                                data = upd.apply_hosts(content)
+                                result = {"ok": bool(data.get("ok")), "data": data, "error": data.get("error")}
+                    except Exception as exc:  # noqa: BLE001 — always reply to the UI
+                        result = {"ok": False, "error": str(exc)}
+                elif obj.get("cmd") == "shutdown":
+                    prepared_hosts = None
+                    try:
+                        _validate_command(obj)
+                    except (TypeError, ValueError) as exc:
+                        result = {"ok": False, "error": str(exc)}
+                    else:
+                        result = _shutdown(obj)
+                        shutdown_owner = result is not None
+                        if not shutdown_owner:
+                            result = _stopping_reply()
+                else:
+                    prepared_hosts = None
+                    result = handle(obj)
+                send_message(conn, result)
             except (OSError, EOFError):
                 break
-            if obj.get("cmd") == "shutdown":
-                os._exit(0)              # откат уже сделан внутри handle()
+            if shutdown_owner:
+                break
     except (OSError, EOFError):
         pass
     finally:
-        conn.close()
+        try:
+            conn.close()
+        finally:
+            if shutdown_owner:
+                os._exit(0)
 
 
-def watchdog(ui_pid: int) -> None:
-    """Если окно-владелец умерло — вернуть исходные значения и выйти."""
-    SYNCHRONIZE = 0x00100000
-    k32 = ctypes.windll.kernel32
-    handle_ = k32.OpenProcess(SYNCHRONIZE, False, ui_pid)
+def _owner_handle(ui_pid: int):
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    handle_ = k32.OpenProcess(0x00100000, False, ui_pid)  # SYNCHRONIZE
     if not handle_:
-        return
-    while True:
-        if k32.WaitForSingleObject(handle_, 2000) == 0:   # процесс завершился
-            with _OP_LOCK:
-                _stop_boost()
-                _zapret_shutdown()           # обход DPI — к состоянию «до включения»
-                if _keep_on_exit:
-                    _keep_original()         # лимит остаётся: исходный — на диск
-                else:
-                    _restore()
-            # i18n: skip-start — строка лога компаньона (для разработчика)
-            _log(f"окно (pid {ui_pid}) завершилось — "
-                 f"{'лимит оставлен' if _keep_on_exit else 'откат'}")
-            # i18n: skip-end
-            os._exit(0)
+        raise ctypes.WinError(ctypes.get_last_error())
+    return k32, handle_
+
+
+def watchdog(k32, owner_handle) -> None:
+    """Откатить изменения после завершения конкретного процесса-владельца."""
+    try:
+        wait = k32.WaitForSingleObject(owner_handle, 0xFFFFFFFF)  # INFINITE
+    finally:
+        k32.CloseHandle(owner_handle)
+    # Stop on a wait failure as well. The service cannot safely outlive its
+    # owner if the owner's lifetime is no longer observable.
+    # The config may have been saved even if the keep notification was lost
+    # when the window exited or the connection dropped.
+    result = _shutdown({"restore": not _read_keep_setting(default=_keep_on_exit)})
+    if result is not None:
+        _log(result["error"] or f"owner watch ended ({wait})")  # i18n: skip (лог)
+        os._exit(0)
 
 
 def main() -> int:
@@ -716,19 +834,38 @@ def main() -> int:
     if args.host != "127.0.0.1" or not args.ui_pid or not args.token:
         ap.error("loopback, token and UI PID are required")
     import psutil
-    ui_created = psutil.Process(args.ui_pid).create_time()
     _LOG_FILE = args.log
+    authkey = bytes.fromhex(args.token)
+    # Bind before loading state or starting a watchdog: a failed second
+    # instance must not run cleanup for the GPU owned by the first one.
+    try:
+        listener = Listener(address=(args.host, args.port), family="AF_INET", authkey=authkey)
+    except OSError:
+        return 2
+    with listener:
+        try:
+            ui_created = psutil.Process(args.ui_pid).create_time()
+            k32, owner_handle = _owner_handle(args.ui_pid)
+        except (OSError, psutil.Error):
+            return 2
+        try:
+            if psutil.Process(args.ui_pid).create_time() != ui_created:
+                raise psutil.NoSuchProcess(args.ui_pid)
+            _load_kept_original()
+            threading.Thread(target=watchdog, args=(k32, owner_handle), daemon=True).start()
+        except (OSError, psutil.Error):
+            k32.CloseHandle(owner_handle)
+            return 2
+        except BaseException:
+            k32.CloseHandle(owner_handle)
+            raise
+        _serve(listener, args, ui_created)
+    return 0
 
-    # лимит, оставленный прошлой сессией: помним исходное значение для отката
-    _load_kept_original()
 
-    if args.ui_pid:
-        threading.Thread(target=watchdog, args=(args.ui_pid,), daemon=True).start()
-
-    authkey = bytes.fromhex(args.token) if args.token else None
-    listener = Listener(address=(args.host, args.port), family="AF_INET", authkey=authkey)
+def _serve(listener, args, ui_created: float) -> None:
     # i18n: skip-start — строки журнала компаньона (лог-файл, разработчику)
-    _log(f"слушаю {args.host}:{args.port} (ui-pid {args.ui_pid}, токен {'да' if authkey else 'нет'})")
+    _log(f"слушаю {args.host}:{args.port} (ui-pid {args.ui_pid})")
 
     while True:                          # выход — через os._exit (shutdown/watchdog)
         try:

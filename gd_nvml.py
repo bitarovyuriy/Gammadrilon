@@ -52,14 +52,14 @@ def _library_path() -> str | None:
 class Nvml:
     """Тонкая обёртка: только то, что показывает вкладка GPU."""
 
-    def __init__(self) -> None:
+    def __init__(self, gpu_uuid: str | None = None) -> None:
         self._lib = None
         self._device = ctypes.c_void_p()
         self._ready = False
         self._problem = ""
-        self._bind()
+        self._bind(gpu_uuid)
 
-    def _bind(self) -> None:
+    def _bind(self, gpu_uuid: str | None) -> None:
         path = _library_path()
         if path is None:
             self._problem = i18n.t("nvml.dll не найдена")
@@ -75,6 +75,10 @@ class Nvml:
         lib.nvmlDeviceGetHandleByIndex_v2.argtypes = [ctypes.c_uint,
                                                       ctypes.POINTER(ctypes.c_void_p)]
         lib.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
+        lib.nvmlDeviceGetHandleByUUID.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+        lib.nvmlDeviceGetHandleByUUID.restype = ctypes.c_int
+        lib.nvmlDeviceGetUUID.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint]
+        lib.nvmlDeviceGetUUID.restype = ctypes.c_int
         lib.nvmlDeviceGetName.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint]
         lib.nvmlDeviceGetName.restype = ctypes.c_int
         lib.nvmlSystemGetDriverVersion.argtypes = [ctypes.c_char_p, ctypes.c_uint]
@@ -112,7 +116,9 @@ class Nvml:
         if lib.nvmlInit_v2() != SUCCESS:
             self._problem = i18n.t("nvmlInit не удался (нет драйвера NVIDIA?)")
             return
-        if lib.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(self._device)) != SUCCESS:
+        result = (lib.nvmlDeviceGetHandleByUUID(gpu_uuid.encode("ascii"), ctypes.byref(self._device))
+                  if gpu_uuid else lib.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(self._device)))
+        if result != SUCCESS:
             self._problem = i18n.t("видеокарта не открылась через NVML")
             lib.nvmlShutdown()
             return
@@ -141,6 +147,14 @@ class Nvml:
         if self._lib.nvmlSystemGetDriverVersion(buffer, len(buffer)) != SUCCESS:
             return ""
         return buffer.value.decode("utf-8", "replace").strip()
+
+    def uuid(self) -> str | None:
+        if not self._ready:
+            return None
+        buffer = ctypes.create_string_buffer(96)
+        if self._lib.nvmlDeviceGetUUID(self._device, buffer, len(buffer)) != SUCCESS:
+            return None
+        return buffer.value.decode("ascii")
 
     def _uint(self, fn, *args) -> int | None:
         value = ctypes.c_uint()
@@ -171,11 +185,12 @@ class Nvml:
             memory = None
 
         def watts(value):
-            return round(value / 1000, 1) if value is not None else None
+            return value / 1000 if value is not None else None
 
         return {
             "name": self.name(),
             "driver": self.driver(),
+            "uuid": self.uuid(),
             "pl": watts(limit_mw),
             "pl_min": watts(min_mw),
             "pl_max": watts(max_mw),

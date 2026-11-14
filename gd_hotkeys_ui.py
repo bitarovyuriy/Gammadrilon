@@ -21,6 +21,7 @@ if str(HERE) not in sys.path:
 from PyQt5.QtCore import Qt  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -92,23 +93,24 @@ class HotkeysPanel(QWidget):
         self.table.setShowGrid(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionMode(QTableWidget.NoSelection)
-        # семь действий должны быть видны целиком: прокрутка внутри таблицы
-        # прячет последние строки и кнопки «Убрать»
-        self.table.verticalHeader().setDefaultSectionSize(30)
-        # минимум, а не максимум: раскладка сжимала таблицу до пяти строк
-        row_h = 7 * 30 + 32
-        self.table.setMinimumHeight(row_h)
-        self.table.setMaximumHeight(row_h)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.table.setColumnWidth(0, 260)
-        self.table.setColumnWidth(1, 200)
+        columns = self.table.horizontalHeader()
+        columns.setSectionResizeMode(0, QHeaderView.Stretch)
+        columns.setSectionResizeMode(1, QHeaderView.Stretch)
+        columns.setSectionResizeMode(2, QHeaderView.Fixed)
         self.table.setFrameShape(self.table.NoFrame)
 
         hotkeys = self._settings().get("hotkeys", {})
+        row_height = 40
+        clear_width = 52
         for row, (key, label) in enumerate(ACTIONS):
-            self.table.setItem(row, 0, QTableWidgetItem(i18n.t(label)))
+            action = i18n.t(label)
+            self.table.setItem(row, 0, QTableWidgetItem(action))
 
             edit = QLineEdit()
+            edit.setAccessibleName(action)
+            edit.setStyleSheet("padding: 2px 8px;")
+            edit.setMinimumHeight(32)
             edit.setPlaceholderText(i18n.t("не назначено"))
             edit.setText(str(hotkeys.get(key, DEFAULTS.get(key, "")) or ""))
             edit.editingFinished.connect(self._mark_changed)
@@ -118,11 +120,18 @@ class HotkeysPanel(QWidget):
             self._fields[key] = edit
             self.table.setCellWidget(row, 1, edit)
 
-            clear = QPushButton(i18n.t("Убрать"))
+            clear = QPushButton("×")
             clear.setObjectName("Segment")
+            clear.setAccessibleName(f'{i18n.t("Убрать")}: {action}')
             clear.setToolTip(i18n.t("Освободить сочетание: клавиша вернётся системе."))
+            clear.setStyleSheet("min-width: 32px; min-height: 32px; padding: 0;")
             clear.clicked.connect(lambda _=False, k=key: self._clear(k))
             self.table.setCellWidget(row, 2, clear)
+            row_height = max(row_height, edit.minimumSizeHint().height())
+
+        self.table.setColumnWidth(2, clear_width)
+        self.table.verticalHeader().setDefaultSectionSize(row_height)
+        self.table.setFixedHeight(len(ACTIONS) * row_height + columns.sizeHint().height() + 4)
 
         lay.addWidget(self.table)
 

@@ -22,7 +22,7 @@ def _fake_system(monkeypatch):
     holder = {"state": None}
     calls = {"duplicate": [], "deleted": [], "active": "ORIG"}
 
-    monkeypatch.setattr(gd_power, "load_state", lambda: holder["state"])
+    monkeypatch.setattr(gd_power, "read_state_report", lambda: (holder["state"], ""))
     monkeypatch.setattr(gd_power, "save_state", lambda st: holder.__setitem__("state", st))
     monkeypatch.setattr(gd_power, "clear_state", lambda: True)
     monkeypatch.setattr(gd_power, "get_active_scheme", lambda: calls["active"])
@@ -92,16 +92,107 @@ def test_failed_reapply_keeps_working_clone(monkeypatch):
     schemes, holder, calls = _fake_system(monkeypatch)
     first = gd_power.apply_profile("eco")
 
-    monkeypatch.setattr(
-        gd_power, "write_values",
-        lambda guid, values: {"ok": [], "failed": {"max_state": [("AC", 1)]}},
-    )
+    def write(guid, values):
+        failed = {} if values == first["values"] else {"max_state": [("AC", 1)]}
+        return {"failed": failed}
+
+    monkeypatch.setattr(gd_power, "write_values", write)
     with pytest.raises(OSError):
         gd_power.apply_profile("normal")
 
     assert calls["deleted"] == []
     assert holder["state"]["profile"] == "eco"
     assert holder["state"]["clone_scheme"] == first["clone_scheme"]
+
+
+def test_new_profile_requires_saved_rollback_before_activation(monkeypatch):
+    schemes, holder, calls = _fake_system(monkeypatch)
+
+    def fail_save(state):
+        assert calls["active"] == "ORIG"
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(gd_power, "save_state", fail_save)
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        gd_power.apply_profile("eco")
+
+    assert calls["active"] == "ORIG"
+    assert list(schemes) == ["ORIG"]
+    assert holder["state"] is None
+
+
+def test_failed_activation_cleans_up_record_and_clone(monkeypatch):
+    schemes, holder, calls = _fake_system(monkeypatch)
+
+    def fail_activation(guid):
+        assert holder["state"]["original_scheme"] == "ORIG"
+        assert holder["state"]["clone_scheme"] == guid
+        return False
+
+    monkeypatch.setattr(gd_power, "set_active_scheme", fail_activation)
+    monkeypatch.setattr(gd_power, "clear_state", lambda: holder.__setitem__("state", None) or True)
+
+    with pytest.raises(OSError):
+        gd_power.apply_profile("eco")
+
+    assert calls["active"] == "ORIG"
+    assert list(schemes) == ["ORIG"]
+    assert holder["state"] is None
+
+
+def test_restore_retries_state_removal_after_deleting_clone(monkeypatch):
+    schemes, holder, calls = _fake_system(monkeypatch)
+    state = gd_power.apply_profile("eco")
+    clone = state["clone_scheme"]
+    delete = gd_power.delete_scheme
+    monkeypatch.setattr(gd_power, "delete_scheme", lambda guid: guid in schemes and delete(guid))
+    monkeypatch.setattr(gd_power, "clear_state", lambda: False)
+
+    assert not gd_power.restore_report()["ok"]
+    assert calls["active"] == "ORIG"
+    assert clone not in schemes
+    assert holder["state"] == state
+
+    monkeypatch.setattr(gd_power, "clear_state", lambda: holder.__setitem__("state", None) or True)
+
+    assert gd_power.restore_report()["ok"]
+    assert holder["state"] is None
+
+
+def test_restore_keeps_a_manually_selected_scheme_active(monkeypatch):
+    schemes, holder, calls = _fake_system(monkeypatch)
+    state = gd_power.apply_profile("eco")
+    schemes["OTHER"] = "Настроенная вручную"
+    calls["active"] = "OTHER"
+    monkeypatch.setattr(gd_power, "clear_state", lambda: holder.__setitem__("state", None) or True)
+
+    assert gd_power.restore_report()["ok"]
+    assert calls["active"] == "OTHER"
+    assert state["clone_scheme"] not in schemes
+    assert holder["state"] is None
+
+
+def test_invalid_utf8_in_power_state_is_reported(monkeypatch, tmp_path):
+    path = tmp_path / "power_state.json"
+    path.write_bytes(b"\xff")
+    monkeypatch.setattr(gd_power, "STATE_FILE", str(path))
+
+    state, note = gd_power.read_state_report()
+
+    assert state is None
+    assert "UTF-8" in note
+
+
+def test_invalid_original_in_power_state_is_reported(monkeypatch, tmp_path):
+    path = tmp_path / "power_state.json"
+    path.write_text('{"original_scheme": 123}', encoding="utf-8")
+    monkeypatch.setattr(gd_power, "STATE_FILE", str(path))
+
+    state, note = gd_power.read_state_report()
+
+    assert state is None
+    assert "original_scheme" in note
 
 
 def test_clone_name_strips_repeated_mark(monkeypatch):

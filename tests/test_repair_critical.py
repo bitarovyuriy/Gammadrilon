@@ -136,18 +136,18 @@ def test_restored_config_is_normalized(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("failure", ["power", "clocks"])
 def test_gpu_restore_can_retry(monkeypatch, failure):
-    monkeypatch.setattr(service, "_original", {"pl": 200})
+    monkeypatch.setattr(service, "_original", {"pl": 200, "uuid": _GPU_UUID})
     monkeypatch.setattr(service, "_applied", {"pl": 100, "lock_clocks": [900, 1200]})
-    monkeypatch.setattr(service, "_clear_kept_original", Mock())
-    monkeypatch.setattr(service, "_keep_original", Mock())
+    monkeypatch.setattr(service, "_clear_snapshot", Mock(return_value=True))
+    monkeypatch.setattr(service, "_save_snapshot", Mock(return_value=True))
     attempts = {"power": 0, "clocks": 0}
 
     def run(part):
         attempts[part] += 1
         return (False, "permission denied") if part == failure and attempts[part] == 1 else (True, "ok")
 
-    monkeypatch.setattr(service, "_set_power", lambda pl: run("power"))
-    monkeypatch.setattr(service, "_run_smi", lambda args: run("clocks"))
+    monkeypatch.setattr(service, "_set_power", lambda uuid, pl: run("power"))
+    monkeypatch.setattr(service, "_run_smi", lambda uuid, args: run("clocks"))
     assert not service._restore()[0]
     assert service._original is not None
     assert service._restore()[0]
@@ -307,30 +307,34 @@ def test_helper_rejects_archive_substitution(monkeypatch, tmp_path):
     apply.assert_not_called()
 
 
+_GPU_UUID = "GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
 def test_gpu_failed_clock_restore_survives_helper_restart(monkeypatch, tmp_path):
     monkeypatch.setattr(service, "_state_path", lambda: tmp_path / "gpu.json")
     monkeypatch.setattr(service, "_read_keep_setting", lambda: False)
-    monkeypatch.setattr(service, "_original", {"pl": 200})
+    monkeypatch.setattr(service, "_original", {"pl": 200, "uuid": _GPU_UUID})
     monkeypatch.setattr(service, "_applied", {"pl": 100, "lock_clocks": [900, 1200]})
-    monkeypatch.setattr(service, "_set_power", lambda value: (True, ""))
-    monkeypatch.setattr(service, "_run_smi", lambda args: (False, "permission denied"))
+    monkeypatch.setattr(service, "_set_power", lambda uuid, value: (True, ""))
+    monkeypatch.setattr(service, "_run_smi", lambda uuid, args: (False, "permission denied"))
     assert not service._restore()[0]
     monkeypatch.setattr(service, "_original", None)
     monkeypatch.setattr(service, "_applied", None)
     service._load_kept_original()
     calls = []
-    monkeypatch.setattr(service, "_run_smi", lambda args: calls.append(args) or (True, ""))
+    monkeypatch.setattr(service, "_run_smi", lambda uuid, args: calls.append((uuid, args)) or (True, ""))
     assert service._restore()[0]
-    assert calls == [["-rgc"]]
+    assert calls == [(_GPU_UUID, ["-rgc"])]
 
 
 def test_gpu_partial_apply_retains_rollback_state(monkeypatch):
     monkeypatch.setattr(service, "_original", None)
     monkeypatch.setattr(service, "_applied", None)
-    monkeypatch.setattr(service.gd_gpu, "read_state", lambda: {"pl": 200})
-    monkeypatch.setattr(service, "_set_power", lambda value: (True, ""))
-    monkeypatch.setattr(service, "_run_smi", lambda args: (False, "driver error"))
-    monkeypatch.setattr(service, "_keep_original", Mock())
+    monkeypatch.setattr(service, "_keep_on_exit", True)
+    monkeypatch.setattr(service.gd_gpu, "read_state", lambda: {"pl": 200, "uuid": _GPU_UUID})
+    monkeypatch.setattr(service, "_set_power", lambda uuid, value: (True, ""))
+    monkeypatch.setattr(service, "_run_smi", lambda uuid, args: (False, "driver error"))
+    monkeypatch.setattr(service, "_save_snapshot", Mock(return_value=True))
     assert not service._apply(100, [900, 1200], False)[0]
     assert service._original["pl"] == 200
     assert service._applied["pl"] == 100
@@ -413,17 +417,20 @@ def test_exit_waits_for_ddc_before_cleanup(monkeypatch):
 
 
 def test_exit_restores_game_boost_and_reports_failure(monkeypatch):
+    import gd_helper
     import gd_journal
     import gd_metrics
 
+    monkeypatch.setattr(gd_helper, "HelperClient", lambda: NS(has_session=lambda: False))
     monkeypatch.setattr(gd_metrics, "stop", lambda *a, **kw: None)
     record = Mock()
     monkeypatch.setattr(gd_journal, "record", record)
     boost = NS(stop=Mock(return_value=(False, "restore failed")))
-    window = NS(_utils_page=NS(_boost=boost), _ddc=None, gamma_controller=NS(reset=Mock()))
+    window = NS(config={"settings": {}}, _utils_page=NS(_boost=boost),
+                _restore_before_shutdown=lambda: (True, ""), _ddc=None, gamma_controller=NS(reset=Mock()))
     result = main.MainWindow._cleanup_for_exit(window)
     boost.stop.assert_called_once()
-    assert not result["ok"]
+    assert result == {"ok": False, "errors": ["restore failed"]}
     assert record.called
 
 

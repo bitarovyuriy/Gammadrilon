@@ -36,6 +36,9 @@ failures: list[str] = []
 
 def main() -> int:
     import main as gd_main
+    import gd_bg
+    import gd_metrics
+    from PyQt5.QtCore import QTimer
     from PyQt5.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
@@ -85,6 +88,15 @@ def main() -> int:
                 print(f"ок        старый путь {key} → {name}")
         except Exception:  # noqa: BLE001
             failures.append(f"{key}: {traceback.format_exc(limit=2)}")
+
+    for timer in win.findChildren(QTimer):
+        timer.stop()
+    gd_bg.begin_shutdown()
+    gd_metrics.stop()
+    if not gd_bg.wait_all(8000):
+        failures.append("фоновые задачи не завершились после проверки")
+    app.processEvents()
+    win.tray.hide()
 
     print()
     if failures:

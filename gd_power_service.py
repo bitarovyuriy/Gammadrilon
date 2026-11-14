@@ -8,7 +8,7 @@
 Протокол: multiprocessing.connection по named pipe (AF_PIPE),
 JSON-совместимые словари: {'cmd': ..., ...} -> {'ok': bool, 'data'|'error': ...}.
 
-Команды: ping | status | apply {profile, custom} | restore | shutdown {restore}
+Команды: ping | status | apply {profile, custom} | restore | clean_clones | shutdown {restore}
 
 `status` — чистое чтение powercfg, и то же самое умеет `gd_power.state_snapshot()`
 локально, без процесса. Поэтому UI читает состояние и без компаньона, а поднимает
@@ -22,8 +22,7 @@ import ctypes
 import os
 import sys
 import threading
-import time
-
+from ctypes import wintypes
 from multiprocessing.connection import Listener
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -45,17 +44,25 @@ _OP_LOCK = threading.Lock()
 # --------------------------------------------------------------------------
 
 SYNCHRONIZE = 0x00100000
-WAIT_TIMEOUT = 0x00000102
+WAIT_OBJECT_0 = 0
+ERROR_INVALID_PARAMETER = 87
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_kernel32.OpenProcess.restype = wintypes.HANDLE
+_kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+_kernel32.WaitForSingleObject.restype = wintypes.DWORD
+_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.CloseHandle.restype = wintypes.BOOL
 
 
 def is_process_alive(pid: int) -> bool:
-    h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    h = _kernel32.OpenProcess(SYNCHRONIZE, False, pid)
     if not h:
-        return False
+        return ctypes.get_last_error() != ERROR_INVALID_PARAMETER
     try:
-        return ctypes.windll.kernel32.WaitForSingleObject(h, 0) == WAIT_TIMEOUT
+        return _kernel32.WaitForSingleObject(h, 0) != WAIT_OBJECT_0
     finally:
-        ctypes.windll.kernel32.CloseHandle(h)
+        _kernel32.CloseHandle(h)
 
 
 # --------------------------------------------------------------------------
@@ -88,25 +95,26 @@ def _rollback(why: str) -> dict:
     return rep
 
 
-def handle(cmd: dict) -> dict:
+def handle(cmd: dict, *, stopping: threading.Event | None = None) -> dict:
     name = cmd.get("cmd")
     if name == "ping":
         return {"ok": True, "data": "pong"}
     if name == "status":
         try:
-            return {"ok": True, "data": gp.state_snapshot()}
+            with _OP_LOCK:
+                return {"ok": True, "data": gp.state_snapshot()}
         except OSError as e:
             return {"ok": False, "error": str(e)}
-    if name == "apply":
+    if name in ("apply", "restore", "clean_clones"):
         with _OP_LOCK:
+            if stopping is not None and stopping.is_set():
+                return {"ok": False, "error": i18n.t("компаньон завершает работу")}
             try:
-                st = gp.apply_profile(cmd.get("profile", "normal"), cmd.get("custom"))
-                return {"ok": True, "data": {k: v for k, v in st.items() if k != "custom"}}
-            except Exception as e:  # noqa: BLE001
-                return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    if name == "restore":
-        with _OP_LOCK:
-            try:
+                if name == "apply":
+                    st = gp.apply_profile(cmd.get("profile", "normal"), cmd.get("custom"))
+                    return {"ok": True, "data": {k: v for k, v in st.items() if k != "custom"}}
+                if name == "clean_clones":
+                    return {"ok": True, "data": gp.cleanup_clones()}
                 rep = _rollback(i18n.t("возврат исходной схемы по запросу окна"))
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -128,16 +136,33 @@ class PowerService:
         self.ui_pid = ui_pid
         self.pipe_name = pipe_name
         self.stop = threading.Event()
+        self._finish_lock = threading.Lock()
 
     # -- watchdog ----------------------------------------------------------
     def _watchdog(self):
         while not self.stop.wait(WATCHDOG_INTERVAL):
             if self.ui_pid and not is_process_alive(self.ui_pid):
                 # UI умер, не попрощавшись: если висит применённый профиль — откат
-                if gp.load_state():
-                    _rollback(i18n.t("профиль остался после смерти окна"))
-                self.stop.set()
-                os._exit(0)  # не ждём accept — выходим сразу
+                if self._finish(True, i18n.t("профиль остался после смерти окна")) is not None:
+                    os._exit(0)  # не ждём accept — выходим сразу
+
+    def _finish(self, restore: bool, reason: str) -> dict | None:
+        with self._finish_lock:
+            if self.stop.is_set():
+                return None
+            self.stop.set()
+        with _OP_LOCK:
+            if not restore:
+                return {"ok": True, "data": "bye"}
+            try:
+                rep = _rollback(reason)
+            except Exception as exc:  # noqa: BLE001
+                error = f"{type(exc).__name__}: {exc}"
+                _journal(reason, error)
+                return {"ok": False, "error": error}
+            if not rep["ok"]:
+                return {"ok": False, "data": rep, "error": rep["note"]}
+            return {"ok": True, "data": rep}
 
     # -- pipe --------------------------------------------------------------
     def _serve_conn(self, conn):
@@ -148,27 +173,29 @@ class PowerService:
                 except (EOFError, OSError, ValueError):
                     # битое или слишком большое сообщение: соединению больше не верим
                     return
-                resp = handle(cmd)
+                if cmd.get("cmd") == "shutdown":
+                    resp = self._finish(cmd.get("restore", True),
+                                        i18n.t("окно закрывается — возвращаю схему"))
+                    if resp is None:
+                        return
+                    try:
+                        gd_helper.send_message(conn, resp)
+                    except OSError:
+                        pass
+                    finally:
+                        try:
+                            conn.close()
+                        finally:
+                            os._exit(0)
+                    return
                 try:
-                    gd_helper.send_message(conn, resp)
+                    gd_helper.send_message(conn, handle(cmd, stopping=self.stop))
                 except OSError:
                     return
-                if cmd.get("cmd") == "shutdown":
-                    if cmd.get("restore", True) and gp.load_state():
-                        with _OP_LOCK:
-                            _rollback(i18n.t("окно закрывается — возвращаю схему"))
-                    time.sleep(0.05)  # дать ответу уйти в pipe
-                    os._exit(0)
         finally:
             conn.close()
 
     def run(self) -> int:
-        # при старте: если остался «грязный» state от прошлой сессии — откат
-        if gp.load_state():
-            _rollback(i18n.t("профиль остался от прошлой сессии"))
-
-        threading.Thread(target=self._watchdog, daemon=True).start()
-
         try:
             listener = Listener(address=self.pipe_name, family="AF_PIPE")
         except OSError:
@@ -176,7 +203,17 @@ class PowerService:
             return 2
 
         try:
-            while not self.stop.is_set():
+            # Откат выполняет только процесс, которому принадлежит pipe.
+            state, problem = gp.read_state_report()
+            if state or problem:
+                reason = i18n.t("профиль остался от прошлой сессии")
+                try:
+                    _rollback(reason)
+                except Exception as exc:  # noqa: BLE001 — remain available for recovery
+                    _journal(reason, f"{type(exc).__name__}: {exc}")
+            threading.Thread(target=self._watchdog, daemon=True).start()
+            # Поток завершения отправит ответ и остановит процесс.
+            while True:
                 conn = listener.accept()
                 # каждый клиент обслуживается своим потоком: несколько
                 # потребителей (окно, тесты) не блокируют друг друга

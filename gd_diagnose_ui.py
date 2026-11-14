@@ -25,6 +25,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -81,26 +82,26 @@ class DiagnoseWidget(QWidget):
                    "zapret, прокси и UAC. Отчёт обезличен: имя пользователя, "
                    "IP и MAC заменяются."),
         )
-        row = QHBoxLayout()
+        row = QGridLayout()
         self.btn_check = QPushButton(i18n.t("Проверить"))
         self.btn_check.setObjectName("PrimaryButton")
         self.btn_check.clicked.connect(self.run_checks)
-        row.addWidget(self.btn_check)
+        row.addWidget(self.btn_check, 0, 0)
         self.btn_copy = QPushButton(i18n.t("Копировать отчёт"))
         self.btn_copy.setObjectName("Segment")
         self.btn_copy.clicked.connect(self.copy_report)
-        row.addWidget(self.btn_copy)
+        row.addWidget(self.btn_copy, 0, 1)
         self.btn_save = QPushButton(i18n.t("Сохранить…"))
         self.btn_save.setObjectName("Segment")
         self.btn_save.clicked.connect(self.save_report)
-        row.addWidget(self.btn_save)
+        row.addWidget(self.btn_save, 1, 0)
 
         # один файл вместо переписки «пришлите лог, отчёт и версию»
         self.btn_archive = QPushButton(i18n.t("Архив для поддержки"))
         self.btn_archive.setObjectName("Segment")
         self.btn_archive.clicked.connect(self.save_archive)
-        row.addWidget(self.btn_archive)
-        row.addStretch(1)
+        row.addWidget(self.btn_archive, 1, 1)
+        row.setColumnStretch(2, 1)
         lay.addLayout(row)
 
         self.list = QListWidget()

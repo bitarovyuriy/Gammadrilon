@@ -20,9 +20,9 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -46,16 +46,6 @@ import gd_i18n as i18n  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
 
 
-class MeasureWorker(QThread):
-    done = pyqtSignal(dict)
-
-    def run(self):
-        try:
-            self.done.emit(gd_dns.measure_resolvers())
-        except Exception:  # noqa: BLE001
-            self.done.emit({})
-
-
 class DnsWidget(QWidget):
     def __init__(self, standalone: bool = False):
         super().__init__()
@@ -65,7 +55,10 @@ class DnsWidget(QWidget):
         self._results: dict = {}
         self._worker = None
         self._apply_worker = None     # фоновая смена/возврат DNS (UAC + netsh)
+        self._changing = False
+        self._resetting = False
         self._refresh_worker = None   # фоновое чтение текущего состояния DNS
+        self._refresh_generation = 0
         self._doh_worker = None       # фоновая проверка поддержки DoH
 
         root = QVBoxLayout(self)
@@ -102,14 +95,15 @@ class DnsWidget(QWidget):
         # сетка сеткой, а разделяют строки линии-подчёркивания из QSS (`QTableWidget::item`)
         self.table.setShowGrid(False)
         for i, r in enumerate(gd_dns.RESOLVERS):
-            self.table.setItem(i, 0, QTableWidgetItem(r["label"]))
+            self.table.setItem(i, 0, QTableWidgetItem(i18n.t(r["label"])))
             self.table.setItem(i, 1, QTableWidgetItem(", ".join(r["servers"]) or "—"))
             self.table.setItem(i, 2, QTableWidgetItem(i18n.t("не замерялось")))
             self.table.setItem(i, 3, QTableWidgetItem(""))
         self.table.setCurrentCell(0, 0)
         lay.addWidget(self.table)
+        lay.addSpacing(8)
 
-        row = QHBoxLayout()
+        row = QGridLayout()
         self.btn_measure = QPushButton(i18n.t("Замерить латентность"))
         self.btn_measure.setObjectName("PrimaryButton")
         self.btn_measure.clicked.connect(self._measure)
@@ -119,10 +113,10 @@ class DnsWidget(QWidget):
         self.btn_restore = QPushButton(i18n.t("Вернуть как было"))
         self.btn_restore.setObjectName("Segment")
         self.btn_restore.clicked.connect(self._restore)
-        row.addWidget(self.btn_measure)
-        row.addWidget(self.btn_apply)
-        row.addWidget(self.btn_restore)
-        row.addStretch(1)
+        row.addWidget(self.btn_measure, 0, 0)
+        row.addWidget(self.btn_apply, 0, 1)
+        row.addWidget(self.btn_restore, 1, 0)
+        row.setColumnStretch(2, 1)
         lay.addLayout(row)
 
         crow = QHBoxLayout()
@@ -133,15 +127,18 @@ class DnsWidget(QWidget):
         crow.addWidget(self.ed_custom, 1)
         lay.addLayout(crow)
 
-        self.chk_doh = QCheckBox(i18n.t("Шифровать DNS по HTTPS (DoH)"))
+        self.chk_doh = QCheckBox(i18n.t("Включить DoH для выбранного резолвера"))
         self.chk_doh.setToolTip(
-            i18n.t("Доступно в Windows 11. Включается для адресов выбранного резолвера.")
+            i18n.t("Windows 11 применит DoH для этих адресов на всех адаптерах. "
+                   "Без галочки действующие настройки DoH сохраняются.")
         )
         # покажем после фоновой проверки поддержки — netsh в GUI-потоке недопустим
         self.chk_doh.setVisible(False)
+        self.chk_doh.setEnabled(False)
+        self.table.currentCellChanged.connect(self._sync_doh_selection)
         lay.addWidget(self.chk_doh)
 
-        sign = QLabel(gd_dns.SIGNATURE)
+        sign = QLabel(i18n.t(gd_dns.SIGNATURE))
         sign.setObjectName("Hint")
         sign.setWordWrap(True)
         lay.addWidget(sign)
@@ -190,12 +187,18 @@ class DnsWidget(QWidget):
         self._refresh_now()
         if not self._doh_checked:
             self._doh_checked = True
-            self._doh_worker = gd_bg.submit(gd_dns.doh_supported, self._doh_done, parent=self)
+            self._doh_worker = gd_bg.submit_network_read(gd_dns.doh_supported, self._doh_done, parent=self)
 
     def _refresh_now(self):
         """Показать текущее DNS-состояние: чтение (netsh) — в фоне, по запросу."""
-        self._saved = gd_dns.saved_state()
-        self._refresh_worker = gd_bg.submit(gd_dns.current_state, self._refresh_done, parent=self)
+        self._refresh_generation += 1
+        generation = self._refresh_generation
+
+        def done(state):
+            if generation == self._refresh_generation:
+                self._refresh_done(state)
+
+        self._refresh_worker = gd_bg.submit_network_read(gd_dns.current_state, done, parent=self)
 
     def _refresh_done(self, st):
         if not isinstance(st, dict) or "servers" not in st:
@@ -205,9 +208,13 @@ class DnsWidget(QWidget):
         # вкладка уже прочитала конфигурацию — отдаём её в общий кэш, чтобы
         # статусбар не запускал netsh второй раз
         gd_metrics.set_dns(st)
-        src = i18n.t("от DHCP") if st.get("mode") == "dhcp" else i18n.t("заданы вручную")
+        mode = st.get("mode")
+        if mode is None:
+            self.lbl_now.setText(i18n.t("Не удалось прочитать конфигурацию DNS"))
+            return
+        src = i18n.t("от DHCP") if mode == "dhcp" else i18n.t("заданы вручную")
         self.lbl_now.setText(
-            i18n.t("{v0}: {v1} ({v2})", v0=st.get('iface') or '—',
+            i18n.t("{v0} · IPv4: {v1} ({v2})", v0=st.get('iface') or '—',
                    v1=', '.join(st.get('servers') or []) or i18n.t('нет'), v2=src)
         )
 
@@ -217,8 +224,14 @@ class DnsWidget(QWidget):
             return
         try:
             self.chk_doh.setVisible(True)
+            self._sync_doh_selection()
         except RuntimeError:          # виджет уже удалён
             pass
+
+    def _sync_doh_selection(self):
+        key = self._selected_key()
+        enabled = any(r["key"] == key and r["doh"] for r in gd_dns.RESOLVERS)
+        self.chk_doh.setEnabled(enabled)
 
     def _set_status(self, text, ok=True):
         self.status.setStyleSheet(f"color: {th.MUTED if ok else th.WARN};")
@@ -239,13 +252,10 @@ class DnsWidget(QWidget):
             return
         self.btn_measure.setEnabled(False)
         self._set_status(i18n.t("Замеряю — реальные DNS-запросы по каждому серверу…"))
-        self._worker = MeasureWorker(self)
-        gd_bg.register(self._worker)
-        self._worker.done.connect(self._measure_done)
-        self._worker.start()
+        self._worker = gd_bg.submit_network_read(gd_dns.measure_resolvers, self._measure_done, parent=self)
 
     def _measure_done(self, results: dict):
-        self._results = results or {}
+        self._results = results if isinstance(results, dict) and results.get("ok") is not False else {}
         self.btn_measure.setEnabled(True)
         for key, res in self._results.items():
             row = self._row_of(key)
@@ -262,21 +272,33 @@ class DnsWidget(QWidget):
         if good:
             best = min(good, key=lambda k: self._results[k]["median"])
             label = next((r["label"] for r in gd_dns.RESOLVERS if r["key"] == best), best)
-            self._set_status(i18n.t("Замер готов. Быстрее всех: {v0} ({v1:.1f} мс).", v0=label, v1=self._results[best]['median']))
+            self._set_status(i18n.t("Замер готов. Быстрее всех: {v0} ({v1:.1f} мс).",
+                                   v0=i18n.t(label), v1=self._results[best]['median']))
         else:
             self._set_status(i18n.t("Ни один резолвер не ответил."), ok=False)
 
     # -- смена --------------------------------------------------------------
+    def set_resetting(self, resetting: bool):
+        self._resetting = resetting
+        self._sync_change_buttons()
+        if not resetting:
+            self._refresh_now()
+
+    def _sync_change_buttons(self):
+        enabled = not (self._changing or self._resetting)
+        self.btn_apply.setEnabled(enabled)
+        self.btn_restore.setEnabled(enabled)
+
     def set_provider(self, key: str, source: str = i18n.t("трей")):
         """Смена DNS на резолвер из списка (трей, палитра)."""
         row = self._row_of(key)
-        if row < 0 or key == "custom":
+        if row < 0 or key == "custom" or self._changing or self._resetting:
             return
         self.table.setCurrentCell(row, 0)
         self._apply(source=source)
 
     def _apply(self, source=None):
-        if gd_bg.is_running(self._apply_worker):
+        if self._changing or self._resetting:
             return
         self._source = source or i18n.t("утилиты")
 
@@ -298,35 +320,20 @@ class DnsWidget(QWidget):
             return
 
         client = self._ensure()
-        want_doh = self.chk_doh.isChecked()   # состояние виджета читаем в GUI-потоке
-        self.btn_apply.setEnabled(False)
+        template = r["doh"] if self.chk_doh.isChecked() else None
+        self._changing = True
+        self._sync_change_buttons()
         self._set_status(i18n.t("Применяю DNS…"))
 
-        def work():
-            # чтение прежней конфигурации (netsh) — тоже в фоне; запоминаем её ДО смены
-            remembered, before = gd_dns.remember_before_change()
-            resp = client.call({"cmd": "dns_apply", "mode": "static",
-                                "servers": servers, "iface": before.get("iface")})
-            if not resp.get("ok"):
-                return {"ok": False, "error": resp.get("error"), "before": before,
-                        "remembered": remembered}
-            doh_msg = ""
-            if want_doh:
-                d = client.call({"cmd": "doh", "servers": servers,
-                                 "template": r.get("doh"), "enable": True})
-                doh_msg = f" DoH: {d.get('data') or d.get('error')}"
-                if not d.get("ok"):
-                    return {"ok": False, "partial": True, "error": doh_msg,
-                            "before": before, "remembered": remembered}
-            return {"ok": True, "doh": doh_msg, "before": before,
-                    "remembered": remembered}
-
         self._apply_worker = gd_bg.submit(
-            work, lambda resp: self._apply_done(resp, r, servers), parent=self
+            lambda: client.call({"cmd": "dns_apply", "mode": "static", "servers": servers,
+                                 "template": template}, timeout=None),
+            lambda resp: self._apply_done(resp, r, servers), parent=self
         )
 
     def _apply_done(self, resp, r, servers):
-        self.btn_apply.setEnabled(True)
+        self._changing = False
+        self._sync_change_buttons()
         if not resp.get("ok"):
             self._refresh_now()
             self._set_status(i18n.t("DNS изменён частично: {v0}", v0=resp.get('error'))
@@ -335,54 +342,57 @@ class DnsWidget(QWidget):
                                     v0=resp.get('error')), ok=False)
             return
         before = resp.get("before") or {}
-        doh_msg = resp.get("doh", "")
-        remembered = bool(resp.get("remembered", True))
+        doh_msg = f" {resp['doh']}." if resp.get("doh") else ""
+        label = i18n.t(r["label"])
         self._refresh_now()
         self._set_status(
-            i18n.t("DNS переключён на «{v0}» ({v1}) — было {v2}.{v3} Сравните латентность замером.", v0=r['label'], v1=', '.join(servers), v2=', '.join(before.get('servers') or ['DHCP']), v3=doh_msg)
-            + ("" if remembered else " " + i18n.t(
-                "Прежняя конфигурация не запомнена — «Вернуть как было» "
-                "после перезапуска будет недоступно.")),
+            i18n.t("DNS переключён на «{v0}» ({v1}) — было {v2}.{v3} Сравните латентность замером.",
+                   v0=label, v1=", ".join(servers), v2=", ".join(before.get("servers") or ["DHCP"]), v3=doh_msg),
             ok=True)
-        gd_journal.record("dns", r["label"], ", ".join(before.get("servers") or ["DHCP"]),
+        gd_journal.record("dns", label, ", ".join(before.get("servers") or ["DHCP"]),
                           ", ".join(servers), why=i18n.t("смена DNS-серверов"),
                           source=getattr(self, "_source", i18n.t("утилиты")),
-                          reversible=remembered)
+                          reversible=True)
         import gd_toast
 
-        gd_toast.show_toast(i18n.t("toast.dns_apply", name=r["label"]), "ok")
+        gd_toast.show_toast(i18n.t("toast.dns_apply", name=label), "ok")
 
     def _restore(self):
-        if gd_bg.is_running(self._apply_worker):
+        if self._changing or self._resetting:
             return
+        aliases = gd_dns.legacy_snapshot_aliases()
+        if aliases:
+            import gd_dialog
+
+            confirmed = gd_dialog.confirm(
+                self, i18n.t("Восстановить старый снимок DNS"),
+                i18n.t("Снимок хранит только имя адаптера «{v0}». Убедитесь, что это тот же адаптер, "
+                       "затем подтвердите восстановление IPv4.", v0="», «".join(aliases)),
+                confirm_text=i18n.t("Вернуть как было"), destructive=True)
+            if not confirmed or self._changing or self._resetting:
+                return
         client = self._ensure()
-        saved = self._saved or gd_dns.saved_state()
-        self.btn_restore.setEnabled(False)
+        self._changing = True
+        self._sync_change_buttons()
         self._set_status(i18n.t("Возвращаю прежнюю конфигурацию DNS…"))
 
-        def work():
-            st = saved or gd_dns.current_state()
-            remembered = gd_dns.save_state()
-            resp = client.call({"cmd": "dns_apply", "mode": st.get("mode") or "dhcp",
-                                "servers": st.get("servers") or [], "iface": st.get("iface")})
-            return {"ok": resp.get("ok"), "error": resp.get("error"), "st": st,
-                    "remembered": remembered}
-
-        self._apply_worker = gd_bg.submit(work, self._restore_done, parent=self)
+        request = {"cmd": "dns_restore"}
+        if aliases:
+            request["confirmed_aliases"] = aliases
+        self._apply_worker = gd_bg.submit(
+            lambda: client.call(request, timeout=None), self._restore_done, parent=self)
 
     def _restore_done(self, resp):
-        self.btn_restore.setEnabled(True)
+        self._changing = False
+        self._sync_change_buttons()
+        self._refresh_now()
         if not resp.get("ok"):
             self._set_status(i18n.t("Откат не удался: {v0}", v0=resp.get('error')), ok=False)
             return
-        st = resp.get("st") or {}
-        remembered = bool(resp.get("remembered", True))
-        self._refresh_now()
-        self._set_status(
-            i18n.t("Конфигурация DNS возвращена ({v0}).", v0='DHCP' if st.get('mode') == 'dhcp' else ', '.join(st.get('servers') or []))
-            + ("" if remembered else " " + i18n.t(
-                "Состояние для обратного переключения не сохранено.")),
-            ok=True)
+        if not resp.get("changed"):
+            self._set_status(i18n.t("Нет сохранённых изменений DNS."))
+            return
+        self._set_status(i18n.t("Прежняя конфигурация DNS восстановлена."))
         gd_journal.record("dns", i18n.t("возврат"), None, None,
                           why=i18n.t("возврат прежней конфигурации DNS"), source=i18n.t("утилиты"))
         import gd_toast

@@ -10,7 +10,8 @@ from pathlib import Path
 
 import gd_boot
 import gd_paths
-import gd_proc
+import gd_startup
+from gd_startup import get_startup_shortcut_path
 
 
 # --- PyQt5 и не-ASCII путь ----------------------------------------------------
@@ -194,7 +195,7 @@ from PyQt5.QtWidgets import (  # noqa: E402 — проверка окружен�
 
 
 APP_NAME = gd_paths.APP_NAME
-APP_VERSION = "v3.6.4"
+APP_VERSION = "v3.6.5"
 CONFIG_FILE = "presets.json"
 ICON_FILE = "icon.ico"
 
@@ -844,70 +845,13 @@ def load_config() -> dict:
         save_config(data)
     return data
 
-def get_startup_shortcut_path() -> Path:
-    """Скрипт автозапуска. `.vbs`: WScript умеет запускать процесс без окна."""
-    startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-    return startup_dir / f"{APP_NAME}.vbs"
+def enable_startup(admin: bool = True) -> None:
+    gd_startup.enable_startup(get_startup_shortcut_path(), admin=admin)
 
 
-def _legacy_startup_bat() -> Path:
-    """Старый .bat-автозапуск (до тихого способа) — подчищаем при переключении."""
-    return get_startup_shortcut_path().with_suffix(".bat")
+def disable_startup() -> None:
+    gd_startup.disable_startup(get_startup_shortcut_path())
 
-
-def enable_startup(admin: bool = True):
-    """Включить автозапуск без окна.
-
-    ``admin=True`` — сразу с правами администратора: иначе лимит GPU, DNS и
-    очистка ОЗУ при каждом запуске упираются в UAC. Права запрашивает
-    PowerShell (`Start-Process -Verb RunAs`), окно скрыто.
-
-    Раньше это был .bat: он стартовал через `cmd` и при входе в систему
-    мелькал чёрным окном. WScript.Shell.Run с флагом 0 (скрыто) не показывает
-    ничего. В dev-режиме берём pythonw.exe — у python.exe консольная подсистема.
-    """
-    frozen = getattr(sys, "frozen", False)
-    target = sys.executable if frozen else gd_proc.python_exe()
-    argument = "" if frozen else f'"{Path(__file__).resolve()}"'
-
-    if admin:
-        ps = "Start-Process -FilePath '{0}'".format(target.replace("'", "''"))
-        if argument:
-            ps += " -ArgumentList '{0}'".format(argument.replace("'", "''"))
-        ps += " -Verb RunAs -WindowStyle Hidden"
-        command = 'powershell -NoProfile -WindowStyle Hidden -Command "' + ps + '"'
-    else:
-        command = f'"{target}"'
-        if argument:
-            command += " " + argument
-
-    # в VBS кавычка внутри строкового литерала удваивается
-    vbs_command = command.replace('"', '""')
-    # перевод строки собираем из кодов: исходник не должен зависеть от
-    # того, как редактор сохранил escape-последовательность
-    nl = chr(13) + chr(10)
-    content = (
-        # i18n: skip — комментарий внутри .vbs-файла автозапуска, пользователь его не видит
-        "' Gammadrilon — автозапуск без окна (файл создан приложением)" + nl
-        + 'Set sh = CreateObject("WScript.Shell")' + nl
-        + 'sh.Run "' + vbs_command + '", 0, False' + nl
-    )
-    get_startup_shortcut_path().write_text(content, encoding="utf-16")
-    legacy = _legacy_startup_bat()
-    if legacy.exists():
-        try:
-            legacy.unlink()
-        except OSError:
-            pass
-
-
-def disable_startup():
-    for path in (get_startup_shortcut_path(), _legacy_startup_bat()):
-        if path.exists():
-            try:
-                path.unlink()
-            except OSError:
-                pass
 
 class GammaController:
     """Гамма через SetDeviceGammaRamp.
@@ -1980,6 +1924,8 @@ class MainWindow(QMainWindow):
         self._auto_prev_index = None
         # и частота, которая была до игры
         self._auto_prev_hz = None
+        self._hz_busy = False
+        self._auto_hz_pending = False
 
         # подсветка матрицы: dxva2 на первом вызове молчит секунды, поэтому
         # поиск монитора — в фоне, а запись яркости — с задержкой
@@ -2253,7 +2199,8 @@ class MainWindow(QMainWindow):
             if msg.message == WM_QUERYENDSESSION:
                 # сеанс завершают (выключение/перезагрузка): временные изменения
                 # лучше вернуть самим — ждать следующего старта некому
-                self._restore_before_shutdown()
+                if not self._hz_busy and not self.is_quitting:
+                    self._restore_before_shutdown()
                 return True, 1
         except Exception:  # noqa: BLE001 — не наше сообщение или окно уже закрыто
             pass
@@ -2278,7 +2225,6 @@ class MainWindow(QMainWindow):
         # каркас варианта A «Пульт» (монохром): сайдбар + стек страниц + статусбар
         self.side = QWidget()
         self.side.setObjectName("Sidebar")
-        self.side.setFixedWidth(226)
         self._side_layout = QVBoxLayout(self.side)
         self._side_layout.setContentsMargins(th.SPACE_M, th.SPACE_M, th.SPACE_M, th.SPACE_M)
         self._side_layout.setSpacing(th.SPACE_XS)
@@ -2858,7 +2804,17 @@ class MainWindow(QMainWindow):
         side_lay = QVBoxLayout(side_wrap)
         side_lay.setContentsMargins(0, 0, 0, 0)
         side_lay.setSpacing(0)
-        side_lay.addWidget(self.side, 1)
+        self._side_scroll = QScrollArea()
+        self._side_scroll.setObjectName("Sidebar")
+        self._side_scroll.setFixedWidth(226)
+        self._side_scroll.setFrameShape(QScrollArea.NoFrame)
+        self._side_scroll.setWidgetResizable(True)
+        self._side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._side_scroll.setWidget(self.side)
+        # При Tab Qt прокручивает саму кнопку в видимую область.
+        self._side_scroll.setFocusPolicy(Qt.NoFocus)
+        self._side_scroll.verticalScrollBar().setFocusPolicy(Qt.NoFocus)
+        side_lay.addWidget(self._side_scroll, 1)
         side_lay.addWidget(self._build_side_foot())
 
         body = QWidget()
@@ -2885,6 +2841,7 @@ class MainWindow(QMainWindow):
             entry = self._side_layout.takeAt(0)
             w = entry.widget()
             if w is not None and w is not tools:
+                w.hide()
                 w.deleteLater()
         self._nav_items = {}
         layout = (
@@ -3120,6 +3077,7 @@ class MainWindow(QMainWindow):
         """
         box = QWidget()
         box.setObjectName("SideTools")
+        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         lay = QVBoxLayout(box)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(th.SPACE_XS)
@@ -3324,6 +3282,7 @@ class MainWindow(QMainWindow):
             # у «Утилит» своя обёртка прокрутки: она встаёт на место заготовки,
             # а не второй прокруткой внутри неё
             outer.replaceWidget(slot, widget)
+            widget.show()
             slot.deleteLater()
         elif slot is not None:
             slot.setWidget(widget)
@@ -3361,6 +3320,8 @@ class MainWindow(QMainWindow):
         from gd_dns_ui import DnsWidget
 
         self._dns_page = DnsWidget(standalone=False)
+        if getattr(self, "_reset_running", False):
+            self._dns_page.set_resetting(True)
         return self._dns_page
 
     def _make_zapret_page(self):
@@ -3709,6 +3670,8 @@ class MainWindow(QMainWindow):
         """Проверить правила и применить сработавшие."""
         import gd_rules
 
+        if getattr(self, "_reset_running", False):
+            return
         rules = gd_rules.load_rules()
         fired = self._rule_engine.evaluate(rules)
         if not fired:
@@ -3853,7 +3816,6 @@ class MainWindow(QMainWindow):
         а не побочный эффект сработавшего триггера.
         """
         import gd_bg
-        import gd_dns
         import gd_journal
         import gd_rules
 
@@ -3871,21 +3833,16 @@ class MainWindow(QMainWindow):
         client = self._rule_client()
 
         def work():
-            # «как было» — до смены; отказ записи вернём честной припиской в лог
-            remembered, _before = gd_dns.remember_before_change()
-            resp = client.call_existing({"cmd": "dns_apply", "mode": "static", "servers": servers})
-            if isinstance(resp, dict):
-                resp["remembered"] = remembered
-            return resp
+            return client.call_existing({"cmd": "dns_apply", "mode": "static", "servers": servers}, timeout=None)
 
         def done(resp):
             resp = resp if isinstance(resp, dict) else {}
             if not resp.get("ok"):
-                detail = i18n.t("«{v0}»: DNS не изменён — {v1}",
+                detail = i18n.t("«{v0}»: ошибка применения DNS — {v1}",
                                 v0=name, v1=resp.get("error") or "?")
                 self._log_rule_result(rule, detail)
                 self._report_failure(
-                    i18n.t("Правило «{v0}»: DNS не изменён.", v0=name), detail)
+                    i18n.t("Правило «{v0}»: ошибка применения DNS.", v0=name), detail)
                 return
             remembered = bool(resp.get("remembered", True))
             self._log_rule_result(
@@ -3904,7 +3861,9 @@ class MainWindow(QMainWindow):
 
             gd_toast.show_toast(i18n.t("toast.dns_apply", name=label), "ok")
 
-        self._rule_dns_worker = gd_bg.submit(work, done, parent=self)
+        workers = [worker for worker in getattr(self, "_rule_dns_workers", []) if gd_bg.is_running(worker)]
+        workers.append(gd_bg.submit(work, done, parent=self))
+        self._rule_dns_workers = workers
 
     # -- действия из трея --------------------------------------------------
     def on_cpu_profile(self, pid):
@@ -4128,7 +4087,7 @@ class MainWindow(QMainWindow):
     # -- сброс всех изменений и «тихий час» (ТЗ 6.3, п.3 и п.5) -------------
     def reset_everything(self, on_done=None):
         """Собрать результаты всех откатов и только затем сообщить итог."""
-        if getattr(self, "_reset_running", False):
+        if getattr(self, "_reset_running", False) or getattr(self, "is_quitting", False):
             return
         import gd_helper
 
@@ -4146,12 +4105,27 @@ class MainWindow(QMainWindow):
         self._quiet_generation = getattr(self, "_quiet_generation", 0) + 1
         self._gamma_pending = None
         self.set_ui_values(1.0, 1.0, 1.0, 6500, shadow=0, apply_now=True, save=True)
-        power = getattr(getattr(self, "_power_page", None), "client", None)
+        power_page = getattr(self, "_power_page", None)
+        gpu_page = getattr(self, "_gpu_page", None)
+        power = getattr(power_page, "client", None)
         helper = gd_helper.HelperClient()
-        boost = getattr(getattr(self, "_utils_page", None), "_boost", None)
+        utils = getattr(self, "_utils_page", None)
+        boost = getattr(utils, "_boost", None)
+        rules_page = utils.section_widget("rules") if utils is not None else None
+        for page in (power_page, gpu_page, rules_page):
+            if callable(getattr(page, "set_resetting", None)):
+                page.set_resetting(True)
+        cpu_workers = (getattr(power_page, "_mutation_worker", None),
+                       getattr(self, "_quiet_cpu_worker", None))
+        gpu_workers = (getattr(gpu_page, "_apply_worker", None), getattr(gpu_page, "_restore_worker", None))
+        boost_worker = getattr(utils, "_boost_worker", None)
+        dns_page = getattr(self, "_dns_page", None)
+        dns_workers = list(getattr(self, "_rule_dns_workers", []))
+        if dns_page is not None:
+            dns_page.set_resetting(True)
+            dns_workers.append(dns_page._apply_worker)
 
         def work():
-            import gd_dns
             import gd_extra
             import gd_profiles
             import gd_rules
@@ -4172,18 +4146,28 @@ class MainWindow(QMainWindow):
                 except Exception as exc:
                     errors.append(f"{name}: {exc}")
 
+            def wait_workers(workers):
+                for worker in workers:
+                    if worker is not None:
+                        try:
+                            worker.wait()
+                        except RuntimeError:
+                            pass  # Qt already destroyed the completed worker.
+
+            wait_workers(cpu_workers)
             if power is not None:
                 run(i18n.t("питание CPU"), lambda: power.call({"cmd": "restore"}, timeout=90))
+            wait_workers(gpu_workers)
             run(i18n.t("лимит GPU"), lambda: helper.call({"cmd": "restore"}, timeout=90))
-            saved = gd_dns.saved_state() or gd_dns.current_state()
-            run("DNS", lambda: helper.call({"cmd": "dns_apply", "mode": saved.get("mode") or "dhcp",
-                                            "servers": saved.get("servers") or [], "iface": saved.get("iface")},
-                                           timeout=90))
+            wait_workers(dns_workers)
+            run("DNS", lambda: helper.call({"cmd": "dns_restore"}, timeout=None))
             state = gd_zapret.our_state() or {}
             if state.get("pid") and not state.get("external") and gd_zapret.pid_alive(state["pid"]):
                 run(i18n.t("обход DPI"), lambda: helper.call({"cmd": "zapret_stop", "pid": state["pid"]}, timeout=40))
-            if boost is not None and boost.active():
-                run(i18n.t("игровой буст"), boost.stop)
+            if boost is not None:
+                wait_workers((boost_worker,))
+                if boost.active():
+                    run(i18n.t("игровой буст"), boost.stop)
             rules = gd_rules.load_rules()
             if any(r.get("enabled") for r in rules):
                 for rule in rules:
@@ -4232,6 +4216,20 @@ class MainWindow(QMainWindow):
                           source=i18n.t("утилиты"), reversible=False)
         gd_toast.show_toast(text, "ok" if report["ok"] else "warn")
         self._reset_running = False
+        utils = getattr(self, "_utils_page", None)
+        rules_page = utils.section_widget("rules") if utils is not None else None
+        power_page = getattr(self, "_power_page", None)
+        gpu_page = getattr(self, "_gpu_page", None)
+        if gpu_page is not None and i18n.t("лимит GPU") in report["done"]:
+            gpu_page.reset_completed()
+        if utils is not None:
+            utils._load_auto()
+        for page in (power_page, gpu_page, rules_page):
+            if callable(getattr(page, "set_resetting", None)):
+                page.set_resetting(False)
+        dns_page = getattr(self, "_dns_page", None)
+        if dns_page is not None:
+            dns_page.set_resetting(False)
         callback, self._reset_callback = self._reset_callback, None
         self._reset_report = None
         if callback is not None:
@@ -4248,6 +4246,9 @@ class MainWindow(QMainWindow):
     def _quiet_tick(self):
         import gd_profiles
 
+        if (getattr(self, "_reset_running", False) or getattr(self, "is_quitting", False)
+                or gd_bg.is_running(getattr(self, "_quiet_cpu_worker", None))):
+            return
         q = gd_profiles.load_quiet()
         inside = gd_profiles.in_window(q)
         if inside and not q.get("applied"):
@@ -4306,8 +4307,9 @@ class MainWindow(QMainWindow):
             finished("cpu", False)
         else:
             command = {"cmd": "apply", "profile": "eco"} if entering else {"cmd": "restore"}
-            gd_bg.submit(lambda: client.call(command, timeout=90),
-                         lambda result: finished("cpu", result.get("ok")), parent=self)
+            self._quiet_cpu_worker = gd_bg.submit(
+                lambda: client.call(command, timeout=None),
+                lambda result: finished("cpu", result.get("ok")), parent=self)
 
     def open_rules_tab(self):
         """Открыть «Правила» — теперь раздел внутри «Утилит»."""
@@ -4669,6 +4671,8 @@ class MainWindow(QMainWindow):
         self.apply_preset_by_index(index)
 
     def apply_preset_by_index(self, index: int, auto: bool = False):
+        if getattr(self, "_reset_running", False):
+            return
         presets = self.config["presets"]
 
         if not presets:
@@ -5217,14 +5221,14 @@ class MainWindow(QMainWindow):
 
     def apply_refresh_rate(self):
         value = self.hz_combo.currentData()
-        if value is None:
+        if value is None or self._hz_busy or self.is_quitting:
             return
-        self.hz_apply_button.setEnabled(False)
+        self._start_hz_operation()
         gd_bg.submit(lambda: gd_hz.set_refresh(None, int(value)), self._hz_applied,
                      parent=self)
 
     def _hz_applied(self, result):
-        self.hz_apply_button.setEnabled(True)
+        self._finish_hz_operation()
         if isinstance(result, Exception):
             self.set_status(i18n.t("частота: {v0}", v0=result), ok=False)
             return
@@ -5238,36 +5242,43 @@ class MainWindow(QMainWindow):
 
     # -- откат временных изменений -------------------------------------------
     def _restore_before_shutdown(self):
-        """Windows завершает сеанс: вернуть частоту, которую поставил автопрофиль."""
+        """Вернуть частоту автопрофиля при выходе или завершении сеанса."""
         data = gd_rollback.load()
-        if not data:
-            return
-        hertz = safe_int(data.get("hz"), 0)
-        gd_rollback.clear()
-        if hertz > 0:
-            try:
-                gd_hz.set_refresh(None, hertz)
-            except Exception:  # noqa: BLE001 — на выключении уже всё равно
-                pass
+        if data and data.get("pid") != os.getpid() and gd_rollback.owner_alive(data):
+            return True, ""
+        if not gd_rollback.saved_hz(data) and self._auto_prev_hz is not None:
+            return gd_hz.set_refresh(None, self._auto_prev_hz)
+        return self._restore_saved_hz(data)
+
+    @staticmethod
+    def _restore_saved_hz(data):
+        hertz = gd_rollback.saved_hz(data)
+        if not hertz:
+            return True, ""
+        ok, message = gd_hz.set_refresh(None, hertz)
+        if ok and not gd_rollback.discard_hz(data):
+            return False, i18n.t("не удалось убрать файл состояния {v0}",
+                                 v0=gd_rollback.state_path())
+        return ok, message
 
     def _rollback_after_crash(self):
         """Прошлый запуск не успел вернуть изменения — доделываем сейчас."""
         data = gd_rollback.orphaned()
-        if not data:
+        if not gd_rollback.saved_hz(data):
             return
-        hertz = safe_int(data.get("hz"), 0)
-        gd_rollback.clear()
-        if hertz <= 0:
-            return
-        gd_bg.submit(lambda: gd_hz.set_refresh(None, hertz), self._rollback_done,
+        self._start_hz_operation()
+        gd_bg.submit(lambda: self._restore_saved_hz(data), self._rollback_done,
                      parent=self)
 
     def _rollback_done(self, result):
+        self._finish_hz_operation()
         if isinstance(result, Exception):
-            return
+            result = False, result
         ok, message = result
         if ok:
             self.set_status(i18n.t("после сбоя возвращена частота: {v0}", v0=message))
+        else:
+            self.set_status(i18n.t("частота: {v0}", v0=message), ok=False)
 
     def _stop_foreground_watch(self):
         if self._fg_watcher is not None:
@@ -5298,10 +5309,14 @@ class MainWindow(QMainWindow):
         Работает только когда правило реально есть: иначе хук фокуса ничего
         не делает и не мешает сторожу гаммы.
         """
-        if not bool(self.config.get("settings", {}).get("auto_profiles_on", True)):
+        if self.is_quitting or getattr(self, "_reset_running", False):
             return
-        rules = self._auto_profiles()
-        if not rules:
+        if self._hz_busy:
+            self._auto_hz_pending = True
+            return
+        enabled = self.config.get("settings", {}).get("auto_profiles_on", True)
+        rules = self._auto_profiles() if enabled else []
+        if not rules and self._auto_prev_hz is None and self._auto_prev_index is None:
             return
 
         pid = getattr(self, "_fg_pid", 0)
@@ -5318,31 +5333,54 @@ class MainWindow(QMainWindow):
                 self.apply_preset_by_index(index, auto=True)
 
             hertz = safe_int(match.get("hz"), 0)
-            now_hz = gd_hz.refresh_rate()
-            if hertz > 0 and now_hz is not None and hertz != now_hz:
+            now_hz = gd_hz.refresh_rate() if hertz > 0 else None
+            if hertz > 0 and now_hz and hertz != now_hz:
                 if self._auto_prev_hz is None:
+                    # Незавершённое восстановление предыдущего запуска имеет приоритет.
+                    if gd_rollback.saved_hz(gd_rollback.load()):
+                        return
+                    if not gd_rollback.merge("hz", {"hz": now_hz}):
+                        return
                     self._auto_prev_hz = now_hz
-                gd_bg.submit(lambda value=hertz: gd_hz.set_refresh(None, value),
-                             lambda _result: None, parent=self)
-
-            # снимок «как было»: если окно упадёт или выключат ПК, следующий
-            # старт вернёт частоту, а не оставит игровую
-            if self._auto_prev_hz:
-                gd_rollback.merge("hz", {"hz": self._auto_prev_hz})
+                self._start_hz_operation()
+                gd_bg.submit(lambda: gd_hz.set_refresh(None, hertz),
+                             self._auto_hz_applied, parent=self)
             return
 
-        # игра больше не в фокусе — возвращаем пресет и частоту, что были до неё
         if self._auto_prev_hz is not None:
-            previous_hz = self._auto_prev_hz
-            self._auto_prev_hz = None
-            gd_bg.submit(lambda value=previous_hz: gd_hz.set_refresh(None, value),
-                         lambda _result: None, parent=self)
-            gd_rollback.clear()
+            self._start_hz_operation()
+            gd_bg.submit(self._restore_before_shutdown, self._auto_hz_restored,
+                         parent=self)
         if self._auto_prev_index is not None:
             previous = self._auto_prev_index
             self._auto_prev_index = None
             if 0 <= previous < len(presets):
                 self.apply_preset_by_index(previous, auto=True)
+
+    def _auto_hz_applied(self, result):
+        ok, message = (False, result) if isinstance(result, Exception) else result
+        if not ok and not self.is_quitting:
+            self.set_status(i18n.t("частота: {v0}", v0=message), ok=False)
+        self._finish_hz_operation()
+
+    def _auto_hz_restored(self, result):
+        ok, message = (False, result) if isinstance(result, Exception) else result
+        if ok:
+            self._auto_prev_hz = None
+        elif not self.is_quitting:
+            self.set_status(i18n.t("частота: {v0}", v0=message), ok=False)
+        self._finish_hz_operation()
+
+    def _start_hz_operation(self):
+        self._hz_busy = True
+        self.hz_apply_button.setEnabled(False)
+
+    def _finish_hz_operation(self):
+        self._hz_busy = False
+        self.hz_apply_button.setEnabled(True)
+        if self._auto_hz_pending:
+            self._auto_hz_pending = False
+            self._auto_profile_tick()
 
     # -- подсветка монитора (DDC/CI) -----------------------------------------
     def _refresh_ddc(self):
@@ -5630,17 +5668,20 @@ class MainWindow(QMainWindow):
         с новым способом запуска (или без него). Возвращает текст ошибки.
         """
         on = bool(on)
-        self.config.setdefault("settings", {})["start_admin"] = on
+        settings = self.config.setdefault("settings", {})
+        startup_enabled = self.start_with_windows()
+        if startup_enabled:
+            try:
+                enable_startup(on)
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+                self.set_status(i18n.t("Автозапуск не изменён: {v0}", v0=err), ok=False)
+                return err
+        settings["start_admin"] = on
         self._save_config()
-        if not self.config.get("settings", {}).get("start_with_windows"):
+        if not startup_enabled:
             self.set_status(i18n.t("Автозапуск выключен — способ запомнен."))
             return ""
-        try:
-            enable_startup(on)
-        except Exception as exc:  # noqa: BLE001
-            err = f"{type(exc).__name__}: {exc}"
-            self.set_status(i18n.t("Автозапуск не изменён: {v0}", v0=err), ok=False)
-            return err
         self.set_status(
             i18n.t("Автозапуск: с правами администратора") if on
             else i18n.t("Автозапуск: обычные права")
@@ -5818,7 +5859,7 @@ class MainWindow(QMainWindow):
         if gd_bg.is_running(getattr(self, "_updates_worker", None)):
             return
         self._set_update_status(i18n.t("Спрашиваю GitHub…"))
-        self._updates_worker = gd_bg.submit(
+        self._updates_worker = gd_bg.submit_network_read(
             gd_update.fetch_latest, lambda res: self._updates_done(res, silent), parent=self)
 
     def _updates_done(self, res, silent: bool) -> None:
@@ -5929,13 +5970,22 @@ class MainWindow(QMainWindow):
             return
         self._set_update_status(
             i18n.t("Скачиваю обновление {v0}…", v0=version), can_update=False)
+
+        def download(asset, destination):
+            return gd_autoupdate.download_asset(
+                asset, destination, transfer=gd_bg.transfer_network)
+
         self._update_worker = gd_bg.submit(
-            lambda: gd_autoupdate.prepare_update(info, mode),
+            lambda: gd_autoupdate.prepare_update(
+                info, mode, download=download, before_stage=gd_bg.check_shutdown),
             self._update_prepared, parent=self)
 
     def _update_prepared(self, res) -> None:
         """Обновление скачано и проверено: запустить helper и выйти."""
         import gd_autoupdate
+
+        if self.is_quitting:
+            return
 
         if not isinstance(res, dict) or not res.get("ok"):
             error = (res or {}).get("error") if isinstance(res, dict) else str(res)
@@ -6071,12 +6121,13 @@ class MainWindow(QMainWindow):
         if power is not None:
             power._shutting_down = True
         gpu = getattr(self, "_gpu_page", None)
-        if gpu is not None and not gpu._keep_on_exit:
+        if gpu is not None and not gpu.keep_on_exit():
             gpu._remember_plan(None)
         self._exit_worker = gd_bg.submit(
             self._cleanup_for_exit, self._exit_finished, parent=self, during_shutdown=True)
 
     def _cleanup_for_exit(self):
+        import gd_helper
         import gd_journal
         import gd_metrics
 
@@ -6088,18 +6139,45 @@ class MainWindow(QMainWindow):
             ok, message = boost.stop()
             if not ok:
                 errors.append(message)
-        for attr, restore in (("_power_page", True), ("_gpu_page", None), ("_zapret_page", True)):
-            page = getattr(self, attr, None)
-            client = getattr(page, "client", None)
-            if client is not None:
-                try:
-                    if restore is None:
-                        restore = not page._keep_on_exit
-                    response = client.shutdown(restore=restore)
-                    if isinstance(response, dict) and not response.get("ok"):
-                        errors.append(str(response.get("error") or "restore failed"))
-                except Exception as exc:
-                    errors.append(str(exc))
+        power = getattr(getattr(self, "_power_page", None), "client", None)
+        if power is not None:
+            try:
+                response = power.shutdown(restore=True)
+                if isinstance(response, dict) and not response.get("ok"):
+                    errors.append(str(response.get("error") or "restore failed"))
+            except Exception as exc:
+                errors.append(str(exc))
+
+        gpu = getattr(self, "_gpu_page", None)
+        zapret = getattr(self, "_zapret_page", None)
+        keep_gpu = (gpu.keep_on_exit() if gpu is not None
+                    else self.config["settings"].get("gpu_keep_on_exit", True))
+        helper_errors = []
+        # GPU и zapret используют один процесс. Если их соединения не отвечают,
+        # помощник всё ещё может быть доступен из сессии DNS или утилит.
+        for client in (getattr(gpu, "client", None), getattr(zapret, "client", None), gd_helper.HelperClient()):
+            try:
+                if client is None or not client.has_session():
+                    continue
+                response = client.shutdown(restore=not keep_gpu)
+                acknowledged = response.get("data") == "bye"
+                if acknowledged:
+                    # Помощник сообщил результат всех откатов. Ошибки предыдущих
+                    # попыток связаться с ним больше не описывают результат.
+                    helper_errors.clear()
+                if not response.get("ok"):
+                    helper_errors.append(str(response.get("error") or "restore failed"))
+                if acknowledged:
+                    break
+            except Exception as exc:
+                helper_errors.append(str(exc))
+        errors.extend(helper_errors)
+        try:
+            ok, message = self._restore_before_shutdown()
+            if not ok:
+                errors.append(message)
+        except Exception as exc:
+            errors.append(str(exc))
         try:
             if self._ddc is not None:
                 self._ddc.close()
@@ -6145,14 +6223,32 @@ def main():
         import gd_diagnose
 
         items = gd_diagnose.checks()
-        # консоль Windows часто в cp1251/cp866: печатаем только ASCII-маркеры,
-        # иначе сам отчёт падает с UnicodeEncodeError
+        failed = sum(item.get("status") == gd_diagnose.FAIL for item in items)
+        report = ""
         try:
-            print(gd_diagnose.report_text(items, ascii_only=True))
-            print(f"\nпровалов: {len([i for i in items if i.get('status') == 'fail'])} из {len(items)}")
+            report = gd_diagnose.report_text(items, ascii_only=True)
+            report += f"\n\nпровалов: {failed} из {len(items)}\n"
         except Exception:  # noqa: BLE001 — отчёт не должен мешать коду возврата
             pass
-        failed = [item for item in items if str(item.get("status")) == "fail"]
+
+        # У windowed onefile stdout может отсутствовать даже при запуске с pipe.
+        report_path = os.environ.get("GD_SELFTEST_REPORT")
+        if report and report_path:
+            try:
+                Path(report_path).write_text(report, encoding="utf-8")
+            except OSError:
+                pass
+
+        stdout = sys.stdout
+        try:
+            if report and stdout is not None:
+                # Windows выбирает системную кодировку для pipe; сборщик читает UTF-8.
+                reconfigure = getattr(stdout, "reconfigure", None)
+                if reconfigure is not None and not stdout.isatty():
+                    reconfigure(encoding="utf-8")
+                stdout.write(report)
+        except Exception:  # noqa: BLE001 — отчёт не должен мешать коду возврата
+            pass
         sys.exit(1 if failed else 0)
 
     # язык нужен раньше окна: сообщение «уже запущено» тоже должно быть переведено

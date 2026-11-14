@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import stat
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -67,3 +70,42 @@ def test_broken_good_copy_does_not_break_start(monkeypatch, tmp_path):
 
     assert isinstance(data, dict)
     assert data["presets"] == gd_main.DEFAULT_CONFIG["presets"]
+
+
+@pytest.mark.parametrize("legacy_dir", ["app", "programdata"])
+def test_installed_upgrade_can_save_migrated_legacy_settings(monkeypatch, tmp_path, legacy_dir):
+    app = tmp_path / "Программа с пробелами"
+    programdata = tmp_path / "ProgramData"
+    localappdata = tmp_path / "LocalAppData"
+    monkeypatch.setattr(gd_paths, "app_dir", lambda: app)
+    monkeypatch.setenv("GD_PORTABLE", "0")
+    monkeypatch.setenv("ProgramData", str(programdata))
+    monkeypatch.setenv("LOCALAPPDATA", str(localappdata))
+    old_dir = app if legacy_dir == "app" else programdata / gd_paths.APP_NAME
+    old_dir.mkdir(parents=True)
+    old_file = old_dir / gd_paths.CONFIG_NAME
+    previous = {
+        "settings": {"theme": "light", "close_on_x": True, "hotkeys": {"toggle": "Ctrl+Alt+G"}},
+        "presets": [{"name": "Ночь", "gamma": 1.25, "hotkey": "Ctrl+Alt+N"}],
+    }
+    original = json.dumps(previous, ensure_ascii=False)
+    old_file.write_text(original, encoding="utf-8")
+    old_file.chmod(stat.S_IREAD)
+    try:
+        migrated = gd_main.load_config()
+        assert migrated["settings"]["theme"] == "light"
+        assert migrated["settings"]["close_on_x"] is True
+        assert migrated["settings"]["hotkeys"]["toggle"] == "Ctrl+Alt+G"
+        assert migrated["presets"][0]["name"] == "Ночь"
+        assert migrated["presets"][0]["gamma"] == 1.25
+        assert migrated["presets"][0]["hotkey"] == "Ctrl+Alt+N"
+        assert gd_paths.config_path().stat().st_mode & stat.S_IWRITE
+        migrated["settings"]["theme"] = "dark"
+        assert gd_main.save_config(migrated)
+        assert gd_main.load_config() == migrated
+        assert old_file.read_text(encoding="utf-8") == original
+    finally:
+        old_file.chmod(stat.S_IREAD | stat.S_IWRITE)
+        active_file = gd_paths.config_path()
+        if active_file.exists():
+            active_file.chmod(stat.S_IREAD | stat.S_IWRITE)

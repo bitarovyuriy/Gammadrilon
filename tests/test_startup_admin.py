@@ -72,3 +72,67 @@ def test_disable_removes_the_file(startup):
     gd_main.disable_startup()
 
     assert not startup.exists()
+
+def test_write_failure_preserves_existing_script_and_removes_temp(startup, monkeypatch):
+    gd_main.enable_startup(admin=True)
+    before = startup.read_bytes()
+
+    def deny_replace(self, target):
+        raise PermissionError("script locked")
+
+    monkeypatch.setattr(Path, "replace", deny_replace)
+    with pytest.raises(PermissionError, match="script locked"):
+        gd_main.enable_startup(admin=False)
+
+    assert startup.read_bytes() == before
+    assert list(startup.parent.iterdir()) == [startup]
+
+
+class StartupWindow:
+    start_with_windows = gd_main.MainWindow.start_with_windows
+
+    def __init__(self):
+        self.config = {"settings": {"start_with_windows": True, "start_admin": True}}
+        self.saves = 0
+        self.status = None
+
+    def _save_config(self):
+        self.saves += 1
+
+    def set_status(self, message, ok=True):
+        self.status = (message, ok)
+
+
+def test_delete_failure_does_not_disable_preference(startup, monkeypatch):
+    gd_main.enable_startup()
+    real_unlink = Path.unlink
+
+    def deny_unlink(self, *args, **kwargs):
+        if self == startup:
+            raise PermissionError("script locked")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_unlink)
+    window = StartupWindow()
+
+    assert gd_main.MainWindow.set_start_with_windows(window, False)
+    assert window.status[1] is False
+    assert window.config["settings"]["start_with_windows"] is True
+    assert window.saves == 0
+    assert startup.exists()
+
+
+def test_failed_mode_change_does_not_save_admin_preference(startup, monkeypatch):
+    gd_main.enable_startup(admin=True)
+
+    def deny_enable(admin):
+        raise PermissionError("script locked")
+
+    monkeypatch.setattr(gd_main, "enable_startup", deny_enable)
+    window = StartupWindow()
+
+    assert gd_main.MainWindow.set_start_admin(window, False)
+    assert window.status[1] is False
+    assert window.config["settings"]["start_admin"] is True
+    assert window.saves == 0
+    assert "RunAs" in _text(startup)

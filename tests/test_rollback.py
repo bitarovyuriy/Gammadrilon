@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -89,3 +91,42 @@ def test_describe_lists_changes(monkeypatch, tmp_path):
     assert "пресет #2" in text
     assert "гамма" in text and "GPU" in text
     assert gd_rollback.describe(None) == ""
+
+
+@pytest.mark.parametrize("saved_hertz", [60, {"hz": 60}])
+def test_refresh_restore_preserves_snapshot_until_success(monkeypatch, tmp_path, saved_hertz):
+    from main import MainWindow, gd_hz
+
+    use_tmp(monkeypatch, tmp_path)
+    assert gd_rollback.save({"hz": saved_hertz, "gamma": {}}, pid=1234)
+    data = gd_rollback.load()
+    calls = []
+
+    def rejected(device, rate):
+        calls.append((device, rate))
+        return False, "rejected"
+
+    monkeypatch.setattr(gd_hz, "set_refresh", rejected)
+    assert MainWindow._restore_saved_hz(data) == (False, "rejected")
+    assert calls == [(None, 60)]
+    assert gd_rollback.load() == data
+
+    def accepted(device, rate):
+        calls.append((device, rate))
+        return True, "restored"
+
+    monkeypatch.setattr(gd_hz, "set_refresh", accepted)
+    assert MainWindow._restore_saved_hz(data) == (True, "restored")
+    assert calls == [(None, 60), (None, 60)]
+    assert gd_rollback.load() == {k: v for k, v in data.items() if k != "hz"}
+
+
+def test_restore_does_not_discard_new_snapshot(monkeypatch, tmp_path):
+    use_tmp(monkeypatch, tmp_path)
+    gd_rollback.save({"hz": 60})
+    previous = gd_rollback.load()
+    gd_rollback.save({"hz": 75})
+
+    assert gd_rollback.saved_hz(previous) == 60
+    assert gd_rollback.discard_hz(previous) is False
+    assert gd_rollback.saved_hz(gd_rollback.load()) == 75

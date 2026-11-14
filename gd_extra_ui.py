@@ -17,7 +17,6 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -48,31 +47,12 @@ import gd_i18n as i18n  # noqa: E402
 from gd_power_ui import make_card  # noqa: E402
 
 
-class ProbeWorker(QThread):
-    done = pyqtSignal(dict)
-
-    def __init__(self, mode="probe", parent=None):
-        super().__init__(parent)
-        self.mode = mode
-
-    def run(self):
-        try:
-            if self.mode == "probe":
-                self.done.emit({"probe": gd_extra.probe(),
-                                "retrans": gd_extra.tcp_retransmit_rate()})
-            else:
-                self.done.emit({"bufferbloat": gd_extra.bufferbloat()})
-        except Exception as exc:  # noqa: BLE001
-            self.done.emit({"error": str(exc)})
-
-
 class ExtraPanel(QWidget):
     """Набор карточек для вкладки «Утилиты». host — главное окно (для сброса и гаммы)."""
 
     def __init__(self, host=None, parent=None):
         super().__init__(parent)
         self.host = host
-        self._workers: list[ProbeWorker] = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
@@ -319,14 +299,12 @@ class ExtraPanel(QWidget):
     def _probe(self):
         self.btn_probe.setEnabled(False)
         self._set_status(self.lbl_net, i18n.t("Замеряю задержку до узлов…"))
-        w = ProbeWorker("probe", self)
-        w.done.connect(self._probe_done)
-        w.finished.connect(lambda: self.btn_probe.setEnabled(True))
-        self._workers.append(w)
-        gd_bg.register(w)
-        w.start()
+        gd_bg.submit_network_read(
+            lambda: {"probe": gd_extra.probe(), "retrans": gd_extra.tcp_retransmit_rate()},
+            self._probe_done, parent=self)
 
     def _probe_done(self, data: dict):
+        self.btn_probe.setEnabled(True)
         if data.get("error"):
             self._set_status(self.lbl_net, i18n.t("Ошибка замера: {v0}", v0=data['error']), ok=False)
             return
@@ -350,14 +328,11 @@ class ExtraPanel(QWidget):
     def _bufferbloat(self):
         self.btn_bb.setEnabled(False)
         self._set_status(self.lbl_net, i18n.t("Качаю ~5 МБ и параллельно мерю задержку…"))
-        w = ProbeWorker("bb", self)
-        w.done.connect(self._bb_done)
-        w.finished.connect(lambda: self.btn_bb.setEnabled(True))
-        self._workers.append(w)
-        gd_bg.register(w)
-        w.start()
+        gd_bg.submit_network_read(
+            lambda: {"bufferbloat": gd_extra.bufferbloat()}, self._bb_done, parent=self)
 
     def _bb_done(self, data: dict):
+        self.btn_bb.setEnabled(True)
         if data.get("error"):
             self._set_status(self.lbl_net, i18n.t("Ошибка: {v0}", v0=data['error']), ok=False)
             return

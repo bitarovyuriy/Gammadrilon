@@ -80,7 +80,7 @@ def probe_url(url: str, timeout: float = 6.0) -> dict:
 
 
 def probe_all(root: str | None, timeout: float = 6.0,
-              max_workers: int = 8, on_progress=None) -> dict:
+              max_workers: int = 8, on_progress=None, *, network_read=None) -> dict:
     """Проверить все цели параллельно.
 
     ``on_progress(done, total, name, ok)`` вызывается после каждой цели,
@@ -92,7 +92,10 @@ def probe_all(root: str | None, timeout: float = 6.0,
 
     def work(item):
         idx, (name, url) = item
-        res = probe_url(url, timeout=timeout)
+        def fetch():
+            return probe_url(url, timeout=timeout)
+
+        res = network_read(fetch) if network_read else fetch()
         res.update({"name": name, "url": url})
         if on_progress:
             try:

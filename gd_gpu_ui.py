@@ -141,6 +141,7 @@ class GpuWidget(QWidget):
         self._probe_worker = None     # фоновое чтение состояния при пустых метриках
         self._want_profile = None     # профиль, ждущий состояния драйвера
         self._restore_worker = None   # фоновый откат
+        self._resetting = False
         self._pre_apply_pl = None     # лимит до применения — для записи «было → стало»
         self._autostart_checked = False   # проверка автолимита при запуске — один раз
         # Сверка факта с планом внутри сессии (сон, TDR, сброс драйвера):
@@ -200,16 +201,26 @@ class GpuWidget(QWidget):
             try:
                 self._config.setdefault("settings", {})["gpu_keep_on_exit"] = self._keep_on_exit
                 if self._save_fn is not None:
-                    self._save_fn(self._config)
+                    saved = self._save_fn(self._config) is not False
             except Exception:  # noqa: BLE001
-                pass
+                saved = False
         else:
             saved = _write_keep_flag_file(self._keep_on_exit)
 
         on = self._keep_on_exit
+
+        def notify_helper():
+            if not self.client.has_session():
+                return None
+            return self.client.call_existing({"v": 1, "cmd": "keep", "on": on}, timeout=5.0)
+
+        def keep_notified(response):
+            if response is not None and not response.get("ok") and on == self._keep_on_exit:
+                self._set_status(i18n.t("Помощник не подтвердил настройку: {v0}",
+                                        v0=response.get("error") or ""), ok=False)
+
         gd_bg.submit(
-            lambda: self.client.call_existing({"v": 1, "cmd": "keep", "on": on}, timeout=5.0),
-            lambda _resp: None,
+            notify_helper, keep_notified,
             parent=self,
         )
         self._set_status(
@@ -545,6 +556,8 @@ class GpuWidget(QWidget):
     def _on_profile(self, name):
         import gd_metrics
 
+        if getattr(self, "_resetting", False):
+            return False
         st = self._state or gd_metrics.gpu()
         if not st:
             # Метрик на старте ещё нет. Раньше клик молча ничего не делал; теперь
@@ -618,15 +631,14 @@ class GpuWidget(QWidget):
         """Применить лимит. `autostart` — возврат плана при запуске: меняет только
         подписи и причину в журнале (нажатия пользователя не было), поведение то же."""
         # запуск хелпера (UAC) и запись nvidia-smi долгие — не морозим GUI
-        if gd_bg.is_running(self._apply_worker):
+        if getattr(self, "_resetting", False) or gd_bg.is_running(self._apply_worker):
             return False        # уже применяется: второй клик не должен врать
         self.btn_apply.setEnabled(False)
         self.profile_desc.setText(i18n.t("Применяю…"))
 
         keep = self._keep_on_exit      # настройка на момент применения
         self._apply_worker = gd_bg.submit(
-            lambda: self.client.call({"v": 1, "cmd": "apply",
-                                      "keep_on_exit": keep, **payload}),
+            lambda: self.client.call({"v": 1, "cmd": "apply", "keep_on_exit": keep, **payload}, timeout=None),
             lambda resp: self._apply_done(resp, payload, profile_name, autostart=autostart),
             parent=self,
         )
@@ -638,6 +650,12 @@ class GpuWidget(QWidget):
         if profile_name:
             # плитка узнаёт итог только отсюда: «запустил задачу» ≠ «применилось»
             self.profile_result.emit(profile_name, ok)
+        if resp.get("ok") is None and "ok" in resp:
+            self._set_status(resp.get("error") or i18n.t("Результат операции GPU неизвестен. {v0}", v0=""),
+                             ok=False)
+            self.profile_desc.setText(i18n.t("Изменение GPU не подтверждено."))
+            self._tick_later()
+            return
         if not resp.get("ok"):
             self._set_status(i18n.t("Драйвер не принял изменение: {v0}", v0=resp.get('error')), ok=False)
             self.profile_desc.setText(i18n.t("Изменение не применено."))
@@ -675,7 +693,7 @@ class GpuWidget(QWidget):
             return
 
         self._restore_worker = gd_bg.submit(
-            lambda: self.client.call({"v": 1, "cmd": "restore"}), on_done, parent=self
+            lambda: self.client.call({"v": 1, "cmd": "restore"}, timeout=None), on_done, parent=self
         )
 
     def _ui_restore(self):
@@ -684,6 +702,8 @@ class GpuWidget(QWidget):
         self._on_restore()
 
     def _on_restore(self):
+        if getattr(self, "_resetting", False):
+            return
         self._active_profile = None
         self.btn_restore.setEnabled(False)
         self._set_status(i18n.t("Возвращаю исходный лимит…"), ok=True)
@@ -705,8 +725,11 @@ class GpuWidget(QWidget):
             for b in self.profile_btns.values():
                 b.setChecked(False)
             self.profile_group.setExclusive(True)
+        elif resp.get("ok") is None and "ok" in resp:
+            self._set_status(resp.get("error") or i18n.t("Результат операции GPU неизвестен. {v0}", v0=""),
+                             ok=False)
         else:
-            self._set_status(i18n.t("Откат не удался: {v0}", v0=resp.get('error')), ok=False)
+            self._set_status(i18n.t("Откат GPU не подтверждён: {v0}", v0=resp.get('error')), ok=False)
         self._tick_later()
 
     def _set_status(self, text: str, ok: bool = True, color: str | None = None):
@@ -756,9 +779,30 @@ class GpuWidget(QWidget):
             pass
 
     # -- внешнее управление (трей, палитра команд) --------------------------
+    def set_resetting(self, resetting: bool) -> None:
+        self._resetting = resetting
+        if resetting:
+            name, self._want_profile = self._want_profile, None
+            if name:
+                self.profile_result.emit(name, False)
+
+    def reset_completed(self) -> None:
+        self._active_profile = None
+        self._pl_dirty = False
+        self._remember_plan(None)
+        self._drift_mute = time.monotonic() + 12.0
+        self._drift_reported = None
+        self.profile_desc.setText(i18n.t("Профиль не применён."))
+        self.profile_group.setExclusive(False)
+        for button in self.profile_btns.values():
+            button.setChecked(False)
+        self.profile_group.setExclusive(True)
+        self._tick_later()
+
     def apply_profile(self, name: str, source: str = i18n.t("трей")):
         """Применить профиль GPU извне (или вернуть исходный лимит)."""
-        if gd_bg.is_running(self._apply_worker) or gd_bg.is_running(self._restore_worker):
+        if (getattr(self, "_resetting", False) or gd_bg.is_running(self._apply_worker)
+                or gd_bg.is_running(self._restore_worker)):
             return False        # идёт другое применение — не обещаем успех
         self._source = source
         if name == "restore":
@@ -774,7 +818,8 @@ class GpuWidget(QWidget):
         слайдера: вкладка могла ещё не открываться, и границы были бы чужими.
         `autostart=True` — возврат плана при запуске (меняются только подписи).
         """
-        if gd_bg.is_running(self._apply_worker) or gd_bg.is_running(self._restore_worker):
+        if (getattr(self, "_resetting", False) or gd_bg.is_running(self._apply_worker)
+                or gd_bg.is_running(self._restore_worker)):
             self._set_status(i18n.t("занято: операция уже выполняется"), ok=False)
             return
         import gd_metrics
@@ -864,6 +909,8 @@ class GpuWidget(QWidget):
 
     def _autostart_report(self, resp, plan: int, apply_on_start: bool) -> None:
         """Разобрать ответ стартовой проверки: вернуть план или сказать о слетевшем."""
+        if getattr(self, "_resetting", False) or self._plan_value() != plan:
+            return
         st = (resp or {}).get("state") or {}
         cur = st.get("pl")
         if cur is None:      # GPU не отвечает — молча: это не ошибка старта

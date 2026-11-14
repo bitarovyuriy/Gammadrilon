@@ -230,7 +230,9 @@ class UtilsWidget(QWidget):
         )
         grid = QGridLayout()
         grid.setHorizontalSpacing(th.SPACE_L)
-        grid.setVerticalSpacing(th.SPACE_XS)
+        grid.setVerticalSpacing(th.SPACE_S)
+        for column in range(3):
+            grid.setColumnStretch(column, 1)
         self.value_labels = {}
         self.delta_labels = {}
         for i, key in enumerate(ROWS):
@@ -240,12 +242,15 @@ class UtilsWidget(QWidget):
             val.setObjectName("Value")
             delta = QLabel("")
             delta.setObjectName("Hint")
-            grid.addWidget(name, i, 0)
-            grid.addWidget(val, i, 1)
-            grid.addWidget(delta, i, 2)
+            metric = QVBoxLayout()
+            metric.setSpacing(0)
+            metric.addWidget(name)
+            metric.addWidget(val)
+            metric.addWidget(delta)
+            row, column = divmod(i, 3)
+            grid.addLayout(metric, row, column)
             self.value_labels[key] = val
             self.delta_labels[key] = delta
-        grid.setColumnStretch(3, 1)
         lay.addLayout(grid)
 
         brow = QHBoxLayout()
@@ -283,24 +288,25 @@ class UtilsWidget(QWidget):
         arow.addStretch(1)
         lay2.addLayout(arow)
 
-        srow = QHBoxLayout()
-        srow.setSpacing(8)
-        srow.addWidget(QLabel(i18n.t("Standby больше")))
+        thresholds = QGridLayout()
+        thresholds.setHorizontalSpacing(th.SPACE_S)
+        thresholds.setVerticalSpacing(th.SPACE_XS)
+        thresholds.addWidget(QLabel(i18n.t("Standby больше")), 0, 0)
         self.sp_standby = QSpinBox()
         self.sp_standby.setRange(64, 32768)
         self.sp_standby.setSuffix(i18n.t(" МБ"))
         self.sp_standby.setValue(gd_memory.AUTO_DEFAULTS["standby_mb"])
         self.sp_standby.valueChanged.connect(self._save_auto)
-        srow.addWidget(self.sp_standby)
-        srow.addWidget(QLabel(i18n.t("и свободно меньше")))
+        thresholds.addWidget(self.sp_standby, 0, 1)
+        thresholds.addWidget(QLabel(i18n.t("и свободно меньше")), 1, 0)
         self.sp_free = QSpinBox()
         self.sp_free.setRange(64, 32768)
         self.sp_free.setSuffix(i18n.t(" МБ"))
         self.sp_free.setValue(gd_memory.AUTO_DEFAULTS["free_mb"])
         self.sp_free.valueChanged.connect(self._save_auto)
-        srow.addWidget(self.sp_free)
-        srow.addStretch(1)
-        lay2.addLayout(srow)
+        thresholds.addWidget(self.sp_free, 1, 1)
+        thresholds.setColumnStretch(2, 1)
+        lay2.addLayout(thresholds)
         self.lbl_auto = QLabel(i18n.t("Автоочистка выключена."))
         self.lbl_auto.setObjectName("Hint")
         lay2.addWidget(self.lbl_auto)
@@ -484,6 +490,8 @@ class UtilsWidget(QWidget):
                 from gd_rules_ui import RulesWidget
 
                 widget = RulesWidget(standalone=False)
+                if getattr(self.host, "_reset_running", False):
+                    widget.set_resetting(True)
             else:
                 from gd_hotkeys_ui import HotkeysPanel
 
@@ -646,7 +654,8 @@ class UtilsWidget(QWidget):
 
     def _toggle_boost(self):
         """Включить/выключить игровой буст. Тяжёлая работа — в фоне."""
-        if gd_bg.is_running(getattr(self, "_boost_worker", None)):
+        if (getattr(getattr(self, "host", None), "_reset_running", False)
+                or gd_bg.is_running(getattr(self, "_boost_worker", None))):
             return
         self.btn_boost.setEnabled(False)
         job = self._boost.stop if self._boost.active() else self._boost.start
@@ -776,7 +785,13 @@ class UtilsWidget(QWidget):
         host = self.host
         if host is None or not hasattr(host, "set_start_admin"):
             return
+        settings = getattr(host, "config", {}).get("settings", {})
+        previous = bool(settings.get("start_admin", True))
         err = host.set_start_admin(bool(state))
+        if err:
+            blocked = self.chk_admin.blockSignals(True)
+            self.chk_admin.setChecked(previous)
+            self.chk_admin.blockSignals(blocked)
         self.lbl_startup.setText(
             i18n.t("Способ автозапуска не изменён: {v0}", v0=err) if err else ""
         )
@@ -873,11 +888,19 @@ class UtilsWidget(QWidget):
             data = json.loads(self._auto_path().read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             data = dict(gd_memory.AUTO_DEFAULTS, enabled=False)
-        self.chk_auto.setChecked(bool(data.get("enabled")))
-        self.sp_standby.setValue(int(data.get("standby_mb", 1024)))
-        self.sp_free.setValue(int(data.get("free_mb", 1024)))
+        controls = self.chk_auto, self.sp_standby, self.sp_free
+        previous = [control.blockSignals(True) for control in controls]
+        try:
+            self.chk_auto.setChecked(bool(data.get("enabled")))
+            self.sp_standby.setValue(int(data.get("standby_mb", 1024)))
+            self.sp_free.setValue(int(data.get("free_mb", 1024)))
+        finally:
+            for control, blocked in zip(controls, previous):
+                control.blockSignals(blocked)
 
     def _save_auto(self):
+        if getattr(self.host, "_reset_running", False):
+            return
         data = {
             "enabled": self.chk_auto.isChecked(),
             "standby_mb": self.sp_standby.value(),

@@ -67,20 +67,17 @@ def test_privilege_always_closes_token(monkeypatch, outcome):
     assert close.call_args.args[0].value == 123
 
 
-@pytest.mark.parametrize("mode,servers,fail_at", [("static", ["1.1.1.1", "8.8.8.8"], 2),
-                                                  ("dhcp", [], 2)])
-def test_dns_partial_failure_is_reported(monkeypatch, mode, servers, fail_at):
+def test_dns_partial_failure_is_reported(monkeypatch):
     calls = []
 
     def run(args):
         calls.append(args)
-        return (1, "denied") if len(calls) == fail_at else (0, "")
+        return (1, "denied") if len(calls) == 2 else (0, "")
 
     monkeypatch.setattr(gd_dns, "_run", run)
-    monkeypatch.setattr(gd_dns, "flush_native", lambda: (True, "ok"))
-    ok, message = gd_dns.apply_native(mode, servers, "Ethernet")
-    assert not ok
-    assert "denied" in message
+    with pytest.raises(OSError, match="denied"):
+        gd_dns._write_family("Ethernet", 4, {"mode": "static", "servers": ["1.1.1.1", "8.8.8.8"]})
+    assert [call[3] for call in calls] == ["set", "add"]
 
 
 def test_dns_validates_all_addresses_before_writing(monkeypatch):

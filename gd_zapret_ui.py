@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (  # noqa: E402
     QApplication,
     QCheckBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -159,7 +160,7 @@ class ZapretWidget(QWidget):
         self.btn_open = QPushButton(i18n.t("Открыть папку"))
         self.btn_open.setObjectName("Segment")
         self.btn_open.clicked.connect(self._open_folder)
-        path_actions = QHBoxLayout()
+        path_actions = QVBoxLayout()
         path_actions.addWidget(self.btn_open)
         # видна только когда путь не-ASCII: тогда winws.exe может не стартовать
         self.btn_move = QPushButton(i18n.t("Перенести в C:\\Tools\\zapret"))
@@ -167,7 +168,7 @@ class ZapretWidget(QWidget):
         self.btn_move.clicked.connect(self._move_ascii)
         self.btn_move.setVisible(False)
         path_actions.addWidget(self.btn_move)
-        path_actions.addStretch(1)
+        path_actions.setAlignment(Qt.AlignLeft)
         lay.addLayout(prow)
         lay.addLayout(path_actions)
         self.lbl_path_note = QLabel("")
@@ -191,24 +192,24 @@ class ZapretWidget(QWidget):
         self.lbl_update_note.setObjectName("Hint")
         self.lbl_update_note.setWordWrap(True)
         lay_upd.addWidget(self.lbl_update_note)
-        urow = QHBoxLayout()
+        urow = QGridLayout()
         self.btn_upd_check = QPushButton(i18n.t("Проверить"))
         self.btn_upd_check.setObjectName("Segment")
         self.btn_upd_check.clicked.connect(self._update_check)
-        urow.addWidget(self.btn_upd_check)
+        urow.addWidget(self.btn_upd_check, 0, 0)
         self.btn_upd_apply = QPushButton(i18n.t("Обновить"))
         self.btn_upd_apply.setObjectName("PrimaryButton")
         self.btn_upd_apply.clicked.connect(self._update_apply)
-        urow.addWidget(self.btn_upd_apply)
+        urow.addWidget(self.btn_upd_apply, 0, 1)
         self.btn_upd_rollback = QPushButton(i18n.t("Откатить"))
         self.btn_upd_rollback.setObjectName("Segment")
         self.btn_upd_rollback.clicked.connect(self._update_rollback)
-        urow.addWidget(self.btn_upd_rollback)
+        urow.addWidget(self.btn_upd_rollback, 1, 0)
         self.btn_upd_notes = QPushButton(i18n.t("Что нового"))
         self.btn_upd_notes.setObjectName("Segment")
         self.btn_upd_notes.clicked.connect(self._update_notes)
-        urow.addWidget(self.btn_upd_notes)
-        urow.addStretch(1)
+        urow.addWidget(self.btn_upd_notes, 1, 1)
+        urow.setColumnStretch(2, 1)
         lay_upd.addLayout(urow)
         root.addWidget(card_upd)
 
@@ -226,28 +227,28 @@ class ZapretWidget(QWidget):
         self.lbl_service_note.setObjectName("Hint")
         self.lbl_service_note.setWordWrap(True)
         lay_srv.addWidget(self.lbl_service_note)
-        srow = QHBoxLayout()
+        srow = QGridLayout()
         self.btn_svc_install = QPushButton(i18n.t("Установить/обновить"))
         self.btn_svc_install.setObjectName("PrimaryButton")
         self.btn_svc_install.clicked.connect(lambda: self._service_action("install"))
-        srow.addWidget(self.btn_svc_install)
+        srow.addWidget(self.btn_svc_install, 0, 0)
         self.btn_svc_start = QPushButton(i18n.t("Запустить"))
         self.btn_svc_start.setObjectName("Segment")
         self.btn_svc_start.clicked.connect(lambda: self._service_action("start"))
-        srow.addWidget(self.btn_svc_start)
+        srow.addWidget(self.btn_svc_start, 0, 1)
         self.btn_svc_stop = QPushButton(i18n.t("Остановить"))
         self.btn_svc_stop.setObjectName("Segment")
         self.btn_svc_stop.clicked.connect(lambda: self._service_action("stop"))
-        srow.addWidget(self.btn_svc_stop)
+        srow.addWidget(self.btn_svc_stop, 1, 0)
         self.btn_svc_restart = QPushButton(i18n.t("Перезапустить"))
         self.btn_svc_restart.setObjectName("Segment")
         self.btn_svc_restart.clicked.connect(lambda: self._service_action("restart"))
-        srow.addWidget(self.btn_svc_restart)
+        srow.addWidget(self.btn_svc_restart, 1, 1)
         self.btn_svc_remove = QPushButton(i18n.t("Удалить"))
         self.btn_svc_remove.setObjectName("Segment")
         self.btn_svc_remove.clicked.connect(lambda: self._service_action("remove"))
-        srow.addWidget(self.btn_svc_remove)
-        srow.addStretch(1)
+        srow.addWidget(self.btn_svc_remove, 2, 0)
+        srow.setColumnStretch(2, 1)
         lay_srv.addLayout(srow)
         root.addWidget(card_srv)
 
@@ -285,34 +286,34 @@ class ZapretWidget(QWidget):
         crow.addStretch(1)
         lay2.addLayout(crow)
 
-        brow = QHBoxLayout()
+        brow = QGridLayout()
         self.btn_on = QPushButton(i18n.t("Включить"))
         self.btn_on.setObjectName("PrimaryButton")
         self.btn_on.clicked.connect(self._on_click)
-        brow.addWidget(self.btn_on)
+        brow.addWidget(self.btn_on, 0, 0)
         self.btn_off = QPushButton(i18n.t("Выключить"))
         self.btn_off.setObjectName("Segment")
         self.btn_off.clicked.connect(self._off)
-        brow.addWidget(self.btn_off)
+        brow.addWidget(self.btn_off, 0, 1)
         self.btn_recon = QPushButton(i18n.t("Переосвоить"))
         self.btn_recon.setObjectName("Segment")
         self.btn_recon.clicked.connect(self._recon)
-        brow.addWidget(self.btn_recon)
+        brow.addWidget(self.btn_recon, 1, 0)
         self.btn_probe = QPushButton(i18n.t("Проверить доступ"))
         self.btn_probe.setObjectName("Segment")
         self.btn_probe.setToolTip(i18n.t(
             "Проверить Discord, YouTube, Google и Cloudflare через текущий обход. "
             "Ничего не меняет — только сеть."))
         self.btn_probe.clicked.connect(self._probe)
-        brow.addWidget(self.btn_probe)
+        brow.addWidget(self.btn_probe, 1, 1)
         self.btn_svc = QPushButton(i18n.t("service.bat…"))
         self.btn_svc.setObjectName("Segment")
         self.btn_svc.setToolTip(i18n.t(
             "Видимый запуск service.bat: служба zapret, обновление списков, "
             "диагностика — меню откроется в своём окне."))
         self.btn_svc.clicked.connect(self._svc_launch)
-        brow.addWidget(self.btn_svc)
-        brow.addStretch(1)
+        brow.addWidget(self.btn_svc, 2, 0)
+        brow.setColumnStretch(2, 1)
         lay2.addLayout(brow)
 
         self.status = QLabel("")
@@ -376,24 +377,24 @@ class ZapretWidget(QWidget):
         frow.addStretch(1)
         lay4.addLayout(frow)
 
-        portrow = QHBoxLayout()
-        portrow.addWidget(QLabel(i18n.t("TCP-порты")))
+        portrow = QGridLayout()
+        portrow.addWidget(QLabel(i18n.t("TCP-порты")), 0, 0)
         self.txt_gf_tcp = QLineEdit()
         self.txt_gf_tcp.setPlaceholderText(gd_zapret.GAME_FILTER_DEFAULT_TCP)
         self.txt_gf_tcp.setMaximumWidth(170)
         self.txt_gf_tcp.textEdited.connect(lambda *_: setattr(self, "_gf_editing", True))
-        portrow.addWidget(self.txt_gf_tcp)
-        portrow.addWidget(QLabel(i18n.t("UDP-порты")))
+        portrow.addWidget(self.txt_gf_tcp, 0, 1)
+        portrow.addWidget(QLabel(i18n.t("UDP-порты")), 1, 0)
         self.txt_gf_udp = QLineEdit()
         self.txt_gf_udp.setPlaceholderText(gd_zapret.GAME_FILTER_DEFAULT_UDP)
         self.txt_gf_udp.setMaximumWidth(170)
         self.txt_gf_udp.textEdited.connect(lambda *_: setattr(self, "_gf_editing", True))
-        portrow.addWidget(self.txt_gf_udp)
+        portrow.addWidget(self.txt_gf_udp, 1, 1)
         self.btn_gf_apply = QPushButton(i18n.t("Применить порты"))
         self.btn_gf_apply.setObjectName("Segment")
         self.btn_gf_apply.clicked.connect(self._apply_gf_ports)
-        portrow.addWidget(self.btn_gf_apply)
-        portrow.addStretch(1)
+        portrow.addWidget(self.btn_gf_apply, 2, 0, 1, 2, Qt.AlignLeft)
+        portrow.setColumnStretch(2, 1)
         lay4.addLayout(portrow)
 
         self.lbl_lists = QLabel("")
@@ -401,20 +402,20 @@ class ZapretWidget(QWidget):
         self.lbl_lists.setWordWrap(True)
         lay4.addWidget(self.lbl_lists)
 
-        lrow = QHBoxLayout()
+        lrow = QGridLayout()
         self.btn_ipset_update = QPushButton(i18n.t("Обновить IPSet"))
         self.btn_ipset_update.setObjectName("Segment")
         self.btn_ipset_update.clicked.connect(self._ipset_update)
-        lrow.addWidget(self.btn_ipset_update)
+        lrow.addWidget(self.btn_ipset_update, 0, 0)
         self.btn_hosts_check = QPushButton(i18n.t("Проверить hosts"))
         self.btn_hosts_check.setObjectName("Segment")
         self.btn_hosts_check.clicked.connect(self._hosts_check)
-        lrow.addWidget(self.btn_hosts_check)
+        lrow.addWidget(self.btn_hosts_check, 0, 1)
         self.btn_hosts_apply = QPushButton(i18n.t("Обновить hosts"))
         self.btn_hosts_apply.setObjectName("Segment")
         self.btn_hosts_apply.clicked.connect(self._hosts_apply)
-        lrow.addWidget(self.btn_hosts_apply)
-        lrow.addStretch(1)
+        lrow.addWidget(self.btn_hosts_apply, 1, 0)
+        lrow.setColumnStretch(2, 1)
         lay4.addLayout(lrow)
         root.addWidget(card4)
 
@@ -505,10 +506,13 @@ class ZapretWidget(QWidget):
             return
         path = self._path()
         self._set_status(i18n.t("Проверяю обновления zapret…"))
-        self._worker = gd_bg.submit(lambda: upd.check_updates(path, force=force),
-                                    self._update_checked, parent=self)
+        self._worker = gd_bg.submit(
+            lambda: upd.check_updates(path, force=force, network_read=gd_bg.wait_network_read),
+            self._update_checked, parent=self)
 
     def _update_checked(self, result) -> None:
+        if getattr(self.host, "is_quitting", False):
+            return
         if isinstance(result, dict):
             self._update = result
             if result.get("ok"):
@@ -575,7 +579,7 @@ class ZapretWidget(QWidget):
                     or ours.get("strategy") or self._remembered_strategy())
 
         self._update_progress = i18n.t("проверка релиза")
-        info = upd.check_updates(path, force=True)
+        info = upd.check_updates(path, force=True, network_read=gd_bg.wait_network_read)
         if not info.get("ok"):
             return {"ok": False, "error": info.get("error") or i18n.t("нет данных о релизе")}
         tag = info.get("latest") or "?"
@@ -595,7 +599,7 @@ class ZapretWidget(QWidget):
                 self._update_progress = i18n.t("загрузка {v0}: {v1:.0f}%",
                                                v0=tag, v1=done * 100.0 / total)
 
-        ok, msg = upd.download(url, zip_path, on_progress=progress)
+        ok, msg = upd.download(url, zip_path, on_progress=progress, transfer=gd_bg.transfer_network)
         if not ok:
             return {"ok": False, "error": msg}
         if not upd.verify_sha256(zip_path, digest):
@@ -603,6 +607,7 @@ class ZapretWidget(QWidget):
         ok, msg = upd.validate_zip(zip_path)
         if not ok:
             return {"ok": False, "error": msg}
+        gd_bg.check_shutdown()
         client = self._ensure()
         if svc:
             stopped = client.call({"cmd": "zapret_service", "op": "stop"}, timeout=90)
@@ -835,7 +840,8 @@ class ZapretWidget(QWidget):
 
     def _job_ipset(self) -> dict:
         path = self._path()
-        res = upd.update_ipset(path)
+        res = upd.update_ipset(
+            path, transfer=gd_bg.transfer_network, before_apply=gd_bg.check_shutdown)
         if not res.get("ok"):
             return res
         snap = gd_zapret.snapshot(path)
@@ -874,7 +880,7 @@ class ZapretWidget(QWidget):
         self._worker = gd_bg.submit(self._job_hosts_check, self._hosts_checked, parent=self)
 
     def _job_hosts_check(self) -> dict:
-        ok, res = upd.fetch_hosts()
+        ok, res = upd.fetch_hosts(transfer=gd_bg.transfer_network)
         if not ok:
             return {"ok": False, "error": res}
         status = upd.hosts_status(res)
@@ -883,6 +889,8 @@ class ZapretWidget(QWidget):
         return status
 
     def _hosts_checked(self, result) -> None:
+        if getattr(self.host, "is_quitting", False):
+            return
         if not (isinstance(result, dict) and result.get("ok")):
             err = (result or {}).get("error") if isinstance(result, dict) else str(result)
             self._set_status(i18n.t("hosts: {v0}", v0=err), ok=False)
@@ -910,19 +918,23 @@ class ZapretWidget(QWidget):
         self._worker = gd_bg.submit(self._job_hosts_apply, self._hosts_applied, parent=self)
 
     def _job_hosts_apply(self) -> dict:
-        res = self._ensure().call({"cmd": "zapret_update", "op": "hosts"}, timeout=120)
-        return {"ok": bool(res.get("ok")), "error": res.get("error"),
-                "data": res.get("data")}
+        return self._ensure().apply_zapret_hosts(gd_bg.check_shutdown)
 
     def _hosts_applied(self, result) -> None:
+        if getattr(self.host, "is_quitting", False) and not (isinstance(result, dict) and result.get("ok")):
+            return
         if isinstance(result, dict) and result.get("ok"):
             data = result.get("data") or {}
-            self._set_status(i18n.t("hosts обновлён. Резервная копия: {v0}",
-                                    v0=data.get("backup") or "?"))
+            backup = data.get("backup")
+            self._set_status(i18n.t("hosts обновлён. Резервная копия: {v0}", v0=backup)
+                             if backup else i18n.t("Файл hosts создан."))
             gd_journal.record("zapret", "hosts", before="", after=i18n.t("блок обновлён"),
                               why=i18n.t("кнопка вкладки"))
         else:
             err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+            backup = ((result.get("data") or {}).get("backup") if isinstance(result, dict) else None)
+            if backup:
+                err = i18n.t("{v0}. Резервная копия: {v1}", v0=err, v1=backup)
             self._set_status(i18n.t("hosts: {v0}", v0=err), ok=False)
         self._poll.trigger()
 
@@ -1701,11 +1713,14 @@ class ZapretWidget(QWidget):
             self._set_status(i18n.t("Сначала выберите папку zapret."), ok=False)
             return
         self._set_status(i18n.t("Проверяю доступ…"))
-        self._worker = gd_bg.submit(lambda: probe.probe_all(path, timeout=6.0),
-                                    self._probe_done, parent=self)
+        self._worker = gd_bg.submit(
+            lambda: probe.probe_all(path, timeout=6.0, network_read=gd_bg.wait_network_read),
+            self._probe_done, parent=self)
         self._render()
 
     def _probe_done(self, result) -> None:
+        if getattr(self.host, "is_quitting", False):
+            return
         if not (isinstance(result, dict) and result.get("total")):
             err = (result or {}).get("error") if isinstance(result, dict) else str(result)
             self._set_status(i18n.t("Проверка доступа: {v0}", v0=err or "?"), ok=False)

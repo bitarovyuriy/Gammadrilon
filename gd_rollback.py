@@ -16,9 +16,12 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from threading import RLock
 
 import gd_paths
 import gd_state
+
+_STATE_LOCK = RLock()
 
 
 def state_path() -> Path:
@@ -43,7 +46,8 @@ def save(entries: dict, pid: int | None = None) -> bool:
     data = dict(entries)
     data["pid"] = int(pid if pid is not None else _current_pid())
     data["at"] = time.time()
-    return gd_state.write_json_atomic(state_path(), data)
+    with _STATE_LOCK:
+        return gd_state.write_json_atomic(state_path(), data)
 
 
 def load() -> dict | None:
@@ -51,22 +55,42 @@ def load() -> dict | None:
 
 
 def clear() -> bool:
-    path = state_path()
-    try:
-        if path.is_file():
-            path.unlink()
-        return True
-    except OSError:
-        return False
+    with _STATE_LOCK:
+        try:
+            state_path().unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
 
 
 def merge(section: str, values: dict) -> bool:
     """Дописать раздел, не потеряв остальные."""
-    data = _read() or {}
-    data[section] = values
-    data["pid"] = _current_pid()
-    data["at"] = time.time()
-    return gd_state.write_json_atomic(state_path(), data)
+    with _STATE_LOCK:
+        data = _read() or {}
+        data[section] = values
+        data["pid"] = _current_pid()
+        data["at"] = time.time()
+        return gd_state.write_json_atomic(state_path(), data)
+
+
+def saved_hz(data: dict | None) -> int:
+    """Прочитать как текущую вложенную запись, так и прежнее число."""
+    value = (data or {}).get("hz")
+    if isinstance(value, dict):
+        value = value.get("hz")
+    return value if type(value) is int and value > 0 else 0
+
+
+def discard_hz(expected: dict) -> bool:
+    """Удалить восстановленную частоту, сохранив остальные разделы снимка."""
+    with _STATE_LOCK:
+        data = _read() or {}
+        if any(data.get(key) != expected.get(key) for key in ("hz", "pid", "at")):
+            return False
+        data.pop("hz", None)
+        if not (data.keys() - {"pid", "at"}):
+            return clear()
+        return gd_state.write_json_atomic(state_path(), data)
 
 
 def _current_pid() -> int:
@@ -104,8 +128,9 @@ def describe(data: dict | None) -> str:
     if not data:
         return ""
     parts = []
-    if data.get("hz"):
-        parts.append(f"частота {data['hz']} Гц")
+    hertz = saved_hz(data)
+    if hertz:
+        parts.append(f"частота {hertz} Гц")
     if data.get("preset") is not None:
         parts.append(f"пресет #{int(data['preset']) + 1}")
     if data.get("gamma") is not None:

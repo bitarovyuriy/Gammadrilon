@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt5.QtCore import QPoint, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QPoint, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -238,7 +238,6 @@ class Tile(QFrame):
         self._press: QPoint | None = None
 
         self.setObjectName("Card")
-        self.setMinimumWidth(150)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
@@ -426,16 +425,12 @@ class RamTile(Tile):
         self.line.setObjectName("Hint")
         self.body.addWidget(self.value)
         self.body.addStretch(1)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(th.SPACE_XS)
-        row.addWidget(self.line, 1)
+        self.body.addWidget(self.line)
         self.clean = QPushButton(i18n.t("w.ram.clean"))
         self.clean.setObjectName("SmallButton")
         self.clean.setFixedHeight(24)
         self.clean.clicked.connect(lambda: self.board.open_tab("tab.utils"))
-        row.addWidget(self.clean)
-        self.body.addLayout(row)
+        self.body.addWidget(self.clean, 0, Qt.AlignRight)
 
     def update_metrics(self, snap: dict[str, Any]) -> None:
         percent = snap.get("ram")
@@ -469,6 +464,8 @@ class PowerTile(Tile):
         row, self.chips = _chips(
             [(pid, i18n.t(name), False) for pid, name in self.PROFILES], self._pick
         )
+        for button in self.chips.values():
+            button.setStyleSheet("padding: 0 5px;")
         self.body.addLayout(row)
 
     def _pick(self, profile: str) -> None:
@@ -807,9 +804,11 @@ class ZapretTile(Tile):
         if gd_bg.is_running(self._worker):
             return
         path = self._path()
-        self._worker = gd_bg.submit(lambda: gd_zapret.snapshot(path),
-                                    self._state_done, parent=self)
+        # При перестройке строк плитка удаляется, а снимок ещё может выполняться.
+        # gd_bg удерживает поток до завершения, Qt отключает слот удалённой плитки.
+        self._worker = gd_bg.submit(lambda: gd_zapret.snapshot(path), self._state_done)
 
+    @pyqtSlot(object)
     def _state_done(self, snap) -> None:
         if not isinstance(snap, dict):
             return
@@ -1085,15 +1084,15 @@ class DashboardWidget(QWidget):
         self.hint.setObjectName("Hint")
         self.hint.setWordWrap(True)
         self.hint.setVisible(False)
-        bar.addWidget(self.hint)
-        bar.addStretch(1)
+        bar.addWidget(self.hint, 1)
 
         self.setup_hint = ClickableText("")
         self.setup_hint.setObjectName("Hint")
         self.setup_hint.setVisible(False)
         self.setup_hint.setCursor(Qt.PointingHandCursor)
         self.setup_hint.clicked.connect(self._goto_setup_issue)
-        outer.addWidget(self.setup_hint)
+        bar.addWidget(self.setup_hint, 1)
+        bar.addStretch(0)
 
         self.btn_edit = QPushButton(i18n.t("home.edit"))
         self.btn_edit.setObjectName("GhostButton")
@@ -1110,7 +1109,7 @@ class DashboardWidget(QWidget):
         self.btn_reset.clicked.connect(self.reset_layout)
         bar.addWidget(self.btn_add)
         bar.addWidget(self.btn_reset)
-        bar.addWidget(self.btn_edit)
+        bar.addWidget(self.btn_edit, 0, Qt.AlignRight)
         outer.addLayout(bar)
 
         self.rows_host = QWidget()

@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QRect, Qt
 from PyQt5.QtGui import QColor, QPainter
 from PyQt5.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton,
                              QSlider, QVBoxLayout, QWidget)
@@ -50,16 +50,19 @@ class StepStrip(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#101010"))
 
-        width = self.width() / len(STEPS)
+        caption_height = painter.fontMetrics().height() + 8
+        caption_top = self.height() - caption_height
+        painter.fillRect(0, caption_top, self.width(), caption_height, QColor("#262626"))
+        painter.setPen(QColor("#EEEEEE"))
+
         for index, value in enumerate(STEPS):
+            left = index * self.width() // len(STEPS)
+            right = (index + 1) * self.width() // len(STEPS)
             level = self._level(value)
-            rect = self.rect().adjusted(int(index * width) + 8, 16,
-                                        -int((len(STEPS) - index - 1) * width) - 8, -16)
-            painter.fillRect(rect, QColor(level, level, level))
-            # подпись уровня — чтобы человек видел, что именно проверяет
-            painter.setPen(QColor(th.MUTED if hasattr(th, "MUTED") else "#808080"))
-            painter.drawText(rect.adjusted(0, 0, 0, 0), Qt.AlignBottom | Qt.AlignHCenter,
-                             str(value))
+            painter.fillRect(left + 8, 16, right - left - 16, caption_top - 24,
+                             QColor(level, level, level))
+            caption = QRect(left, caption_top, right - left, caption_height)
+            painter.drawText(caption, Qt.AlignCenter, str(value))
 
 
 class CalibrationDialog(QDialog):
