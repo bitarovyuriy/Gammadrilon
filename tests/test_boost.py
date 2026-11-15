@@ -12,6 +12,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -70,6 +74,8 @@ def test_game_boost_snapshot_and_restore(tmp_path, monkeypatch):
     monkeypatch.setattr(gd_boost, "anticheat_present", lambda: None)
     monkeypatch.setattr(gd_boost, "collect_targets",
                         lambda **kw: [{"pid": 111, "name": "chrome.exe", "rss_mb": 900.0}])
+    monkeypatch.setattr(gd_boost.psutil, "Process",
+                        lambda pid: SimpleNamespace(create_time=lambda: 123.0))
     monkeypatch.setattr(gd_boost, "get_memory_priority", lambda pid: 5)
     monkeypatch.setattr(gd_boost, "get_eco_qos", lambda pid: False)
     monkeypatch.setattr(gd_boost, "get_cpu_priority", lambda pid: gd_boost.NORMAL_PRIORITY_CLASS)
@@ -90,7 +96,8 @@ def test_game_boost_snapshot_and_restore(tmp_path, monkeypatch):
     assert boost.active()
     assert (tmp_path / gd_boost.STATE_FILE).is_file(), "снимок должен пережить падение приложения"
     saved = json.loads((tmp_path / gd_boost.STATE_FILE).read_text(encoding="utf-8"))
-    assert saved["affected"]["111"]["memory_priority"] == 5
+    assert saved["affected"]["111"] == {"name": "chrome.exe", "created": 123.0,
+                                        "memory_priority": 5, "eco_qos": False}
 
     ok, message = boost.stop()
     assert ok, message
@@ -103,6 +110,8 @@ def test_game_boost_snapshot_and_restore(tmp_path, monkeypatch):
 def test_boost_restores_after_crash(tmp_path, monkeypatch):
     """Снимок на диске — единственный способ откатить приоритеты после падения."""
     monkeypatch.setattr(gd_paths, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(gd_boost.psutil, "Process",
+                        lambda pid: SimpleNamespace(create_time=lambda: 123.0))
     restored = []
     monkeypatch.setattr(gd_boost, "set_memory_priority",
                         lambda pid, value=1: restored.append(("mem", pid, value)) or True)
@@ -113,7 +122,7 @@ def test_boost_restores_after_crash(tmp_path, monkeypatch):
         "active": True,
         "game_pid": None,
         "timer": False,
-        "affected": {"222": {"name": "telegram.exe", "memory_priority": 3,
+        "affected": {"222": {"name": "telegram.exe", "created": 123.0, "memory_priority": 3,
                              "eco_qos": False, "cpu_priority": None}},
     }), encoding="utf-8")
 
@@ -121,6 +130,58 @@ def test_boost_restores_after_crash(tmp_path, monkeypatch):
     assert boost.restore_from_disk()
     assert ("mem", 222, 3) in restored
     assert not (tmp_path / gd_boost.STATE_FILE).exists()
+
+
+@pytest.mark.parametrize(
+    ("process", "error", "recoverable"),
+    [
+        (None, gd_boost.psutil.NoSuchProcess(17416), True),
+        (SimpleNamespace(name=lambda: "explorer.exe"), None, True),
+        (SimpleNamespace(name=lambda: "SteamWebHelper.exe"), None, False),
+        (None, gd_boost.psutil.AccessDenied(17416), False),
+    ],
+    ids=["gone", "reused", "same-name", "access-denied"],
+)
+def test_legacy_snapshot_never_writes_to_unverified_pid(tmp_path, monkeypatch,
+                                                       process, error, recoverable):
+    monkeypatch.setattr(gd_paths, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(gd_boost.psutil, "Process", Mock(return_value=process, side_effect=error))
+    setters = [Mock() for _ in range(3)]
+    for name, setter in zip(("set_memory_priority", "set_eco_qos", "set_cpu_priority"), setters):
+        monkeypatch.setattr(gd_boost, name, setter)
+    state = tmp_path / gd_boost.STATE_FILE
+    state.write_text(json.dumps({
+        "active": True, "game_pid": None, "timer": False,
+        "affected": {"17416": {"name": "steamwebhelper.exe", "memory_priority": 5,
+                               "eco_qos": True, "cpu_priority": 64}},
+    }), encoding="utf-8")
+
+    boost = gd_boost.GameBoost()
+    assert boost.restore_from_disk() is recoverable
+    assert boost.active() is not recoverable
+    assert state.exists() is not recoverable
+    for setter in setters:
+        setter.assert_not_called()
+
+
+def test_restore_succeeds_if_process_exits_during_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(gd_paths, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(gd_boost.psutil, "Process", Mock(side_effect=[
+        SimpleNamespace(create_time=lambda: 123.0),
+        gd_boost.psutil.NoSuchProcess(111),
+    ]))
+    monkeypatch.setattr(gd_boost, "set_memory_priority", Mock(return_value=False))
+    state = tmp_path / gd_boost.STATE_FILE
+    state.write_text(json.dumps({
+        "active": True, "timer": False, "affected": {
+            "111": {"name": "chrome.exe", "created": 123.0, "memory_priority": 5},
+        },
+    }), encoding="utf-8")
+
+    boost = gd_boost.GameBoost()
+    assert boost.restore_from_disk()
+    assert not boost.active()
+    assert not state.exists()
 
 
 def test_anticheat_detection_uses_process_names(monkeypatch):

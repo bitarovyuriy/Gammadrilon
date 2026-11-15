@@ -7,24 +7,9 @@
 записи сохраняется её прежнее значение в ``data_dir()/cs2_backup.json``, и
 «выключить» возвращает именно его, а не «настройки Windows по умолчанию».
 
-Что входит и почему:
-
-* оптимизации полноэкранного режима для cs2.exe — DWM перестаёт перехватывать
-  кадр: уходят рывки на alt-tab и лишний кадр задержки;
-* приоритет GPU «высокая производительность» для cs2.exe — Windows не уводит
-  игру на энергосберегающий путь (на десктопе безвредно, на гибридной графике
-  обязательно);
-* режим игры Windows — планировщик перестаёт резать игровые потоки фоновой
-  работой;
-* Game DVR выключен — фоновая запись Xbox забирает кадры и диск;
-* схема питания «Высокая производительность» — без парковки ядер и
-  энергосберегающих пауз; прежняя схема возвращается на «выключить».
-
-Чего здесь сознательно нет: launch options (у Valve правило «лучшие launch
-options — никаких», популярные флаги либо мертвы, либо ничего не дают),
-правок HKLM (нужен администратор и перезагрузка), отключения VBS и HAGS — это
-защита и драйвер, за них приложение не решает. Диагностика показывает их
-состояние, но не трогает.
+Мягкий профиль включает штатный режим игры Windows. Дополнительные параметры
+совместимости, захвата, GPU и питания применяются по выбору пользователя.
+Сетевая диагностика опирается на внутриигровую телеметрию Valve.
 """
 from __future__ import annotations
 
@@ -46,9 +31,11 @@ import gd_state
 HIGH_PERF_GUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
 #: схема «Максимальная производительность» (создаётся вручную, может не быть)
 ULTIMATE_GUID = "e9a42b02-d5df-448d-aa00-03f14749eb61"
+_POWER_BACKUP = "power|active"
 
 GAME_DIR = "Counter-Strike Global Offensive"
 EXE_REL = Path("game/bin/win64/cs2.exe")
+SOFT_DEFAULT = ("game_mode",)
 
 REG_SZ = 1
 REG_DWORD = 4
@@ -59,37 +46,36 @@ TWEAKS: tuple[dict, ...] = (
     {
         "id": "power_plan",
         "title": "Схема питания «Высокая производительность»",
-        "why": "Процессор не паркует ядра и не уходит в энергосберегающие паузы: "
-               "на «Сбалансированной» Ryzen успевает сбросить частоту между тиками. "
-               "Прежняя схема возвращается, когда рычаг выключен.",
+        "why": "Меняет схему питания всего компьютера и может увеличить энергопотребление. "
+               "Сравните время кадра на обеих схемах в одинаковых условиях.",
         "needs_exe": False,
     },
     {
         "id": "fs_opt",
         "title": "Отключить оптимизации полноэкранного режима",
-        "why": "Windows перестаёт растягивать кадр игры через DWM: меньше задержка "
-               "и нет рывков при переключении окон. Самый заметный пункт из всех.",
+        "why": "Параметр совместимости для проверки воспроизводимых проблем с полноэкранным режимом. "
+               "Сравните работу CS2 в обоих вариантах после перезапуска игры.",
         "needs_exe": True,
     },
     {
         "id": "gpu_pref",
         "title": "GPU для CS2: высокая производительность",
-        "why": "Windows не выбирает для игры энергосберегающий адаптер и режим. "
-               "На одном мониторе от дискретной карты это страховка, а не чудо.",
+        "why": "Полезно на компьютере с несколькими GPU, если Windows запускает CS2 "
+               "на энергосберегающем адаптере. Перезапустите CS2 после изменения.",
         "needs_exe": True,
     },
     {
         "id": "game_mode",
         "title": "Режим игры Windows включён",
-        "why": "Планировщик держит игровые потоки в приоритете и не отдаёт ядра "
-               "фоновым задачам во время матча.",
+        "why": "Включает штатный игровой режим Windows для всех игр. "
+               "Результат зависит от фоновой нагрузки и компьютера.",
         "needs_exe": False,
     },
     {
         "id": "game_dvr",
         "title": "Game DVR (запись Xbox) выключен",
-        "why": "Фоновая запись Xbox забирает кадры и диск. На стабильность кадра "
-               "влияет сильнее, чем любой launch option.",
+        "why": "Отключает захват Xbox Game Bar для всех игр. "
+               "Попробуйте при рывках, если во время игры используется запись.",
         "needs_exe": False,
     },
 )
@@ -108,12 +94,8 @@ _QUALITY = {"0": "низко", "1": "средне", "2": "высоко", "3": "�
 _REFLEX = {"0": "выключен", "1": "включён", "2": "включён + boost"}
 
 LAUNCH_ADVICE = (
-    "Почти всё, что советуют в гайдах, в CS2 не работает: -novid, -tickrate 128, "
-    "-d3d9ex, -limitvsconst остались в Source 1. -threads гайды прямо не советуют — "
-    "игра сама раздаёт потоки, а флаг добавляет нестабильности. -nojoy даёт копейки. "
-    "+fps_max 0 снимает лишь встроенный предел в 400 кадров, и это удобнее выставить "
-    "в самой игре. -high повторяет то, что уже делает рычаг. Вывод: оставь строку "
-    "пустой — launch options тут ничего не решают."
+    "Строку параметров запуска можно оставить пустой. Для сравнения FPS запускайте CS2 с одними "
+    "и теми же параметрами. Флаги вроде -threads, -high и -novid не гарантируют прирост FPS."
 )
 
 
@@ -128,14 +110,14 @@ class WinRegistry:
     HIVES = {"HKCU": 0x80000001, "HKLM": 0x80000002}
 
     def read(self, hive: str, key: str, name: str):
-        """Значение или None — отсутствие ключа и значения неотличимы, нам это и нужно."""
+        """None означает отсутствие значения. Ошибки доступа передаются вызывающему."""
         if winreg is None:
-            return None
+            raise OSError(i18n.t("реестр недоступен"))
         try:
             with winreg.OpenKey(self.HIVES[hive], key) as handle:
                 value, _kind = winreg.QueryValueEx(handle, name)
                 return value
-        except OSError:
+        except FileNotFoundError:
             return None
 
     def write(self, hive: str, key: str, name: str, value, kind: int = REG_DWORD) -> None:
@@ -151,7 +133,7 @@ class WinRegistry:
         try:
             with winreg.OpenKey(self.HIVES[hive], key, 0, winreg.KEY_SET_VALUE) as handle:
                 winreg.DeleteValue(handle, name)
-        except OSError:
+        except FileNotFoundError:
             return
 
 
@@ -175,6 +157,18 @@ class PowerScheme:
             return False
         return result.returncode == 0
 
+    def available(self, guid: str) -> bool:
+        import gd_power
+
+        return guid.upper() in {scheme.upper() for scheme in gd_power.list_schemes()}
+
+
+def _status_value(registry, hive: str, key: str, name: str):
+    try:
+        return registry.read(hive, key, name)
+    except OSError:
+        return None
+
 
 # --------------------------------------------------------------------------
 # поиск игры
@@ -193,7 +187,7 @@ def _library_folders(steam: Path) -> list[Path]:
 
 def steam_root() -> Path | None:
     """Корень Steam: реестр точнее догадок, догадки — на случай чистого реестра."""
-    path = WinRegistry().read("HKCU", r"Software\Valve\Steam", "SteamPath")
+    path = _status_value(WinRegistry(), "HKCU", r"Software\Valve\Steam", "SteamPath")
     if path and Path(str(path)).is_dir():
         return Path(str(path))
     for hint in _STEAM_HINTS:
@@ -253,11 +247,11 @@ def _applied(tweak_id: str, exe: str, registry, active: str) -> bool:
         return active.upper() in (HIGH_PERF_GUID.upper(), ULTIMATE_GUID.upper())
     if tweak_id == "gpu_pref":
         value = registry.read("HKCU", r"Software\Microsoft\DirectX\UserGpuPreferences", exe)
-        return isinstance(value, str) and "GpuPreference=2" in value
+        return isinstance(value, str) and "gpupreference=2" in value.lower().split(";")
     if tweak_id == "fs_opt":
         value = registry.read(
             "HKCU", r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers", exe)
-        return isinstance(value, str) and "DISABLEDXMAXIMIZEDWINDOWEDMODE" in str(value).upper()
+        return isinstance(value, str) and "DISABLEDXMAXIMIZEDWINDOWEDMODE" in value.upper().split()
     if tweak_id == "game_mode":
         return (registry.read("HKCU", r"Software\Microsoft\GameBar", "AllowAutoGameMode") == 1
                 and registry.read("HKCU", r"Software\Microsoft\GameBar", "AutoGameModeEnabled") == 1)
@@ -274,14 +268,30 @@ def snapshot(exe: str = "", *, registry=None, power=None) -> dict:
     power = power or PowerScheme()
     exe = exe or find_cs2()
     active = power.active()
-    items = {spec["id"]: _applied(spec["id"], exe, registry, active) for spec in TWEAKS}
+    items = {}
+    for spec in TWEAKS:
+        tweak_id = spec["id"]
+        try:
+            items[tweak_id] = _applied(tweak_id, exe, registry, active)
+        except OSError:
+            items[tweak_id] = False
+    backup = _load_backup(backup_path())
+    saved_scheme = _saved_scheme(backup)
+    missing_power = None
+    try:
+        if saved_scheme and saved_scheme.upper() != active.upper() and not power.available(saved_scheme):
+            missing_power = saved_scheme
+    except OSError:
+        pass
     return {
         "exe": exe,
         "found": bool(exe),
         "items": items,
         "power": active,
         "on": bool(items) and all(items.values()),
-        "can_revert": bool(_load_backup(backup_path())),
+        "can_revert": bool(backup),
+        "managed_items": _managed_items(backup),
+        "missing_power": missing_power,
     }
 
 
@@ -297,14 +307,80 @@ def _load_backup(path: Path) -> dict:
     return items if isinstance(items, dict) else {}
 
 
+def _registry_target(hive: str, key: str, name: str) -> tuple[str, object] | None:
+    """Пункт и значение, записанные рычагом, в том числе для старых снимков."""
+    for spec in TWEAKS:
+        for target_hive, target_key, target_name, value, _ in _entries(spec["id"], name):
+            if (target_hive, target_key, target_name) == (hive, key, name):
+                return spec["id"], value
+    return None
+
+
+def _managed_items(backup: dict) -> list[str]:
+    managed = {"power_plan"} if _POWER_BACKUP in backup else set()
+    for mark in backup:
+        parts = mark.split("|", 2)
+        if len(parts) == 3 and (target := _registry_target(*parts)):
+            managed.add(target[0])
+    return selected_ids(managed)
+
+
+def managed_counts(snap: dict) -> tuple[int, int]:
+    """Число действующих пунктов, значения которых сохранил рычаг."""
+    items = snap.get("items") or {}
+    managed = snap.get("managed_items") or []
+    return sum(bool(items.get(item)) for item in managed), len(managed)
+
+
 def _save_backup(path: Path, items: dict) -> bool:
     return gd_state.write_json_atomic(path, {"version": 1, "items": items})
 
 
+def _saved_scheme(items: dict) -> str:
+    spec = items.get(_POWER_BACKUP)
+    return str(spec.get("value") or "") if isinstance(spec, dict) else ""
+
+
+def _save_remaining(path: Path, items: dict) -> bool:
+    if items:
+        return _save_backup(path, items)
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def missing_scheme_note(guid: str) -> str:
+    return i18n.t("Windows больше не видит прежнюю схему питания {v0}, поэтому её нельзя восстановить.",
+                  v0=guid)
+
+
+def _restore_scheme(guid: str, power) -> tuple[bool, str]:
+    if not guid or guid.upper() == power.active().upper():
+        return False, ""
+    if not power.available(guid):
+        return False, missing_scheme_note(guid)
+    active = power.active().upper()
+    if not active:
+        return False, i18n.t("Не удалось прочитать активную схему питания.")
+    # Если схема уже сменилась, её выбрал другой профиль или пользователь.
+    if active != HIGH_PERF_GUID.upper():
+        return False, ""
+    if not power.set(guid):
+        return False, i18n.t("powercfg не вернул прежнюю схему")
+    return True, ""
+
+
 def selected_ids(items) -> list[str]:
     """Из настроек — только известные id и только в порядке каталога."""
-    chosen = set(items or ())
+    chosen = {item for item in (items or ()) if isinstance(item, str)}
     return [spec["id"] for spec in TWEAKS if spec["id"] in chosen]
+
+
+def configured_ids(items) -> list[str]:
+    """Новый профиль по умолчанию, сохранённый список остаётся выбором пользователя."""
+    return selected_ids(items) if isinstance(items, list) else list(SOFT_DEFAULT)
 
 
 def apply(items, exe: str = "", *, registry=None, power=None, path: Path | str | None = None) -> dict:
@@ -318,7 +394,7 @@ def apply(items, exe: str = "", *, registry=None, power=None, path: Path | str |
     power = power or PowerScheme()
     path = Path(path or backup_path())
     chosen = set(selected_ids(items))
-    report: dict = {"ok": False, "applied": [], "errors": []}
+    report: dict = {"ok": False, "applied": [], "already_active": [], "errors": []}
     if not chosen:
         report["errors"].append(i18n.t("ни один пункт не выбран"))
         return report
@@ -333,19 +409,34 @@ def apply(items, exe: str = "", *, registry=None, power=None, path: Path | str |
                 i18n.t("cs2.exe не найдена — «{v0}» пропущен", v0=spec["title"]))
             continue
         try:
-            entries = _entries(spec["id"], exe)
+            active = ""
             if spec["id"] == "power_plan":
-                backup.setdefault("power|active", {"exist": True, "value": power.active(), "kind": "sz"})
-            for hive, key, name, value, kind in entries:
+                active = power.active()
+                if not active:
+                    report["errors"].append(i18n.t("Не удалось прочитать активную схему питания."))
+                    continue
+            if _applied(spec["id"], exe, registry, active):
+                report["applied"].append(spec["id"])
+                report["already_active"].append(spec["id"])
+                continue
+            if spec["id"] == "power_plan":
+                backup.setdefault(_POWER_BACKUP, {"exist": True, "value": active, "kind": "sz"})
+            entries = []
+            originals = {}
+            for hive, key, name, value, kind in _entries(spec["id"], exe):
+                old = registry.read(hive, key, name)
+                if old == value:
+                    continue
+                entries.append((hive, key, name, value, kind))
                 mark = f"{hive}|{key}|{name}"
                 if mark not in backup:
-                    old = registry.read(hive, key, name)
-                    backup[mark] = {"exist": old is not None, "value": old,
-                                    "kind": "dword" if isinstance(old, int) else "sz"}
+                    originals[mark] = {"exist": old is not None, "value": old,
+                                       "kind": "dword" if isinstance(old, int) else "sz"}
+            backup.update(originals)
             planned.append((spec, entries))
         except OSError as exc:
             report["errors"].append(f"{spec['title']}: {exc}")
-    if not _save_backup(path, backup):
+    if planned and not _save_backup(path, backup):
         report["errors"].append(i18n.t("не удалось сохранить резервную копию"))
         return report
     for spec, entries in planned:
@@ -378,15 +469,23 @@ def revert(*, registry=None, power=None, path: Path | str | None = None) -> dict
     if not items:
         report["errors"].append(i18n.t("нечего возвращать: рычаг не включался"))
         return report
+    remaining = {}
     for mark, spec in items.items():
         spec = spec if isinstance(spec, dict) else {}
         try:
-            if mark == "power|active":
-                guid = str(spec.get("value") or "")
-                if guid and not power.set(guid):
-                    report["errors"].append(i18n.t("powercfg не вернул прежнюю схему"))
+            if mark == _POWER_BACKUP:
+                restored, error = _restore_scheme(_saved_scheme(items), power)
+                report["restored"] += int(restored)
+                if error:
+                    remaining[mark] = spec
+                    report["errors"].append(error)
                 continue
             hive, key, name = mark.split("|", 2)
+            target = _registry_target(hive, key, name)
+            if target is None:
+                raise ValueError(i18n.t("Неизвестная настройка CS2 в резервной копии."))
+            if registry.read(hive, key, name) != target[1]:
+                continue
             if spec.get("exist"):
                 kind = REG_DWORD if str(spec.get("kind")) == "dword" else REG_SZ
                 registry.write(hive, key, name, spec.get("value"), kind)
@@ -394,14 +493,31 @@ def revert(*, registry=None, power=None, path: Path | str | None = None) -> dict
                 registry.drop(hive, key, name)
             report["restored"] += 1
         except (OSError, ValueError) as exc:
+            remaining[mark] = spec
             report["errors"].append(f"{mark}: {exc}")
-    if not report["errors"]:
-        try:
-            path.unlink()
-        except OSError:
-            pass
+    if remaining != items and not _save_remaining(path, remaining):
+        report["errors"].append(i18n.t("Не удалось обновить резервную копию CS2."))
     report["ok"] = not report["errors"]
     return report
+
+
+def forget_missing_scheme(guid: str, *, power=None, path: Path | str | None = None) -> dict:
+    """Убрать только подтверждённую пользователем запись об отсутствующей схеме."""
+    power = power or PowerScheme()
+    path = Path(path or backup_path())
+    items = _load_backup(path)
+    saved_scheme = _saved_scheme(items)
+    if not saved_scheme or guid.upper() != saved_scheme.upper():
+        return {"ok": False, "errors": [i18n.t("Резервная копия CS2 изменилась. Проверьте состояние ещё раз.")]}
+    try:
+        if saved_scheme.upper() == power.active().upper() or power.available(saved_scheme):
+            return {"ok": False, "errors": [i18n.t("Прежняя схема питания снова доступна. Повторите откат.")]}
+    except OSError as exc:
+        return {"ok": False, "errors": [str(exc)]}
+    del items[_POWER_BACKUP]
+    if not _save_remaining(path, items):
+        return {"ok": False, "errors": [i18n.t("Не удалось обновить резервную копию CS2.")]}
+    return {"ok": True, "errors": []}
 
 
 # --------------------------------------------------------------------------
@@ -484,7 +600,7 @@ def diagnostics(*, registry=None) -> list[dict]:
     registry = registry or WinRegistry()
     rows: list[dict] = []
 
-    hags = registry.read("HKLM", r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode")
+    hags = _status_value(registry, "HKLM", r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode")
     rows.append({
         "title": i18n.t("Аппаратное планирование GPU (HAGS)"),
         "value": i18n.t("включено") if hags == 2 else i18n.t("выключено"),
@@ -492,7 +608,7 @@ def diagnostics(*, registry=None) -> list[dict]:
         "level": "info",
     })
 
-    vbs = registry.read("HKLM", r"SYSTEM\CurrentControlSet\Control\DeviceGuard",
+    vbs = _status_value(registry, "HKLM", r"SYSTEM\CurrentControlSet\Control\DeviceGuard",
                         "EnableVirtualizationBasedSecurity")
     rows.append({
         "title": i18n.t("Виртуализация (VBS)"),
@@ -502,8 +618,8 @@ def diagnostics(*, registry=None) -> list[dict]:
         "level": "warn" if vbs == 1 else "ok",
     })
 
-    hvci = registry.read(
-        "HKLM",
+    hvci = _status_value(
+        registry, "HKLM",
         r"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity",
         "Enabled")
     rows.append({
@@ -513,7 +629,7 @@ def diagnostics(*, registry=None) -> list[dict]:
         "level": "warn" if hvci == 1 else "ok",
     })
 
-    timer = registry.read("HKLM", r"SYSTEM\CurrentControlSet\Control\Session Manager\kernel",
+    timer = _status_value(registry, "HKLM", r"SYSTEM\CurrentControlSet\Control\Session Manager\kernel",
                           "GlobalTimerResolutionRequests")
     rows.append({
         "title": i18n.t("Общий таймер 0,5 мс"),

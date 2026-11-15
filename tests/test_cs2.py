@@ -54,9 +54,44 @@ class FakePower:
         self.guid = guid
         return True
 
+    def available(self, guid: str) -> bool:
+        return True
+
 
 def _apply(ids, registry, power, path, exe=EXE):
     return gd_cs2.apply(ids, exe, registry=registry, power=power, path=path)
+
+
+def test_soft_default_and_legacy_selections():
+    assert gd_cs2.configured_ids(None) == ["game_mode"]
+    assert gd_cs2.configured_ids(["fs_opt", "power_plan", "game_dvr"]) == ["power_plan", "fs_opt", "game_dvr"]
+    assert gd_cs2.configured_ids([]) == []
+
+
+def test_soft_profile_changes_only_game_mode(tmp_path, monkeypatch):
+    registry, power = FakeRegistry({GAME_MODE: 0}), FakePower()
+    backup = tmp_path / "cs2_backup.json"
+    monkeypatch.setattr(gd_cs2, "backup_path", lambda: backup)
+
+    assert _apply(gd_cs2.configured_ids(None), registry, power, backup)["applied"] == ["game_mode"]
+    assert {name for _, _, name in registry.values} == {"AllowAutoGameMode", "AutoGameModeEnabled"}
+    assert power.active() == BALANCED
+    snapshot = gd_cs2.snapshot(EXE, registry=registry, power=power)
+    assert snapshot["can_revert"] and gd_cs2.managed_counts(snapshot) == (1, 1)
+    assert gd_cs2.revert(registry=registry, power=power)["ok"]
+    assert registry.values == {GAME_MODE: 0}
+
+
+def test_soft_profile_does_not_claim_existing_game_mode(tmp_path):
+    values = {(hive, key, name): value for hive, key, name, value, _ in gd_cs2._entries("game_mode", "")}
+    registry, power = FakeRegistry(values), FakePower()
+    backup = tmp_path / "cs2_backup.json"
+
+    report = _apply(gd_cs2.SOFT_DEFAULT, registry, power, backup)
+
+    assert report["ok"] and report["already_active"] == ["game_mode"]
+    assert registry.values == values
+    assert not backup.exists()
 
 
 def test_apply_sets_all_points_and_marks_them_on(tmp_path):
@@ -110,6 +145,75 @@ def test_second_apply_does_not_overwrite_the_first_backup(tmp_path):
     gd_cs2.revert(registry=registry, power=power, path=backup)
 
     assert registry.read(*GAME_MODE) == 0
+
+
+def test_deleted_scheme_does_not_block_restoring_other_entries(tmp_path, monkeypatch):
+    deleted = "FAAE2CA2-E202-44F8-A972-61214EF55FCA"
+    cpu_clone = "B87F4B17-C211-4B72-97B4-2DD8E1CC8F9D"
+    registry, power = FakeRegistry({GAME_MODE: 0}), FakePower(deleted)
+    backup = tmp_path / "cs2_backup.json"
+    monkeypatch.setattr(gd_cs2, "backup_path", lambda: backup)
+    _apply(["power_plan", "game_mode"], registry, power, backup)
+    power.guid = cpu_clone
+    written = []
+    power.available = lambda guid: guid != deleted
+    power.set = lambda guid: written.append(guid) or False
+
+    report = gd_cs2.revert(registry=registry, power=power, path=backup)
+
+    assert report["ok"] is False
+    assert deleted in report["errors"][0]
+    assert registry.read(*GAME_MODE) == 0
+    assert set(gd_cs2._load_backup(backup)) == {"power|active"}
+    assert gd_cs2.snapshot(EXE, registry=registry, power=power)["missing_power"] == deleted
+    assert not written
+    assert power.active() == cpu_clone
+
+    assert gd_cs2.forget_missing_scheme(deleted, power=power, path=backup)["ok"]
+    assert not backup.exists()
+    assert not written
+
+
+def test_revert_retries_failed_power_write_and_restores_original(tmp_path, monkeypatch):
+    registry, power = FakeRegistry({GAME_MODE: 0}), FakePower()
+    backup = tmp_path / "cs2_backup.json"
+    _apply(["power_plan", "game_mode"], registry, power, backup)
+    with monkeypatch.context() as patch:
+        patch.setattr(power, "set", lambda guid: False)
+        assert not gd_cs2.revert(registry=registry, power=power, path=backup)["ok"]
+    assert registry.read(*GAME_MODE) == 0
+    assert power.active() == gd_cs2.HIGH_PERF_GUID
+    assert set(gd_cs2._load_backup(backup)) == {"power|active"}
+    assert not gd_cs2.forget_missing_scheme(BALANCED, power=power, path=backup)["ok"]
+
+    assert gd_cs2.revert(registry=registry, power=power, path=backup)["ok"]
+    assert power.active() == BALANCED
+    assert not backup.exists()
+
+
+def test_revert_keeps_scheme_selected_after_apply(tmp_path):
+    registry, power = FakeRegistry(), FakePower()
+    backup = tmp_path / "cs2_backup.json"
+    _apply(["power_plan"], registry, power, backup)
+    power.guid = gd_cs2.ULTIMATE_GUID
+
+    assert gd_cs2.revert(registry=registry, power=power, path=backup)["ok"]
+    assert power.active() == gd_cs2.ULTIMATE_GUID
+    assert not backup.exists()
+
+
+def test_apply_skips_existing_performance_plan_and_requires_readable_original(tmp_path):
+    registry, power = FakeRegistry(), FakePower(gd_cs2.ULTIMATE_GUID)
+    backup = tmp_path / "cs2_backup.json"
+
+    assert _apply(["power_plan"], registry, power, backup)["ok"]
+    assert power.active() == gd_cs2.ULTIMATE_GUID
+    assert not backup.exists()
+
+    power.guid = ""
+    assert not _apply(["power_plan"], registry, power, backup)["ok"]
+    assert not power.active()
+    assert not backup.exists()
 
 
 def test_missing_exe_is_reported_not_written(tmp_path):

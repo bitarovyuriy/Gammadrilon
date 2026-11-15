@@ -52,6 +52,20 @@ def test_checks_cover_key_sections_and_never_raise():
         assert item["title"] and item["detail"] is not None
 
 
+def test_tls_diagnosis_reports_context_creation_failure(monkeypatch):
+    import ssl
+
+    def missing_policy():
+        raise FileNotFoundError("codex-rejected-cas.pem")
+
+    monkeypatch.setattr(ssl, "create_default_context", missing_policy)
+
+    item = gd_diagnose.check_tls()
+
+    assert item["status"] == gd_diagnose.FAIL
+    assert "FileNotFoundError: codex-rejected-cas.pem" in item["detail"]
+
+
 @pytest.mark.parametrize("status, exit_code", [(gd_diagnose.OK, 0), (gd_diagnose.FAIL, 1)])
 def test_selftest_writes_utf8_to_redirected_stdout(monkeypatch, status, exit_code):
     import main

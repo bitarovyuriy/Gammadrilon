@@ -16,6 +16,7 @@ import statistics
 import threading
 import time
 import urllib.request
+from collections.abc import Callable
 from ctypes import wintypes
 
 TIMER_SIGNATURE = (
@@ -28,7 +29,9 @@ TARGET_100NS = 5000          # 0,5 мс: 1 мс = 10000 единиц по 100 н
 #: сколько байт нагрузки считать «нагрузка была»: меньше — класс bufferbloat не считаем
 MIN_LOAD_BYTES = 100_000
 TCP_PROBES = [("1.1.1.1", 443), ("8.8.8.8", 53), ("77.88.8.8", 443)]
-LOAD_URL = "https://speed.cloudflare.com/__down?bytes=5000000"
+LOAD_BYTES = 5_000_000
+LOAD_TIMEOUT = 8
+LOAD_URL = f"https://speed.cloudflare.com/__down?bytes={LOAD_BYTES}"
 
 
 # -- таймер ------------------------------------------------------------------
@@ -157,33 +160,29 @@ def tcp_retransmit_rate() -> dict | None:
         return None
 
 
-def _download(url: str, size_limit: int, stop: threading.Event) -> tuple[int, str]:
-    """Скачать до ``size_limit`` байт под нагрузкой.
-
-    Возвращает ``(скачано_байт, причина_обрыва)``. Раньше отказ проглатывался, и
-    «класс A» мог получиться из замера **без нагрузки вовсе** — то есть из воздуха:
-    пустая причина и ноль байт теперь видны вызывающему (см. :func:`bufferbloat`).
-    """
+def _download(url: str, size_limit: int, stop: threading.Event,
+              on_progress: Callable[[int], None]) -> str:
+    """Скачать до ``size_limit`` байт, сообщая о прогрессе и причине обрыва."""
     got = 0
     try:
-        with urllib.request.urlopen(url, timeout=8) as resp:
+        request = urllib.request.Request(url, headers={"User-Agent": "Gammadrilon"})
+        with urllib.request.urlopen(request, timeout=LOAD_TIMEOUT) as resp:
             while not stop.is_set() and got < size_limit:
-                chunk = resp.read(65536)
+                chunk = resp.read1(min(65536, size_limit - got))
                 if not chunk:
                     break
                 got += len(chunk)
+                on_progress(got)
     except Exception as exc:  # noqa: BLE001
-        return got, f"{type(exc).__name__}: {exc}"
-    return got, ""
+        return f"{type(exc).__name__}: {exc}"
+    return ""
 
 
 def bufferbloat(timeout: float = 2.0, samples: int = 15) -> dict:
     """Рост задержки под нагрузкой: idle-медиана → loaded-медиана до того же узла.
 
-    Класс (A/B/C) считается только когда измерены **оба** конца: база без нагрузки и
-    сама нагрузка. Иначе возвращается ``increase=None`` и ``grade="—"`` — выдуманная
-    база (прежний ``median([0])``) превращала любой размер задержки под нагрузкой в
-    «класс C», а «класс A» мог получиться при полностью неудавшейся загрузке.
+    Учитываются пробы, во время которых поступили данные. Класс (A/B/C)
+    считается, если загрузка прошла без ошибки и есть базовый замер.
     """
     host, port = TCP_PROBES[0]
     idle_vals = [tcp_latency(host, port, timeout) for _ in range(5)]
@@ -191,37 +190,53 @@ def bufferbloat(timeout: float = 2.0, samples: int = 15) -> dict:
     idle = statistics.median(idle_measured) if idle_measured else None
 
     stop = threading.Event()
-    load: dict = {"bytes": 0, "err": ""}
+    ready = threading.Event()
+    finished = threading.Event()
+    load_bytes = 0
+    load_error = ""
+
+    def _on_progress(byte_count: int) -> None:
+        nonlocal load_bytes
+        load_bytes = byte_count
+        if not ready.is_set():
+            ready.set()
 
     def _do_load() -> None:
-        got, err = _download(LOAD_URL, 5_000_000, stop)
-        load["bytes"], load["err"] = got, err
+        nonlocal load_error
+        try:
+            load_error = _download(LOAD_URL, LOAD_BYTES, stop, _on_progress)
+        finally:
+            finished.set()
+            ready.set()
 
     th = threading.Thread(target=_do_load, daemon=True)
     th.start()
-    time.sleep(0.4)
     loaded_vals = []
-    for _ in range(samples):
-        dt = tcp_latency(host, port, timeout)
-        if dt is not None:
-            loaded_vals.append(dt)
-    stop.set()
-    th.join(timeout=3)
-
+    try:
+        if ready.wait(timeout=LOAD_TIMEOUT):
+            for _ in range(samples):
+                if finished.is_set():
+                    break
+                before = load_bytes
+                dt = tcp_latency(host, port, timeout)
+                if dt is not None and load_bytes > before:
+                    loaded_vals.append(dt)
+    finally:
+        stop.set()
+        th.join(timeout=LOAD_TIMEOUT)
     out = {
         "idle": round(idle, 1) if idle is not None else None,
         "loaded": None,
         "increase": None,
         "grade": "—",
-        "load_bytes": load["bytes"],
-        "load_error": load["err"],
+        "load_bytes": load_bytes,
+        "load_error": load_error if finished.is_set() else "TimeoutError: download did not finish",
     }
     if not loaded_vals:
         return out
     loaded = statistics.median(loaded_vals)
     out["loaded"] = round(loaded, 1)
-    if idle is None or load["bytes"] < MIN_LOAD_BYTES:
-        # базы или нагрузки нет — считать класс не из чего
+    if idle is None or out["load_bytes"] < MIN_LOAD_BYTES or out["load_error"]:
         return out
     increase = max(0.0, loaded - idle)
     out["increase"] = round(increase, 1)

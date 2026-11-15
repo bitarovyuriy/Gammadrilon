@@ -337,24 +337,23 @@ class ExtraPanel(QWidget):
             self._set_status(self.lbl_net, i18n.t("Ошибка: {v0}", v0=data['error']), ok=False)
             return
         bb = data.get("bufferbloat", {})
+        load_bytes = bb.get("load_bytes", 0)
+        error = bb.get("load_error") or ""
+        if error or load_bytes < gd_extra.MIN_LOAD_BYTES:
+            self._set_status(self.lbl_net, i18n.t(
+                "Bufferbloat: замер не завершён (скачано {v0} КБ{v1}) — класс не посчитан.",
+                v0=round(load_bytes / 1024), v1=f" — {error}" if error else "",
+            ), ok=False)
+            return
         if bb.get("loaded") is None:
             self._set_status(self.lbl_net, i18n.t(
-                "Bufferbloat: под нагрузкой узлы не отвечали — класс не посчитан."), ok=False)
+                "Bufferbloat: не удалось измерить задержку во время загрузки — класс не посчитан.",
+            ), ok=False)
             return
         if bb.get("idle") is None:
             self._set_status(self.lbl_net, i18n.t(
                 "Bufferbloat: базу без нагрузки измерить не удалось (узлы не отвечали) — "
                 "класс не посчитан."), ok=False)
-            return
-        if bb.get("increase") is None:
-            # нагрузка не создалась: считать рост задержки не с чем сравнивать
-            err = bb.get("load_error") or ""
-            self._set_status(self.lbl_net, i18n.t(
-                "Bufferbloat: задержка {v0} → {v1} мс, но нагрузку создать не удалось "
-                "(скачано {v2} КБ{v3}) — класс не посчитан.",
-                v0=bb["idle"], v1=bb["loaded"],
-                v2=round((bb.get("load_bytes") or 0) / 1024),
-                v3=f" — {err}" if err else ""), ok=False)
             return
         self._set_status(
             self.lbl_net,

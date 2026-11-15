@@ -54,11 +54,119 @@ def test_single_cs2_choice_can_be_reverted_through_ui(monkeypatch, tmp_path):
     assert page.checkboxes["game_mode"].isChecked()
     page.btn_toggle.click()
     assert page._on, "снимок приложения должен давать доступ к откату даже одного пункта"
+    assert page.lbl_state.text() == "Включён"
     assert "Выключить" in page.btn_toggle.text()
     page.btn_toggle.click()
     assert not backup.exists()
     assert not page._on
     page.deleteLater()
+
+
+def test_cs2_soft_button_preserves_legacy_snapshot_until_revert(monkeypatch, tmp_path):
+    from test_cs2 import BALANCED, GAME_MODE, FakeRegistry, FakePower
+
+    app()
+    registry, power = FakeRegistry({GAME_MODE: 0}), FakePower()
+    backup = tmp_path / "backup.json"
+    monkeypatch.setattr(gd_cs2, "backup_path", lambda: backup)
+    monkeypatch.setattr(gd_cs2, "WinRegistry", lambda: registry)
+    monkeypatch.setattr(gd_cs2, "PowerScheme", lambda: power)
+    monkeypatch.setattr(gd_cs2, "find_cs2", lambda: "")
+    monkeypatch.setattr(gd_cs2, "cs2_pids", lambda: [])
+    monkeypatch.setattr(gd_cs2, "diagnostics", lambda: [])
+    monkeypatch.setattr(gd_cs2, "video_notes", lambda: [])
+    monkeypatch.setattr(gd_cs2, "video_file", lambda: None)
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: done(fn()))
+    legacy = ["power_plan", "game_mode", "game_dvr"]
+    assert gd_cs2.apply(legacy)["ok"]
+    old_snapshot = backup.read_bytes()
+    settings = {"cs2_items": legacy.copy()}
+    page = cs2ui.Cs2Widget(config={"settings": settings})
+    call = Mock(side_effect=lambda request, **kw: {"ok": True, "data": gd_cs2.revert()})
+    page._client = NS(call=call)
+
+    assert not page.btn_soft.isEnabled()
+    assert backup.read_bytes() == old_snapshot
+    assert settings["cs2_items"] == legacy
+    page.btn_toggle.click()
+    assert page.btn_soft.isEnabled() and page._chosen() == legacy
+    assert power.active() == BALANCED and registry.read(*GAME_MODE) == 0
+    page.btn_soft.click()
+    assert settings["cs2_items"] == page._chosen() == ["game_mode"]
+    call.assert_called_once_with({"cmd": "cs2_revert"}, timeout=120)
+    assert registry.read(*GAME_MODE) == 0 and not backup.exists()
+    page.deleteLater()
+
+
+def test_cs2_discard_missing_scheme_requires_confirmation(monkeypatch, tmp_path):
+    import gd_gpu_service as service
+    from test_cs2 import BALANCED, GAME_MODE, FakeRegistry, FakePower
+
+    app()
+    registry, power = FakeRegistry({GAME_MODE: 0}), FakePower()
+    backup = tmp_path / "backup.json"
+    monkeypatch.setattr(gd_cs2, "backup_path", lambda: backup)
+    monkeypatch.setattr(gd_cs2, "PowerScheme", lambda: power)
+    monkeypatch.setattr(gd_cs2, "WinRegistry", lambda: registry)
+    monkeypatch.setattr(gd_cs2, "find_cs2", lambda: "")
+    monkeypatch.setattr(gd_cs2, "cs2_pids", lambda: [])
+    monkeypatch.setattr(gd_cs2, "diagnostics", lambda: [])
+    monkeypatch.setattr(gd_cs2, "video_notes", lambda: [])
+    monkeypatch.setattr(gd_cs2, "video_file", lambda: None)
+    monkeypatch.setattr(gd_bg, "submit", lambda fn, done, **kw: done(fn()))
+    assert gd_cs2.apply(["power_plan", "game_mode"])["ok"]
+    power.guid = gd_cs2.ULTIMATE_GUID
+    monkeypatch.setattr(power, "available", lambda guid: guid != BALANCED)
+    monkeypatch.setattr(power, "set", Mock(side_effect=AssertionError("unexpected power change")))
+    confirm = Mock(side_effect=[False, True])
+    monkeypatch.setattr(cs2ui.gd_dialog, "confirm", confirm)
+    page = cs2ui.Cs2Widget(config={"settings": {"cs2_items": ["game_mode"]}})
+    call = Mock(side_effect=lambda request, **kw: service.handle(request))
+    page._client = NS(call=call)
+
+    assert not page.btn_keep_power.isHidden()
+    assert BALANCED in page.lbl_missing_power.text()
+    page.btn_keep_power.click()
+    call.assert_not_called()
+    assert "power|active" in gd_cs2._load_backup(backup)
+
+    page.btn_keep_power.click()
+    call.assert_called_once()
+    assert page.btn_keep_power.isHidden()
+    assert "power|active" not in gd_cs2._load_backup(backup)
+    assert registry.read(*GAME_MODE) == 1
+    page.btn_toggle.click()
+    assert registry.read(*GAME_MODE) == 0
+    assert not backup.exists()
+    assert power.active() == gd_cs2.ULTIMATE_GUID
+    page.deleteLater()
+
+
+def test_cs2_wrapped_text_fits_in_narrow_scroll_area(monkeypatch):
+    from PyQt5.QtWidgets import QScrollArea
+
+    qt = app()
+    monkeypatch.setattr(i18n, "_current", "en")
+    monkeypatch.setattr(gd_bg, "submit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gd_cs2, "cs2_pids", lambda: [])
+    page = cs2ui.Cs2Widget()
+    page._reload_done({"snapshot": {"can_revert": True, "missing_power": gd_cs2.HIGH_PERF_GUID}})
+
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setStyleSheet(cs2ui.th.STYLESHEET)
+    area.setWidget(page)
+    area.resize(684, 540)
+    area.show()
+    for width in (684, 494, 684):
+        area.resize(width, 540)
+        for _ in range(4):
+            qt.processEvents()
+        labels = page.findChildren(cs2ui._WrappedLabel)
+        assert len(labels) == 4
+        assert all(label.height() >= label.heightForWidth(label.width()) for label in labels)
+    area.close()
+    area.deleteLater()
 
 
 def test_reset_waits_for_all_results_and_reports_partial_failure(monkeypatch):

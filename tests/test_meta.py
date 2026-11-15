@@ -129,6 +129,19 @@ def test_spec_head_yields_every_module():
         assert set(namespace["MODULES"]) == expected, f"{name}: список модулей разошёлся с gd_*.py"
 
 
+def test_pyinstaller_includes_runtime_tls_policy_when_present(monkeypatch, tmp_path):
+    import runpy
+    import ssl
+
+    hook = ROOT / "tools" / "pyinstaller" / "hooks" / "hook-ssl.py"
+    monkeypatch.setattr(ssl, "__file__", str(tmp_path / "ssl.py"))
+    assert runpy.run_path(str(hook))["datas"] == []
+
+    policy = tmp_path / "codex-rejected-cas.pem"
+    policy.touch()
+    assert runpy.run_path(str(hook))["datas"] == [(str(policy), ".")]
+
+
 def test_build_script_packs_zip_with_tar():
     """README называет Compress-Archive нерабочим — сборка обязана делать так же."""
     text = (ROOT / "build_release.ps1").read_text(encoding="utf-8", errors="replace")

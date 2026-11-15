@@ -122,7 +122,7 @@ def test_cs2_apply_is_submitted_before_execution(monkeypatch):
     monkeypatch.setattr(gd_cs2_ui.gd_cs2, "apply", apply)
     window = NS(_busy=False, _on=False, _chosen=lambda: ["game_mode"], _exe="cs2.exe",
                 _note=Mock(), _settings=lambda: {}, _save=Mock(), reload=Mock(),
-                btn_toggle=NS(setEnabled=Mock()), _toggle_done=Mock(),
+                btn_toggle=NS(setEnabled=Mock()), _toggle_done=Mock(), _set_profile_editable=Mock(),
                 _client=NS(call=Mock(return_value={"ok": True, "data": {"applied": ["game_mode"]}})))
     gd_cs2_ui.Cs2Widget._toggle(window)
     assert len(jobs) == 1

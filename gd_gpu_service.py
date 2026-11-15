@@ -454,7 +454,7 @@ def _validate_command(obj: dict) -> None:
     commands = {"ping", "status", "apply", "keep", "restore", "shutdown", "purge_standby",
                 "empty_working_sets", "sensors_start", "sensors_stop", "dns_apply", "dns_restore", "dns_flush",
                 "zapret_recon", "zapret_start", "zapret_stop", "zapret_adopt", "zapret_probe",
-                "zapret_service", "zapret_update", "cs2_apply", "cs2_revert",
+                "zapret_service", "zapret_update", "cs2_apply", "cs2_revert", "cs2_forget_power",
                 "boost_start", "boost_stop", "boost_restore"}
     if not isinstance(obj, dict) or obj.get("cmd") not in commands:
         raise ValueError("unknown command")
@@ -480,6 +480,8 @@ def _validate_command(obj: dict) -> None:
     for key in ("keep_on_exit", "on", "restore", "force"):
         if key in obj and type(obj[key]) is not bool:
             raise ValueError(f"invalid {key}")
+    if obj["cmd"] == "cs2_forget_power" and not isinstance(obj.get("guid"), str):
+        raise ValueError("invalid scheme GUID")
     if obj["cmd"] == "cs2_apply":
         import gd_cs2
 
@@ -557,11 +559,15 @@ def _handle(obj: dict) -> dict:
         else:
             ok, message = _boost.start() if cmd == "boost_start" else _boost.stop()
         return {"ok": ok, "message": message, "data": _boost.status(), "error": None if ok else message}
-    if cmd in {"cs2_apply", "cs2_revert"}:
+    if cmd in {"cs2_apply", "cs2_revert", "cs2_forget_power"}:
         import gd_cs2
 
-        report = (gd_cs2.revert() if cmd == "cs2_revert"
-                  else gd_cs2.apply(obj["items"], obj.get("exe") or ""))
+        if cmd == "cs2_apply":
+            report = gd_cs2.apply(obj["items"], obj.get("exe") or "")
+        elif cmd == "cs2_revert":
+            report = gd_cs2.revert()
+        else:
+            report = gd_cs2.forget_missing_scheme(obj["guid"])
         return {"ok": report["ok"], "data": report,
                 "error": "; ".join(report.get("errors") or [])}
     if cmd == "status":

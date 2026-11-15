@@ -647,6 +647,7 @@ class Cs2Tile(Tile):
     """
 
     def build(self) -> None:
+        self._missing_power = False
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(th.SPACE_S)
@@ -666,6 +667,9 @@ class Cs2Tile(Tile):
         self.body.addWidget(self.line)
 
     def _toggle(self) -> None:
+        if self._missing_power:
+            self.board.open_tab("tab.cs2")
+            return
         page = self.board.ensure_page("tab.cs2")
         if page is None:
             return
@@ -677,20 +681,24 @@ class Cs2Tile(Tile):
         items = snap.get("items") or {}
         total = len(items)
         count = sum(1 for value in items.values() if value)
-        on = bool(items) and count == total
-        partial = 0 < count < total
+        managed_on, managed_total = gd_cs2.managed_counts(snap)
         # откат возможен только при сохранённой резервной копии — страница живёт
         # по этому же признаку, плитка не должна обещать недоступное действие
         can_revert = bool(snap.get("can_revert"))
-        if on:
+        self._missing_power = bool(snap.get("missing_power"))
+        on = can_revert and managed_total and managed_on == managed_total
+        if self._missing_power:
+            self.value.setText(i18n.t("ОТКАТ"))
+        elif on:
             self.value.setText(i18n.t("ВКЛ"))
-            self.btn.setText(i18n.t("Выключить"))
-        elif partial:
+        elif can_revert and managed_on:
             self.value.setText(i18n.t("ЧАСТИЧНО"))
-            self.btn.setText(i18n.t("Выключить") if can_revert else i18n.t("Включить"))
+        elif can_revert:
+            self.value.setText(i18n.t("ОТКАТ"))
         else:
             self.value.setText(i18n.t("ВЫКЛ"))
-            self.btn.setText(i18n.t("Включить"))
+        self.btn.setText(i18n.t("Открыть") if self._missing_power else
+                         i18n.t("Выключить") if can_revert else i18n.t("Включить"))
         self.line.setText(i18n.t("w.cs2.count", v0=count, v1=total))
         self.state.setText(i18n.t("w.cs2.hint") if on else "")
 

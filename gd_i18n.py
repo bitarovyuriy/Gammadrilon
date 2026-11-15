@@ -121,7 +121,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "pal.cpu_limit": "Питание CPU: предел частоты {value} %",
         # плитки главного экрана: CS2
         "w.cs2": "CS2",
-        "w.cs2.hint": "Один рычаг: питание, полный экран, режим игры, Game DVR",
+        "w.cs2.hint": "Рычаг применяет выбранные настройки Windows для игры",
         "w.cs2.count": "{v0} из {v1} пунктов в системе",
         # общие
         "common.undo": "Вернуть как было",
@@ -553,7 +553,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "pal.cpu_limit": "CPU power: frequency cap {value} %",
         # main screen tiles: CS2
         "w.cs2": "CS2",
-        "w.cs2.hint": "One switch: power plan, fullscreen, game mode, Game DVR",
+        "w.cs2.hint": "Applies your selected Windows settings for the game",
         "w.cs2.count": "{v0} of {v1} items live in the system",
         # common
         "common.undo": "Restore",
@@ -1019,6 +1019,11 @@ DIRECT: dict[str, str] = {
     "«{v0}»: powercfg отказал": "“{v0}”: powercfg refused",
     "нечего возвращать: рычаг не включался": "nothing to restore: the lever was never on",
     "powercfg не вернул прежнюю схему": "powercfg did not return the previous scheme",
+    "Windows больше не видит прежнюю схему питания {v0}, поэтому её нельзя восстановить.": "Windows no longer lists the previous power plan {v0}, so it cannot be restored.",
+    "Не удалось прочитать активную схему питания.": "Could not read the active power plan.",
+    "Не удалось обновить резервную копию CS2.": "Could not update the CS2 backup.",
+    "Резервная копия CS2 изменилась. Проверьте состояние ещё раз.": "The CS2 backup has changed. Check the status again.",
+    "Прежняя схема питания снова доступна. Повторите откат.": "The previous power plan is available again. Retry the rollback.",
     "CS2 не запущена": "CS2 is not running",
     "pid {v0}: нет доступа": "pid {v0}: access denied",
     "pid {v0}: Windows отказала": "pid {v0}: Windows refused",
@@ -1270,8 +1275,8 @@ DIRECT: dict[str, str] = {
         "a background rule never shows the UAC prompt.",
     " МБ": " MB",
     "Bufferbloat: базу без нагрузки измерить не удалось (узлы не отвечали) — класс не посчитан.": "Bufferbloat: the idle baseline could not be measured (nodes did not respond) — no class computed.",
-    "Bufferbloat: задержка {v0} → {v1} мс, но нагрузку создать не удалось (скачано {v2} КБ{v3}) — класс не посчитан.": "Bufferbloat: latency {v0} → {v1} ms, but the load could not be created ({v2} KB downloaded{v3}) — no class computed.",
-    "Bufferbloat: под нагрузкой узлы не отвечали — класс не посчитан.": "Bufferbloat: nodes did not respond under load — no class computed.",
+    "Bufferbloat: замер не завершён (скачано {v0} КБ{v1}) — класс не посчитан.": "Bufferbloat: measurement incomplete ({v0} KB downloaded{v1}) — no class computed.",
+    "Bufferbloat: не удалось измерить задержку во время загрузки — класс не посчитан.": "Bufferbloat: latency could not be measured during the download — no class computed.",
     "GPU не отвечает": "GPU not responding",
     "Gammadrilon меняет настройки системы — всё обратимо и записывается в журнал:\n\n• Питание CPU — схема и лимиты процессора (откат в один клик).\n• Питание GPU — лимит мощности и мониторинг. По умолчанию лимит сохраняется после выхода и сбоя; для отката отключите «Не возвращать лимит при выходе».\n• DNS — смена резолверов с сохранением прежней конфигурации.\n• ОЗУ — очистка standby list и сжатие рабочих наборов (кэш файлов наполнится заново).\n\nЧасть операций (лимит GPU, DNS, очистка ОЗУ) требует прав администратора. Без них приложение честно скажет «нужны права» и НЕ сделает вид, что сработало: чтение и замеры работают всегда, изменения — только с разрешением.": "Gammadrilon changes system settings — everything is reversible and written to the log:\n\n• CPU power — scheme and processor limits (one-click rollback).\n• GPU power — power limit and monitoring. The limit is kept after exit or a crash by default; disable “Keep limit on exit” to restore it.\n• DNS — resolver switch that keeps the previous configuration.\n• RAM — standby list purge and working set trim (the file cache refills by itself).\n\nSome operations (GPU limit, DNS, RAM cleanup) require administrator rights. Without them the app says “rights required” and does NOT pretend it worked: reading and measuring always work, changes — only with permission.",
     "Gammadrilon — Питание GPU": "Gammadrilon — GPU power",
@@ -2249,6 +2254,50 @@ DIRECT: dict[str, str] = {
     "cs2.exe не найдена: пункты, привязанные к игре, работать не будут. Проверьте, что Steam видит Counter-Strike 2.":
         "cs2.exe was not found: game-specific options will not work. Check that Steam can see Counter-Strike 2.",
     "Есть изменения для отката": "Changes can be reverted",
+    "Откат схемы недоступен": "Power plan cannot be restored",
+    "Оставить текущую схему": "Keep current power plan",
+    "Оставить текущую схему питания и удалить запись о схеме {v0} из резервной копии CS2?": "Keep the current power plan and remove the entry for {v0} from the CS2 backup?",
+    "Запись об отсутствующей схеме питания удалена из резервной копии.": "The missing power plan entry was removed from the backup.",
+    "Выбрать мягкий профиль": "Select the light profile",
+    "Рычаг применяет выбранные настройки Windows. «Выключить» возвращает сохранённые значения.":
+        "The switch applies your selected Windows settings. Disable restores the saved values.",
+    "Схема питания «Высокая производительность»": "High performance power plan",
+    "Отключить оптимизации полноэкранного режима": "Disable fullscreen optimizations",
+    "GPU для CS2: высокая производительность": "High performance GPU for CS2",
+    "Режим игры Windows включён": "Enable Windows Game Mode",
+    "Game DVR (запись Xbox) выключен": "Disable Xbox Game Bar capture",
+    "Отмечает игровой режим Windows. Для применения нажмите «Включить».":
+        "Selects Windows Game Mode. Click Enable to apply it.",
+    "Мягкий профиль выбран. Нажмите «Включить» для применения.":
+        "Light profile selected. Click Enable to apply it.",
+    "Выбранные настройки уже действуют.": "The selected settings are already active.",
+    "Неизвестная настройка CS2 в резервной копии.": "The backup contains an unknown CS2 setting.",
+    "Меняет схему питания всего компьютера и может увеличить энергопотребление. Сравните время кадра на обеих схемах в одинаковых условиях.":
+        "Changes the PC's power plan and may increase power consumption. Compare frame times on both plans under the same conditions.",
+    "Параметр совместимости для проверки воспроизводимых проблем с полноэкранным режимом. Сравните работу CS2 в обоих вариантах после перезапуска игры.":
+        "A compatibility option for testing reproducible fullscreen issues. Restart CS2 before comparing each setting.",
+    "Полезно на компьютере с несколькими GPU, если Windows запускает CS2 на энергосберегающем адаптере. Перезапустите CS2 после изменения.":
+        "Useful on a PC with multiple GPUs if Windows runs CS2 on the power-saving adapter. Restart CS2 after changing it.",
+    "Включает штатный игровой режим Windows для всех игр. Результат зависит от фоновой нагрузки и компьютера.":
+        "Enables the built-in Windows Game Mode for all games. The effect depends on the PC and its background workload.",
+    "Отключает захват Xbox Game Bar для всех игр. Попробуйте при рывках, если во время игры используется запись.":
+        "Disables Xbox Game Bar capture for all games. Try it if you see stutters while recording.",
+    "Ручной режим High для запущенной игры. Высокий приоритет может снизить отзывчивость фоновых приложений.":
+        "Manually selects High priority for the running game. This may make background applications less responsive.",
+    "СЕТЬ И ПЛАВНОСТЬ": "NETWORK AND FRAME PACING",
+    "В CS2 откройте «Настройки → Игра → Телеметрия». Сравните FPS и худшее время кадра за последний интервал на одной карте. При рывке проверьте, выросло ли в этот момент время кадра или доля пропущенных тиков. Пинг здесь измеряется до сервера матча.":
+        "In CS2, open Settings → Game → Telemetry. Compare FPS and the worst recent frame time on the same map. If you see a hitch, check whether frame time or the share of missed ticks spiked. This ping is measured against the match server.",
+    "Телеметрия CS2": "CS2 telemetry",
+    "Если во время матча скачут пинг или пропуски тиков, проверьте, приостанавливает ли Steam загрузки во время игры. При игре по Wi-Fi сравните с Ethernet. Если пропуски сохраняются, попробуйте на один шаг увеличить буферизацию пакетов в CS2. Это может сгладить рывки ценой дополнительной задержки.":
+        "If ping or missed ticks spike during a match, check that Steam pauses downloads during gameplay. If you use Wi-Fi, compare it with Ethernet. If ticks are still missed, try increasing CS2's packet buffering by one step. This can smooth out hitches at the cost of additional latency.",
+    "Загрузки Steam": "Steam downloads",
+    "Если растёт время кадра и включена фоновая запись Steam, сравните игру с отключённой записью для CS2. Проверьте несколько повторов одного и того же участка карты.":
+        "If frame times spike while Steam is recording in the background, compare with recording disabled for CS2. Repeat the same section of the map several times.",
+    "Запись игр в Steam": "Steam Game Recording",
+    "Строку параметров запуска можно оставить пустой. Для сравнения FPS запускайте CS2 с одними и теми же параметрами. Флаги вроде -threads, -high и -novid не гарантируют прирост FPS.":
+        "You can leave the launch options blank. Use the same options for each FPS comparison. Flags such as -threads, -high, and -novid do not guarantee higher FPS.",
+    "ОТКАТ": "ROLLBACK",
+    "Открыть": "Open",
     "Не всё выполнено: {v0}": "Some actions failed: {v0}",
     "Не удалось сохранить настройки CS2.": "Could not save CS2 settings.",
     "Не удалось сохранить настройки CS2: {v0}": "Could not save CS2 settings: {v0}",

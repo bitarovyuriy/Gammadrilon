@@ -211,21 +211,21 @@ def _process_created(pid: int) -> float | None:
         return None
 
 
-def _same_process(pid: int, created: float | None) -> bool:
-    """Жив ли исходный процесс.
-
-    Без этой проверки сохранённые приоритеты после перезапуска Windows могли
-    достаться совсем другому процессу с тем же PID.
-    """
-    if created is None:
-        # снимок старого формата: времени создания нет, проверять нечем —
-        # ведём себя как раньше и просто пробуем вернуть приоритеты
-        return True
+def _same_process(pid: int, created: float | None, name: str | None = None) -> bool | None:
+    """True для исходного процесса, False для исчезнувшего, None при неопределённости."""
     try:
         proc = psutil.Process(pid)
-        return abs(float(proc.create_time()) - float(created)) < 0.5
-    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+        if created is not None:
+            return proc.create_time() == created
+        if name and proc.name().casefold() != name.casefold():
+            return False
+        # В старом снимке совпадения имени недостаточно: PID мог достаться
+        # новому экземпляру того же приложения.
+        return None
+    except (psutil.NoSuchProcess, ValueError):
         return False
+    except psutil.AccessDenied:
+        return None
 
 
 def foreground_pid() -> int:
@@ -394,20 +394,19 @@ class GameBoost:
         changed = 0
         for target in targets:
             pid = target["pid"]
-            entry = {
-                "name": target["name"],
-                "memory_priority": get_memory_priority(pid),
-                "eco_qos": get_eco_qos(pid),
-                "cpu_priority": get_cpu_priority(pid),
-            }
-            touched = False
-            if set_memory_priority(pid, MEMORY_PRIORITY_VERY_LOW):
-                touched = True
-            if set_eco_qos(pid, True):
-                touched = True
-            if touched:
-                entry["created"] = _process_created(pid)
-                self._snapshot[str(pid)] = entry
+            created = _process_created(pid)
+            if created is None:
+                continue
+            original = {}
+            priority = get_memory_priority(pid)
+            if priority is not None and priority != MEMORY_PRIORITY_VERY_LOW:
+                if set_memory_priority(pid, MEMORY_PRIORITY_VERY_LOW):
+                    original["memory_priority"] = priority
+            eco = get_eco_qos(pid)
+            if eco is False and set_eco_qos(pid, True):
+                original["eco_qos"] = eco
+            if original:
+                self._snapshot[str(pid)] = {"name": target["name"], "created": created, **original}
                 changed += 1
 
         # сжимаем один раз: дальше Windows сама держит их страницы вытесненными
@@ -454,24 +453,26 @@ class GameBoost:
         pending = {}
         for pid_text, entry in self._snapshot.items():
             pid = int(pid_text)
-            if not _same_process(pid, entry.get("created")):
-                # процесса уже нет или PID достался другому — трогать его нельзя
-                restored += 1
+            created, name = entry.get("created"), entry.get("name")
+            same = _same_process(pid, created, name)
+            if same is not True:
+                if same is None:
+                    pending[pid_text] = entry
                 continue
-            priority = entry.get("memory_priority")
-            eco = entry.get("eco_qos")
-            cpu = entry.get("cpu_priority")
-            failed = False
-            if priority is not None and not set_memory_priority(pid, priority):
-                failed = True
-            if eco is not None and not set_eco_qos(pid, bool(eco)):
-                failed = True
-            if cpu and not set_cpu_priority(pid, int(cpu)):
-                failed = True
-            if failed:
-                pending[pid_text] = entry
-            if pid_text not in pending:
+            failed = {}
+            for key, restore in (
+                ("memory_priority", set_memory_priority),
+                ("eco_qos", set_eco_qos),
+                ("cpu_priority", set_cpu_priority),
+            ):
+                value = entry.get(key)
+                if value is not None and not restore(pid, value):
+                    failed[key] = value
+            if not failed:
                 restored += 1
+            elif _same_process(pid, created, name) is not False:
+                # Процесс мог завершиться между проверкой и вызовом Windows.
+                pending[pid_text] = {"name": name, "created": created, **failed}
 
         if self._timer_held:
             try:

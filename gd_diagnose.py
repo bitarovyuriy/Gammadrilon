@@ -204,6 +204,17 @@ def check_proxy() -> dict:
                   i18n.t("локальный прокси 10808 не слушает — автообновление пойдёт напрямую"))
 
 
+def check_tls() -> dict:
+    """Создать TLS-контекст с системным доверием без сетевого запроса."""
+    try:
+        import ssl
+
+        ssl.create_default_context()
+        return _check("tls", "TLS", OK, ssl.OPENSSL_VERSION)
+    except Exception as exc:  # noqa: BLE001
+        return _check("tls", "TLS", FAIL, f"{type(exc).__name__}: {exc}")
+
+
 def check_uac() -> dict:
     try:
         import winreg
@@ -322,7 +333,7 @@ def checks() -> list[dict]:
         except Exception as exc:  # noqa: BLE001
             items.append(_check("paths", i18n.t("Пути"), FAIL, f"{type(exc).__name__}: {exc}"))
     for fn in (check_qt, check_gpu, check_sensors, check_dotnet, check_zapret,
-               check_proxy, check_uac, check_display, check_config_size,
+               check_proxy, check_tls, check_uac, check_display, check_config_size,
                check_start_time):
         try:
             items.append(fn())

@@ -342,16 +342,20 @@ def test_gpu_partial_apply_retains_rollback_state(monkeypatch):
 
 def test_boost_keeps_failed_restores_for_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(gd_boost.gd_paths, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(gd_boost.psutil, "Process", lambda pid: NS(create_time=lambda: 123.0))
     monkeypatch.setattr(gd_boost, "set_memory_priority", lambda *a: False)
-    monkeypatch.setattr(gd_boost, "set_eco_qos", lambda *a: True)
+    restore_eco = Mock(return_value=True)
+    monkeypatch.setattr(gd_boost, "set_eco_qos", restore_eco)
     monkeypatch.setattr(gd_boost, "set_cpu_priority", lambda *a: True)
     boost = gd_boost.GameBoost()
     boost._active = True
-    boost._snapshot = {"111": {"memory_priority": 5, "eco_qos": False}}
+    boost._snapshot = {"111": {"name": "chrome.exe", "created": 123.0,
+                               "memory_priority": 5, "eco_qos": False}}
     assert not boost.stop()[0]
     assert "111" in boost._snapshot
     monkeypatch.setattr(gd_boost, "set_memory_priority", lambda *a: True)
     assert boost.stop()[0]
+    restore_eco.assert_called_once_with(111, False)
 
 
 def test_reset_gamma_survives_watchdog(monkeypatch):

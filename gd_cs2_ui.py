@@ -25,7 +25,8 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from PyQt5.QtCore import Qt, QTimer  # noqa: E402
+from PyQt5.QtCore import Qt, QTimer, QUrl  # noqa: E402
+from PyQt5.QtGui import QDesktopServices  # noqa: E402
 from PyQt5.QtWidgets import (  # noqa: E402
     QCheckBox,
     QHBoxLayout,
@@ -42,6 +43,7 @@ if HERE not in sys.path:
 
 import gd_cs2  # noqa: E402
 import gd_bg  # noqa: E402
+import gd_dialog  # noqa: E402
 import gd_helper  # noqa: E402
 import gd_i18n as i18n  # noqa: E402
 import gd_theme as th  # noqa: E402
@@ -51,6 +53,27 @@ from gd_power_ui import make_card  # noqa: E402
 def _level_color(level: str) -> str:
     """Цвет строки отчёта: замечание — ярче, норма — тише."""
     return th.INK if level == "warn" else th.MUTED
+
+
+class _WrappedLabel(QLabel):
+    """Не даёт прокручиваемой странице ужать строки ниже высоты переноса."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.setWordWrap(True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_height()
+
+    def setText(self, text):
+        super().setText(text)
+        self._fit_height()
+
+    def _fit_height(self):
+        height = self.heightForWidth(self.width())
+        if height > 0 and height != self.minimumHeight():
+            self.setMinimumHeight(height)
 
 
 class Cs2Widget(QWidget):
@@ -66,6 +89,7 @@ class Cs2Widget(QWidget):
         self._on = bool(self._settings().get("cs2_on", False))
         self._exe = ""
         self._busy = False
+        self._missing_power = None
         self._reload_worker = None
         self._reload_again = False
         self._ready = False           # первый снимок получен — можно действовать
@@ -84,14 +108,13 @@ class Cs2Widget(QWidget):
         card, lay = make_card(i18n.t("РЫЧАГ"),
                               tip=i18n.t("Включить всё сразу и так же разом вернуть прежние значения"))
         row = QHBoxLayout()
-        self.lbl_state = QLabel(i18n.t("Выключен"))
+        self.lbl_state = _WrappedLabel(i18n.t("Выключен"))
         self.lbl_state.setObjectName("Title")
-        row.addWidget(self.lbl_state)
-        row.addStretch(1)
+        row.addWidget(self.lbl_state, 1)
         self.btn_toggle = QPushButton(i18n.t("Включить"))
         self.btn_toggle.setObjectName("PrimaryButton")
         self.btn_toggle.setMinimumWidth(160)
-        self.btn_toggle.clicked.connect(self._toggle)
+        self.btn_toggle.clicked.connect(self.toggle)
         row.addWidget(self.btn_toggle)
         lay.addLayout(row)
 
@@ -100,6 +123,18 @@ class Cs2Widget(QWidget):
         self.lbl_counts.setWordWrap(True)
         lay.addWidget(self.lbl_counts)
 
+        self.lbl_missing_power = QLabel("")
+        self.lbl_missing_power.setObjectName("Hint")
+        self.lbl_missing_power.setWordWrap(True)
+        self.lbl_missing_power.hide()
+        lay.addWidget(self.lbl_missing_power)
+
+        self.btn_keep_power = QPushButton(i18n.t("Оставить текущую схему"))
+        self.btn_keep_power.setObjectName("Segment")
+        self.btn_keep_power.clicked.connect(self._forget_power)
+        self.btn_keep_power.hide()
+        lay.addWidget(self.btn_keep_power, 0, Qt.AlignLeft)
+
         self.lbl_note = QLabel("")
         self.lbl_note.setObjectName("Hint")
         self.lbl_note.setWordWrap(True)
@@ -107,9 +142,7 @@ class Cs2Widget(QWidget):
         lay.addWidget(self.lbl_note)
 
         hint = QLabel(i18n.t(
-            "Рычаг меняет только пользовательские настройки Windows: права администратора "
-            "не нужны, перезагрузка не нужна. Перед первой правкой сохраняются прежние "
-            "значения, и «Выключить» возвращает именно их."
+            "Рычаг применяет выбранные настройки Windows. «Выключить» возвращает сохранённые значения."
         ))
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
@@ -119,9 +152,14 @@ class Cs2Widget(QWidget):
         # --- ЧТО ВХОДИТ ----------------------------------------------------
         card2, lay2 = make_card(i18n.t("ЧТО ВХОДИТ"),
                                 tip=i18n.t("Снять лишнее можно при выключенном рычаге"))
+        self.btn_soft = QPushButton(i18n.t("Выбрать мягкий профиль"))
+        self.btn_soft.setObjectName("Segment")
+        self.btn_soft.setToolTip(i18n.t("Отмечает игровой режим Windows. Для применения нажмите «Включить»."))
+        self.btn_soft.setEnabled(False)
+        self.btn_soft.clicked.connect(self._choose_soft)
+        lay2.addWidget(self.btn_soft, 0, Qt.AlignLeft)
         self.checkboxes: dict[str, QCheckBox] = {}
-        saved = gd_cs2.selected_ids(self._settings().get("cs2_items"))
-        chosen = set(saved) if saved else {spec["id"] for spec in gd_cs2.TWEAKS}
+        chosen = gd_cs2.configured_ids(self._settings().get("cs2_items"))
         for spec in gd_cs2.TWEAKS:
             box = QCheckBox(i18n.t(spec["title"]))
             box.setToolTip(i18n.t(spec["why"]))
@@ -137,8 +175,7 @@ class Cs2Widget(QWidget):
         root.addWidget(card2)
 
         # --- ИГРА ----------------------------------------------------------
-        card3, lay3 = make_card(i18n.t("ИГРА"),
-                                tip=i18n.t("Приоритет High — то же, что даёт -high, но без launch options"))
+        card3, lay3 = make_card(i18n.t("ИГРА"))
         row3 = QHBoxLayout()
         self.lbl_game = QLabel(i18n.t("Проверяю…"))
         self.lbl_game.setObjectName("RowValue")
@@ -146,6 +183,8 @@ class Cs2Widget(QWidget):
         row3.addWidget(self.lbl_game, 1)
         self.btn_prio = QPushButton(i18n.t("Поднять приоритет"))
         self.btn_prio.setObjectName("Segment")
+        self.btn_prio.setToolTip(i18n.t("Ручной режим High для запущенной игры. "
+                                        "Высокий приоритет может снизить отзывчивость фоновых приложений."))
         self.btn_prio.clicked.connect(self._raise_priority)
         row3.addWidget(self.btn_prio)
         lay3.addLayout(row3)
@@ -158,6 +197,24 @@ class Cs2Widget(QWidget):
         row4.addStretch(1)
         lay3.addLayout(row4)
         root.addWidget(card3)
+
+        guide, guide_layout = make_card(i18n.t("СЕТЬ И ПЛАВНОСТЬ"))
+        self._guide_row(guide_layout, i18n.t(
+            "В CS2 откройте «Настройки → Игра → Телеметрия». Сравните FPS и худшее время кадра "
+            "за последний интервал на одной карте. При рывке проверьте, выросло ли в этот момент "
+            "время кадра или доля пропущенных тиков. Пинг здесь измеряется до сервера матча."
+        ), "https://help.steampowered.com/en/faqs/view/5E6F-5B36-5485-F6B9", i18n.t("Телеметрия CS2"))
+        self._guide_row(guide_layout, i18n.t(
+            "Если во время матча скачут пинг или пропуски тиков, проверьте, приостанавливает ли Steam "
+            "загрузки во время игры. При игре по Wi-Fi сравните с Ethernet. Если пропуски сохраняются, "
+            "попробуйте на один шаг увеличить буферизацию пакетов в CS2. Это может сгладить рывки "
+            "ценой дополнительной задержки."
+        ), "https://help.steampowered.com/en/faqs/view/4F9E-6328-E9B8-47F9", i18n.t("Загрузки Steam"))
+        self._guide_row(guide_layout, i18n.t(
+            "Если растёт время кадра и включена фоновая запись Steam, сравните игру с отключённой "
+            "записью для CS2. Проверьте несколько повторов одного и того же участка карты."
+        ), "https://store.steampowered.com/gamerecording", i18n.t("Запись игр в Steam"))
+        root.addWidget(guide)
 
         # --- ДИАГНОСТИКА ---------------------------------------------------
         card4, self.lay_diag = make_card(i18n.t("ДИАГНОСТИКА СИСТЕМЫ"),
@@ -195,6 +252,16 @@ class Cs2Widget(QWidget):
         self.reload()
 
     # -- настройки ----------------------------------------------------------
+    @staticmethod
+    def _guide_row(layout: QVBoxLayout, text: str, url: str, link_text: str) -> None:
+        label = _WrappedLabel(text)
+        label.setObjectName("Hint")
+        layout.addWidget(label)
+        link = QPushButton(link_text)
+        link.setObjectName("Segment")
+        link.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        layout.addWidget(link, 0, Qt.AlignLeft)
+
     def _settings(self) -> dict:
         settings = self._config.get("settings")
         if not isinstance(settings, dict):
@@ -259,17 +326,23 @@ class Cs2Widget(QWidget):
     def _render_state(self, snap: dict) -> None:
         items = snap.get("items") or {}
         on_count = sum(1 for value in items.values() if value)
+        managed_on, managed_total = gd_cs2.managed_counts(snap)
         # состояние рычага — факт системы, а не то, что мы помним про себя:
         # значения могли включить руками или другим приложением
         self._on = bool(snap.get("can_revert"))
         self._settings()["cs2_on"] = self._on
-        label = (i18n.t("Включён") if items and all(items.values()) else
-                 i18n.t("Частично включён") if on_count else
-                 i18n.t("Есть изменения для отката") if self._on else i18n.t("Выключен"))
+        self._missing_power = snap.get("missing_power")
+        self.lbl_missing_power.setText(gd_cs2.missing_scheme_note(self._missing_power) if self._missing_power else "")
+        self.lbl_missing_power.setVisible(bool(self._missing_power))
+        self.btn_keep_power.setVisible(bool(self._missing_power))
+        label = (i18n.t("Откат схемы недоступен") if self._missing_power else
+                 i18n.t("Выключен") if not self._on else
+                 i18n.t("Включён") if managed_total and managed_on == managed_total else
+                 i18n.t("Частично включён") if managed_on else
+                 i18n.t("Есть изменения для отката"))
         self.lbl_state.setText(label)
         self.btn_toggle.setText(i18n.t("Выключить") if self._on else i18n.t("Включить"))
-        for box in self.checkboxes.values():
-            box.setEnabled(not self._on)
+        self._set_profile_editable(not self._busy and not self._on)
         if snap.get("found"):
             self.lbl_exe.setText(i18n.t("cs2.exe: {v0}", v0=snap.get("exe")))
             self.lbl_exe.setStyleSheet("")
@@ -280,23 +353,21 @@ class Cs2Widget(QWidget):
             ))
             self.lbl_exe.setStyleSheet(f"color: {th.WARN};")
         counts = i18n.t("Пунктов включено в системе: {v0} из {v1}.", v0=on_count, v1=len(items))
-        if not self._on and on_count:
-            counts += " " + i18n.t(
-                "Часть уже стояла в системе до рычага — «Включить» допишет остальное.")
         self.lbl_counts.setText(counts)
         self._sync_checks(items)
 
     def _sync_checks(self, items: dict) -> None:
-        """Галочки показывают факт: что реально включено в системе прямо сейчас."""
-        for spec in gd_cs2.TWEAKS:
-            box = self.checkboxes[spec["id"]]
+        """В активном рычаге галочки показывают состояние системы."""
+        chosen = gd_cs2.configured_ids(self._settings().get("cs2_items"))
+        for tweak_id, box in self.checkboxes.items():
             box.blockSignals(True)
-            if self._on:
-                box.setChecked(bool(items.get(spec["id"])))
-            else:
-                chosen = set(gd_cs2.selected_ids(self._settings().get("cs2_items")))
-                box.setChecked(spec["id"] in (chosen or {s["id"] for s in gd_cs2.TWEAKS}))
+            box.setChecked(bool(items.get(tweak_id)) if self._on else tweak_id in chosen)
             box.blockSignals(False)
+
+    def _set_profile_editable(self, enabled: bool) -> None:
+        self.btn_soft.setEnabled(enabled)
+        for box in self.checkboxes.values():
+            box.setEnabled(enabled)
 
     def _refresh_game(self) -> None:
         pids = gd_cs2.cs2_pids()
@@ -336,6 +407,7 @@ class Cs2Widget(QWidget):
             return
         self._busy = True
         self.btn_toggle.setEnabled(False)
+        self._set_profile_editable(False)
         request = ({"cmd": "cs2_revert"} if self._on else
                    {"cmd": "cs2_apply", "items": list(chosen), "exe": self._exe})
         client = self._client
@@ -351,16 +423,54 @@ class Cs2Widget(QWidget):
         elif "restored" in report:
             self._note(i18n.t("Вернул прежние значения: {v0} записей.", v0=report["restored"]))
         else:
-            self._note(i18n.t("Включено: {v0}.", v0=", ".join(report.get("applied") or [])))
-        self._settings()["cs2_items"] = self._chosen()
+            already_active = set(report.get("already_active") or [])
+            changed = set(report.get("applied") or []) - already_active
+            titles = [i18n.t(spec["title"]) for spec in gd_cs2.TWEAKS if spec["id"] in changed]
+            self._note(i18n.t("Включено: {v0}.", v0=", ".join(titles)) if titles else
+                       i18n.t("Выбранные настройки уже действуют."))
         self._save()
+        self.reload()
+
+    def _forget_power(self) -> None:
+        guid = self._missing_power
+        if self._busy or not guid:
+            return
+        if not gd_dialog.confirm(
+            self, i18n.t("Оставить текущую схему"),
+            i18n.t("Оставить текущую схему питания и удалить запись о схеме {v0} из резервной копии CS2?", v0=guid),
+            confirm_text=i18n.t("Оставить текущую схему"), destructive=True,
+        ):
+            return
+        self._busy = True
+        self.btn_toggle.setEnabled(False)
+        self.btn_keep_power.setEnabled(False)
+        client = self._client
+        self._worker = gd_bg.submit(lambda: client.call({"cmd": "cs2_forget_power", "guid": guid}, timeout=120),
+                                    self._forget_power_done, parent=self)
+
+    def _forget_power_done(self, response: dict) -> None:
+        self._busy = False
+        self.btn_toggle.setEnabled(True)
+        self.btn_keep_power.setEnabled(True)
+        if response.get("ok"):
+            self._note(i18n.t("Запись об отсутствующей схеме питания удалена из резервной копии."))
+        else:
+            self._note(i18n.t("Не всё выполнено: {v0}", v0=response.get("error") or ""))
         self.reload()
 
     def _items_changed(self, _checked: bool) -> None:
         """Галочку двигают только при выключенном рычаге: правка уходит в настройки."""
-        if self._on:
+        if self._on or self._busy:
             return
         self._settings()["cs2_items"] = self._chosen()
+        self._save()
+
+    def _choose_soft(self) -> None:
+        if self._on or self._busy or not self._ready:
+            return
+        self._settings()["cs2_items"] = list(gd_cs2.SOFT_DEFAULT)
+        self._sync_checks({})
+        self._note(i18n.t("Мягкий профиль выбран. Нажмите «Включить» для применения."))
         self._save()
 
     def _raise_priority(self) -> None:
