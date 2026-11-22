@@ -1,5 +1,5 @@
 # Конфигурация инструментов разработки. Проект не пакет: запуск — python main.py,
-# сборка — build_release.ps1 (см. README, раздел «Запуск из исходников»).
+# сборка — build_lite.py (см. README).
 
 [tool.ruff]
 target-version = "py310"
@@ -18,7 +18,5 @@ select = ["F", "E4", "E7", "E9", "W"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = [
-    "smoke: запускает окно в offscreen (нужен venv с PyQt5, включается GD_SMOKE=1)",
-]
+
 addopts = "-q"

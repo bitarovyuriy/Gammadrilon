@@ -11,12 +11,10 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import ipaddress
 import json
-import random
 import re
-import socket
-import struct
 import time
 from pathlib import Path
 from uuid import UUID
@@ -40,12 +38,7 @@ RESOLVERS = [
     {"key": "custom", "label": "Свой", "servers": [], "doh": None},
 ]
 
-SIGNATURE = "Смена DNS может ухудшить резолв в вашей сети. Сравнивайте латентность до и после."
-PROBE_NAME = "example.com"
-
-
 def _base_dir() -> Path:
-    # портативный режим (маркер рядом с приложением) кладёт состояние рядом с exe
     return gd_paths.data_dir()
 
 
@@ -53,72 +46,20 @@ def state_path() -> Path:
     return _base_dir() / "dns_state.json"
 
 
-# -- запросы -----------------------------------------------------------------
-def dns_query_time(server: str, name: str = PROBE_NAME, timeout: float = 2.0):
-    """Время ответа DNS в мс. Возвращает (мс, ok). Реальный A-запрос по UDP/53."""
-    tid = random.randint(0, 65535)
-    header = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
-    qname = b"".join(bytes([len(p)]) + p.encode("ascii") for p in name.split(".")) + b"\x00"
-    packet = header + qname + struct.pack(">HH", 1, 1)
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.settimeout(timeout)
-        t0 = time.perf_counter()
-        s.sendto(packet, (server, 53))
-        data, _ = s.recvfrom(2048)
-        dt = (time.perf_counter() - t0) * 1000.0
-        if len(data) < 12:
-            return None, False
-        rid = struct.unpack(">H", data[:2])[0]
-        rcode = data[3] & 0x0F
-        return (dt, True) if rid == tid and rcode == 0 else (None, False)
-    except OSError:
-        return None, False
-    finally:
-        s.close()
-
-
-def measure(servers: list[str], per_server: int = 3, timeout: float = 2.0) -> dict:
-    """Медиана и jitter по каждому серверу. Первый запрос отбрасывается как прогрев."""
-    out = {}
-    for srv in servers:
-        times = []
-        losses = 0
-        for i in range(per_server):
-            dt, ok = dns_query_time(srv, timeout=timeout)
-            if ok and dt is not None:
-                if i > 0:                     # первый — прогрев
-                    times.append(dt)
-            else:
-                losses += 1
-        if times:
-            times.sort()
-            median = times[len(times) // 2] if len(times) % 2 else sum(times) / len(times)
-            jitter = (max(times) - min(times)) if len(times) > 1 else 0.0
-            out[srv] = {"median": round(median, 1), "jitter": round(jitter, 1),
-                        "loss_pct": round(losses / per_server * 100), "ok": True}
-        else:
-            out[srv] = {"median": None, "jitter": None,
-                        "loss_pct": round(losses / per_server * 100), "ok": False}
-    return out
-
-
-def measure_resolvers(timeout: float = 2.0) -> dict:
-    """Замер по всем резолверам списка (по первому адресу каждого)."""
-    out = {}
-    for r in RESOLVERS:
-        if not r["servers"]:
-            continue
-        srv = r["servers"][0]
-        out[r["key"]] = {"server": srv, **measure([srv], timeout=timeout).get(srv, {})}
-    return out
-
-
 # -- текущая конфигурация ----------------------------------------------------
 def _run(args: list[str]) -> tuple[int, str]:
     try:
-        # через gd_proc: без окна консоли (иначе netsh/powershell мелькают чёрным)
-        p = gd_proc.run(args, timeout=25)
+        from ctypes import wintypes
+
+        directory = ctypes.create_unicode_buffer(32768)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetSystemDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+        kernel.GetSystemDirectoryW.restype = wintypes.UINT
+        if not 0 < kernel.GetSystemDirectoryW(directory, len(directory)) < len(directory):
+            raise ctypes.WinError(ctypes.get_last_error())
+        tool = {"netsh": "netsh.exe", "ipconfig": "ipconfig.exe",
+                "powershell": r"WindowsPowerShell\v1.0\powershell.exe"}[args[0]]
+        p = gd_proc.run([str(Path(directory.value) / tool), *args[1:]], timeout=25, cwd=directory.value)
         raw = (p.stdout or b"") + (p.stderr or b"")
         # netsh и часть утилит Windows отдают UTF-8; запасной путь — OEM-кодировка
         try:
@@ -238,7 +179,7 @@ def _dns_addresses(values: list[str], version: int | None = None) -> list[str]:
 
 def _parse_family(output: str, version: int) -> dict | None:
     # i18n: skip-start — вывод Windows, а не строки интерфейса
-    dns_line = re.search(r"^[ \t]+([^:\r\n]*DNS[^:\r\n]*):[ \t]*(.*)$", output,
+    dns_line = re.search(r"^[ \t]+([^:\x0d\n]*DNS[^:\x0d\n]*):[ \t]*(.*)$", output,
                          re.IGNORECASE | re.MULTILINE)
     if not dns_line:
         return None

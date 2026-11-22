@@ -47,7 +47,8 @@ SETTINGS = {
 #: метка в имени своей копии схемы. Нужна для одного случая: файл состояния
 #: пропал или повреждён, и без метки копию в списке схем Windows невозможно
 #: отличить от пользовательской — она осталась бы в системе навсегда и молча.
-CLONE_MARK = "Gammadrilon"
+# Full 3.6.6 detects owned clones by prefix: do not start with "Gammadrilon".
+CLONE_MARK = "GD Lite"
 
 #: стандартные схемы Windows. Нужны как последний вариант, когда свою копию
 #: надо убрать, а исходную схему по имени уже не узнать (её переименовали или
@@ -749,56 +750,3 @@ def restore_report(state: Optional[dict] = None) -> dict:
 def restore(state: Optional[dict] = None) -> bool:
     """Вернуть исходную схему и удалить клон. Идемпотентно (см. restore_report)."""
     return restore_report(state)["ok"]
-
-
-# --------------------------------------------------------------------------
-# CLI для отладки: python gd_power.py read|state|schemes|clones|clean-clones|
-#                 clone-test|clone-mark-test|apply <id>|restore
-# --------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import sys
-
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "read"
-
-    if cmd == "read":
-        a = get_active_scheme()
-        print("active:", a)
-        print(json.dumps(read_values(a), indent=2, ensure_ascii=False))
-    elif cmd == "clone-test":
-        a = get_active_scheme()
-        c = duplicate_scheme(a)
-        print("original:", a)
-        print("clone:", c)
-        print("clone values:", json.dumps(read_values(c), ensure_ascii=False))
-        print("deleted:", delete_scheme(c))
-    elif cmd == "apply":
-        print(json.dumps(apply_profile(sys.argv[2]), indent=2, ensure_ascii=False))
-    elif cmd == "restore":
-        print(json.dumps(restore_report(), indent=2, ensure_ascii=False))
-    elif cmd == "state":
-        st, problem = read_state_report()
-        print("state:", json.dumps(st, ensure_ascii=False))
-        print("problem:", problem or "—")
-    elif cmd == "schemes":
-        for guid in list_schemes():
-            print(guid, scheme_name(guid))
-    elif cmd == "clones":
-        print(json.dumps(list_clones(), indent=2, ensure_ascii=False))
-    elif cmd == "clean-clones":
-        print(json.dumps(cleanup_clones(), indent=2, ensure_ascii=False))
-    elif cmd == "clone-mark-test":
-        # проверка метки на живой системе: клон создаётся, называется, удаляется
-        a = get_active_scheme()
-        c = duplicate_scheme(a)
-        renamed = rename_scheme(c, clone_name(a))
-        found = [x for x in list_clones() if x["guid"] == c]
-        removed, note = remove_clone(c)
-        print("clone:", c)
-        print("renamed:", renamed, "| named:", scheme_name(c))
-        print("found by mark:", found)
-        print("removed:", removed, note)
-    else:
-        # i18n: skip (CLI-подсказка для разработчика, не UI)
-        print("команды: read | clone-test | clone-mark-test | schemes | clones | "
-              "clean-clones | state | apply <eco|normal|boost> | restore")

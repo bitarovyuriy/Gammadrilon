@@ -5,9 +5,7 @@ from __future__ import annotations
 import base64
 import sys
 from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event
 from unittest.mock import Mock
 
 import pytest
@@ -300,38 +298,3 @@ def test_legacy_ipv4_snapshot_does_not_reset_ipv6(network):
     assert gd_dns.restore_backups(["Ethernet"])["ok"]
     assert network["families"]["11", 4] == {"mode": "dhcp", "servers": old["servers"]}
     assert network["families"]["11", 6] == previous_ipv6
-
-
-def test_helper_shutdown_waits_for_dns_mutation(network, monkeypatch):
-    import gd_gpu_service as service
-
-    entered, release, closing = Event(), Event(), Event()
-    write_family = gd_dns._write_family
-
-    def write(*args):
-        entered.set()
-        assert release.wait(5)
-        write_family(*args)
-
-    def close():
-        closing.set()
-        return service.handle({"cmd": "shutdown", "restore": False})
-
-    monkeypatch.setattr(service, "_stopping", False)
-    monkeypatch.setattr(service, "_stop_boost", lambda: (True, ""))
-    monkeypatch.setattr(service, "_zapret_shutdown", lambda: (True, ""))
-    monkeypatch.setattr(gd_dns, "_write_family", write)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        mutation = pool.submit(service.handle, {"cmd": "dns_apply", "servers": ["1.1.1.1"]})
-        try:
-            assert entered.wait(2)
-            shutdown = pool.submit(close)
-            assert closing.wait(2)
-            assert not shutdown.done()
-        finally:
-            release.set()
-        assert mutation.result(timeout=2)["ok"]
-        assert shutdown.result(timeout=2)["data"] == "bye"
-    assert network["families"]["11", 4]["servers"] == ["1.1.1.1"]
-    assert gd_dns._load_backup()["adapters"]
-    assert not service.handle({"cmd": "dns_restore"})["ok"]

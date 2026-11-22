@@ -196,19 +196,19 @@ def test_invalid_original_in_power_state_is_reported(monkeypatch, tmp_path):
 
 
 def test_clone_name_strips_repeated_mark(monkeypatch):
-    """Имя копии не должно расти: «Gammadrilon — Gammadrilon — X» -> одна метка."""
+    """Имя копии не должно расти: «GD Lite — GD Lite — X» -> одна метка."""
     monkeypatch.setattr(
         gd_power, "scheme_name",
-        lambda guid: "Gammadrilon — Gammadrilon — Сбалансированная",
+        lambda guid: "GD Lite — GD Lite — Сбалансированная",
     )
-    assert gd_power.clone_name("X") == "Gammadrilon — Сбалансированная"
+    assert gd_power.clone_name("X") == "GD Lite — Сбалансированная"
 
 
 def test_snapshot_reports_profile_only_for_active_clone(monkeypatch):
     """State от прошлой схемы не выдаёт профиль за применённый."""
     monkeypatch.setattr(gd_power, "read_values", lambda guid: {})
     monkeypatch.setattr(gd_power, "get_active_scheme", lambda: "CLONE-1")
-    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "Gammadrilon — ЭКО")
+    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "GD Lite — ЭКО")
     state = {"profile": "eco", "clone_scheme": "CLONE-1", "original_scheme": "ORIG"}
     monkeypatch.setattr(gd_power, "read_state_report", lambda: (state, ""))
 
@@ -227,7 +227,7 @@ def test_snapshot_marks_clone_without_state(monkeypatch):
     """Активная наша копия без state — это не «исходная схема»."""
     monkeypatch.setattr(gd_power, "read_values", lambda guid: {})
     monkeypatch.setattr(gd_power, "get_active_scheme", lambda: "CLONE-OLD")
-    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "Gammadrilon — Gammadrilo")
+    monkeypatch.setattr(gd_power, "scheme_name", lambda guid: "GD Lite — GD Lit")
     monkeypatch.setattr(gd_power, "read_state_report", lambda: (None, ""))
 
     snap = gd_power.state_snapshot()
@@ -237,7 +237,7 @@ def test_snapshot_marks_clone_without_state(monkeypatch):
 
 def test_display_name_drops_cut_marker_tail():
     """Огрызок метки от старого обрезания на 80 символах не показывается."""
-    name = "Gammadrilon — Gammadrilon — Gammadrilo"
+    name = "GD Lite — GD Lite — GD Lit"
     assert gd_power.display_scheme_name(name) == ""
 
 
@@ -249,7 +249,7 @@ def test_clone_name_fits_windows_limit(monkeypatch):
 def test_apply_on_orphan_clone_reuses_it(monkeypatch):
     """State потерян, но активна наша копия: пишем в неё, а не клонируем клон."""
     schemes, holder, calls = _fake_system(monkeypatch)
-    schemes["CLONE-OLD"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-OLD"] = "GD Lite — Сбалансированная"
     calls["active"] = "CLONE-OLD"
     holder["state"] = None
 
@@ -259,14 +259,14 @@ def test_apply_on_orphan_clone_reuses_it(monkeypatch):
     assert state["clone_scheme"] == "CLONE-OLD"
     assert state["original_scheme"] == "ORIG", "исходную нашли по имени без метки"
     assert schemes["CLONE-OLD"].count(gd_power.CLONE_MARK) == 1
-    assert schemes["CLONE-OLD"] == "Gammadrilon — Сбалансированная"
+    assert schemes["CLONE-OLD"] == "GD Lite — Сбалансированная"
 
 
 def test_apply_sweeps_orphan_clones(monkeypatch):
     """Применение профиля убирает все чужие наши копии, а не только прошлую."""
     schemes, holder, calls = _fake_system(monkeypatch)
-    schemes["CLONE-OLD-1"] = "Gammadrilon — Сбалансированная"
-    schemes["CLONE-OLD-2"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-OLD-1"] = "GD Lite — Сбалансированная"
+    schemes["CLONE-OLD-2"] = "GD Lite — Сбалансированная"
     holder["state"] = None
 
     state = gd_power.apply_profile("normal")
@@ -279,8 +279,8 @@ def test_apply_sweeps_orphan_clones(monkeypatch):
 def test_cleanup_switches_away_from_active_clone(monkeypatch):
     """Активную копию Windows не удаляет: сначала возвращаем обычную схему."""
     schemes, holder, calls = _fake_system(monkeypatch)
-    schemes["CLONE-1"] = "Gammadrilon — Сбалансированная"
-    schemes["CLONE-2"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-1"] = "GD Lite — Сбалансированная"
+    schemes["CLONE-2"] = "GD Lite — Сбалансированная"
     calls["active"] = "CLONE-2"
     holder["state"] = None
 
@@ -298,7 +298,7 @@ def test_cleanup_keeps_working_clone(monkeypatch):
     """Копию применённого профиля уборка не трогает: по ней делается откат."""
     schemes, holder, calls = _fake_system(monkeypatch)
     state = gd_power.apply_profile("eco")
-    schemes["CLONE-OLD"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-OLD"] = "GD Lite — Сбалансированная"
 
     rep = gd_power.cleanup_clones()
 
@@ -311,7 +311,7 @@ def test_list_clones_hides_tracked_clone(monkeypatch):
     """Рабочая копия профиля — не «остаток», её не показываем и не считаем мусором."""
     schemes, holder, calls = _fake_system(monkeypatch)
     state = gd_power.apply_profile("eco")
-    schemes["CLONE-OLD"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-OLD"] = "GD Lite — Сбалансированная"
 
     rows = gd_power.list_clones()
     assert [r["guid"] for r in rows] == ["CLONE-OLD"]
@@ -323,7 +323,7 @@ def test_cleanup_repairs_state_pointing_to_clone(monkeypatch):
     """Старый state записал «исходной» нашу же копию: уборка чинит её и удаляет."""
     schemes, holder, calls = _fake_system(monkeypatch)
     gd_power.apply_profile("eco")
-    schemes["CLONE-BAD"] = "Gammadrilon — Gammadrilon — Gammadrilo"
+    schemes["CLONE-BAD"] = "GD Lite — GD Lite — GD Lit"
     bad_state = dict(holder["state"])
     bad_state["original_scheme"] = "CLONE-BAD"
     holder["state"] = bad_state
@@ -339,7 +339,7 @@ def test_apply_repairs_original_that_is_clone(monkeypatch):
     """Повторное применение не тащит дальше испорченную «исходную» из state."""
     schemes, holder, calls = _fake_system(monkeypatch)
     gd_power.apply_profile("eco")
-    schemes["CLONE-BAD"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-BAD"] = "GD Lite — Сбалансированная"
     bad_state = dict(holder["state"])
     bad_state["original_scheme"] = "CLONE-BAD"
     holder["state"] = bad_state
@@ -353,7 +353,7 @@ def test_apply_repairs_original_that_is_clone(monkeypatch):
 def test_restore_without_original_strips_mark(monkeypatch):
     """Исходную схему не вернуть, а копию нельзя удалить — снимаем метку."""
     schemes, holder, calls = _fake_system(monkeypatch)
-    schemes["CLONE-1"] = "Gammadrilon — Сбалансированная"
+    schemes["CLONE-1"] = "GD Lite — Сбалансированная"
     calls["active"] = "CLONE-1"
     monkeypatch.setattr(gd_power, "delete_scheme", lambda guid: False)
 
